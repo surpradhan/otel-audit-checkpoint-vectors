@@ -1,0 +1,124 @@
+{
+  "description": "Conformance vectors for the audit-checkpoint canonical form (RFC 8785 JCS + SHA-256 chain + Ed25519). TEST KEY ONLY.",
+  "algorithm": "ed25519",
+  "signing_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "public_key_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "vectors": [
+    {
+      "name": "genesis_empty_tips",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "tips": []
+      },
+      "canonical": "{\"prev_hash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"seq\":1,\"timestamp\":\"2026-01-01T00:00:00Z\",\"tips\":[]}",
+      "sha256": "cd30537491a95f1cf9bc7de9bc70ad74ef8539bada4a174b859fe536f99261bc",
+      "signature": "Oir9lwysYCDzWpZ2AFzzuVr1s28VxmlzNVkHgE4yHpbYMgQEIdo/Ji1lcSSz+HGtv9UUPcJ8vTd5lI5BJGOUAw=="
+    },
+    {
+      "name": "single_tip",
+      "input": {
+        "prev_hash": "cd30537491a95f1cf9bc7de9bc70ad74ef8539bada4a174b859fe536f99261bc",
+        "seq": 2,
+        "timestamp": "2026-01-01T00:00:05Z",
+        "tips": [
+          {
+            "entry_count": 3,
+            "sequence_number": 3,
+            "stream_id": "11111111-1111-4111-8111-111111111111",
+            "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"cd30537491a95f1cf9bc7de9bc70ad74ef8539bada4a174b859fe536f99261bc\",\"seq\":2,\"timestamp\":\"2026-01-01T00:00:05Z\",\"tips\":[{\"entry_count\":3,\"sequence_number\":3,\"stream_id\":\"11111111-1111-4111-8111-111111111111\",\"tip_hash\":\"aa00000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "4cc317257a8cfa07ddb11f6edda84800dd9e68bd073125e465241e5a1fbe01f0",
+      "signature": "EszUWePdvy6puX3HjuKSEWTzhxpmRpOixAUnP/KfkbsQE0ulHa+PsRBZTln/PSL3oSQEEDs0oOmggAERp/HvCg=="
+    },
+    {
+      "name": "multi_tip_unsorted_input",
+      "input": {
+        "prev_hash": "4cc317257a8cfa07ddb11f6edda84800dd9e68bd073125e465241e5a1fbe01f0",
+        "seq": 3,
+        "timestamp": "2026-01-01T00:00:10Z",
+        "tips": [
+          {
+            "entry_count": 2,
+            "sequence_number": 2,
+            "stream_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "tip_hash": "cc00000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "entry_count": 7,
+            "sequence_number": 7,
+            "stream_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "tip_hash": "bb00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"4cc317257a8cfa07ddb11f6edda84800dd9e68bd073125e465241e5a1fbe01f0\",\"seq\":3,\"timestamp\":\"2026-01-01T00:00:10Z\",\"tips\":[{\"entry_count\":7,\"sequence_number\":7,\"stream_id\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"tip_hash\":\"bb00000000000000000000000000000000000000000000000000000000000000\"},{\"entry_count\":2,\"sequence_number\":2,\"stream_id\":\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\",\"tip_hash\":\"cc00000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "8d0277707e12f87e82264281e30e5a8abb636170c01e0deb0205d07f61f82fbc",
+      "signature": "k0uV6VkB3h5wzbQ7I7pKn/aeXCINbRxtnf49KngstDaC1sFLPWiGsWTkhl1+WWRH25cAhrj0u/D4oGy/p++ICA=="
+    }
+  ],
+  "negatives": [
+    {
+      "name": "tampered_signature",
+      "expect": "signature",
+      "reason": "one byte of a valid signature is flipped; verification must fail",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2026-02-01T00:00:00Z",
+        "tips": [
+          {
+            "entry_count": 7,
+            "sequence_number": 7,
+            "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "Jq/wRytMbL/tuoaJEN5rkY9MAmqVPErozCqp7c0ZWlSThr0OxCwbx8OJwNvnCBT1+duGialiVXjmhMlp2HaaCw=="
+    },
+    {
+      "name": "truncation_rewrites_committed_tip",
+      "expect": "signature",
+      "reason": "the stream was truncated (entry_count 7 to 5) and the checkpoint tip rewritten to match, but the original signature no longer covers the mutated tip",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2026-02-01T00:00:00Z",
+        "tips": [
+          {
+            "entry_count": 5,
+            "sequence_number": 7,
+            "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tip_hash": "ee00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "J6/wRytMbL/tuoaJEN5rkY9MAmqVPErozCqp7c0ZWlSThr0OxCwbx8OJwNvnCBT1+duGialiVXjmhMlp2HaaCw=="
+    },
+    {
+      "name": "broken_chain",
+      "expect": "chain",
+      "reason": "signature is valid, but prev_hash does not equal the previous checkpoint's hash",
+      "input": {
+        "prev_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "seq": 1,
+        "timestamp": "2026-02-01T00:00:00Z",
+        "tips": [
+          {
+            "entry_count": 7,
+            "sequence_number": 7,
+            "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "BA7//CpJPyyapZ+/3/cMDRm7jsvYVtNzOQ5pI4V5V2T5aq/XkHXtxl8SzxgXfGpdz/yPoIlBb/lSOLgWUGsiBA==",
+      "prev_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

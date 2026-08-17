@@ -1,0 +1,35 @@
+name: verify-vectors
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Go validator (RFC 8785 JCS + SHA-256 + Ed25519)
+        working-directory: go
+        run: go run . validate ../vectors.json
+
+      - name: Vectors match the generator (no drift)
+        working-directory: go
+        run: |
+          go run . gen /tmp/regen.json
+          diff ../vectors.json /tmp/regen.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        run: pip install -r py/requirements.txt
+
+      - name: Independent Python validator
+        run: python3 py/validate.py vectors.json

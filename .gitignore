@@ -1,0 +1,10 @@
+# Go
+/go/bin/
+
+# Python
+__pycache__/
+*.pyc
+
+# scratch
+*.tmp
+regen.json
