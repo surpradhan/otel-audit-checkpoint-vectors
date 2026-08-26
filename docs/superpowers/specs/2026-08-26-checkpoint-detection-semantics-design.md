@@ -1,6 +1,7 @@
 # Design: checkpoint detection semantics
 
-> **Status:** Approved · **Date:** 2026-08-26 · **Author:** Surabhi Pradhan
+> **Status:** Approved, revised after independent review · **Date:** 2026-08-26
+> **Author:** Surabhi Pradhan
 
 ## 1. Problem
 
@@ -31,10 +32,9 @@ It does not currently make that argument. Three defects, all verified:
 
 A fourth, documentation-level defect: the README describes checkpoints as
 committing "the tips of every active stream", which is a **snapshot** model. The
-reference implementation in `otel-agent-audit` is a **delta** model —
-`chain.Accumulator.Build` resets the pending set after each checkpoint. The
-README's claim that "disappearance becomes detectable" overstates what a delta
-model provides.
+reference implementation is a **delta** model — `chain.Accumulator.Build` resets
+the pending set. The README's "disappearance becomes detectable" overstates what
+a delta model provides.
 
 ## 2. Goals and non-goals
 
@@ -42,27 +42,56 @@ model provides.
 checkpoint construct, at a rigor level that survives the differential scrutiny
 applied to JCS libraries in #50079.
 
-**Non-goals.**
+**Non-goals.** Competing on JCS string-level conformance (ceded to
+`astrogilda/aee-conformance`, which this repo cites and links); a third
+implementation; fuzzing, property-based testing, differential JCS harnesses.
 
-- Competing on JCS string-level conformance. That ground is covered by
-  `astrogilda/aee-conformance`; this repo will cite and link it.
-- A third implementation. Two independent validators carry the argument.
-- Fuzzing, property-based testing, differential JCS harnesses. Not worth the
-  maintenance cost for a solo maintainer.
-- Vectors for attacks the mechanism cannot detect. See §6.
-
-## 3. The delta model, stated explicitly
+## 3. The delta model and the at-least-once problem
 
 Each checkpoint commits the tips of streams **sealed since the previous
-checkpoint**, not all active streams. A checkpoint is a delta; the checkpoint
-chain is the accumulation.
+checkpoint**. A checkpoint is a delta; the chain is the accumulation.
 
-The load-bearing consequence: **a `stream_id` is committed at most once across
-the whole chain.** ("Exactly once" is the producer's invariant; a verifier
-holding a possibly-partial chain can only check "at most once", so that is the
-rule stated in B3.) A stream is sealed once, committed once, and never
-re-committed. That single invariant makes re-commit, rollback and replay
-detectable from the checkpoint chain alone, with no access to stream records.
+An earlier draft of this design claimed the consequence was "a `stream_id` is
+committed at most once across the chain," and built the whole of Tier B on it.
+**That claim is false against the reference implementation.** `otel-agent-audit`
+clears its `sealedTraces` dedup map after every successful WAL compaction, so a
+re-delivered root span for an already-sealed `trace_id` is sealed again as a
+second independent chain. `docs/threat-model.md` §5 documents this as an
+"accepted at-least-once delivery trade-off", and the errors table states that
+`duplicate_trace_segment` is "not evidence of tampering". A crash between
+checkpoint persistence and `wal.MarkSealed`, and a timeout-split trace whose
+late spans arrive after the dedup window, produce the same duplication — and the
+timeout case yields a *lower* `entry_count` on re-commit, which is exactly the
+shape of a rollback attack.
+
+A hard "at most once" rule would therefore reject honest behaviour.
+
+### Resolution: an explicit epoch on each tip
+
+Each tip carries an `epoch`. The pair `(stream_id, epoch)` — not `stream_id`
+alone — is the identity that must be unique across the chain.
+
+`epoch` is **a producer generation counter, not a per-stream commit count.**
+This distinction is load-bearing: after compaction the producer has forgotten it
+ever saw the stream, so it cannot count that stream's prior commits. It always
+knows its own generation. The generation is incremented whenever the dedup
+window resets — on WAL compaction and on process start — and applies to every
+tip committed while it is current.
+
+That converts an undeclared artifact into a declared one:
+
+- Same `(stream_id, epoch)`, different `tip_hash` → **hard reject.** Nothing
+  legitimate produces this: within one generation the producer's dedup map is
+  intact, so a second commit of the same stream cannot occur.
+- Same `stream_id`, different `epoch` → **accepted, surfaced as advisory.** This
+  is the declared at-least-once path. A verifier reports it, and the operator
+  reconciles or ignores it, exactly as `duplicate_trace_segment` is handled today.
+
+**Dependency:** this requires a change in `otel-agent-audit` —
+`chain.Accumulator` gains a generation field, bumped by the compaction and start
+paths. That is a chain-format change there and carries that project's
+`schema_version` bump, fixture and doc requirements. This spec covers the vector
+format only; the production change is tracked separately.
 
 ## 4. Taxonomy
 
@@ -72,100 +101,166 @@ detectable from the checkpoint chain alone, with no access to stream records.
 |---|---|---|
 | A1 | Canonical bytes reproduce | have (3 positives) |
 | A2 | Signature verifies | have (`tampered_signature`) |
-| A3 | No duplicate `stream_id` within a checkpoint | **add** |
-| A4 | Ill-formed Unicode rejected | **add** |
+| A3 | No duplicate `(stream_id, epoch)` within a checkpoint | **add** |
+| A4 | Ill-formed Unicode rejected, as an explicit pre-parse step on raw bytes | **add** |
 | A5 | Integers within I-JSON range: `2^53−1` accepted, `2^53` rejected | **add** |
+
+A5 is RFC 7493 §2.2's stated range, not an IEEE representability limit —
+`2^53` is exactly representable; `2^53+1` is the first that is not. Cite I-JSON,
+not JCS, if challenged.
 
 ### Tier B — cross-checkpoint, single chain, single verifier
 
-This tier is the checkpoint's reason to exist and is currently empty but for B2.
+| # | Rule | Detects | Strength |
+|---|---|---|---|
+| B1 | `seq` increments by exactly 1 | dropped or replayed checkpoint | hard |
+| B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes | reordering, forking | hard (have) |
+| B3 | `(stream_id, epoch)` appears at most once in the chain | re-commit within a generation, rollback | hard |
+| B4 | Same `stream_id` under a different `epoch` | at-least-once re-delivery | **advisory** |
+| B5 | `timestamp` non-decreasing across the chain | clock regression | **advisory** — the operator controls the clock |
 
-| # | Rule | Detects |
-|---|---|---|
-| B1 | `seq` increments by exactly 1 | dropped or replayed checkpoint |
-| B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes | reordering, forking (have) |
-| B3 | A `stream_id` appears in at most one checkpoint in the chain | re-commit, rollback, replay |
-| B4 | `timestamp` non-decreasing across the chain | clock regression (advisory only — the operator controls the clock) |
+B1 is largely subsumed by B2 on a contiguous chain: a dropped or duplicated
+checkpoint breaks `prev_hash` either way. It is retained for precise diagnostics
+and for verifying a suffix of a chain, not because it catches anything B2 misses.
+
+**B1 and B2 detect a discontinuity; they cannot attribute cause.** Honest data
+loss produces the same signal as deletion — see the known write-ordering defect
+in the reference implementation, where an IO failure advances the accumulator and
+strands tips. A verifier reports a broken chain; it does not report tampering.
 
 ### Tier C — beyond one verifier with one chain
 
 Prose only, in `docs/limits.md`, linked to `otel-agent-audit/docs/threat-model.md` §2:
 
 - **Split-view / equivocation.** Undetectable by a single verifier holding one
-  chain. It is, however, *provable* across two views: two checkpoints with the
-  same `seq` under the same key and different hashes form a self-contained
-  equivocation proof, the same object CT uses for inconsistent STHs. This is the
-  argument for the checkpoint being the right unit for a witness to gossip.
-- **Full rewrite by the key holder**, served consistently to everyone.
-  Undetectable without external anchoring.
+  chain; *provable* across two views, since two checkpoints with the same `seq`
+  under one key and different hashes form a self-contained equivocation proof —
+  the object CT uses for inconsistent STHs. This is the argument for the
+  checkpoint being the right unit for a witness to gossip.
+- **Full rewrite by the key holder**, served consistently. Needs external anchoring.
 - **Staleness** — serving a valid old prefix. Currently undetectable; a maximum
   checkpoint interval plus a timestamp check would convert it into a detectable
-  violation, as TUF does with expiry. Surface this to the SIG as a design
-  decision rather than a fixed limit.
-- **Never-committed streams.** Checkpoints attest what *was* committed. They do
-  not prove that everything which occurred was committed. No log-side mechanism
-  can. This is the correction to the README's "disappearance" claim.
+  violation, as TUF does with expiry. Surface to the SIG as a design decision.
+- **Never-committed streams.** Checkpoints attest what *was* committed, never
+  that everything which occurred was committed. `threat-model.md` §7 already
+  states the verifier cannot detect a trace that was never written.
 
-## 5. Format changes
+## 5. Format changes and the consumer contract
 
-1. **`format_version`** on `Suite`, added now. Adding it later is itself a
-   breaking change and third parties may already consume the file.
-2. **Chain context for negatives.** Tier B cases require more than one
-   checkpoint, so a negative vector gains an optional ordered `chain` array of
-   preceding checkpoints. `prev_sha256` is retained for the existing
-   `broken_chain` case.
-3. **Raw input representation.** `input` is a typed object round-tripped through
-   each language's JSON parser, so encoding-level malformations are
-   inexpressible. Add optional `input_raw_hex`; when present it is the exact
-   bytes to canonicalize, and the vector asserts rejection.
-4. **`expect` becomes advisory.** `rejectReason` checks signature before chain,
-   so a validator checking in a different order reports a different reason on a
-   vector failing both. Today each negative fails exactly one check, so this
-   works by accident. Document that as a suite invariant and treat a
-   reason mismatch as a warning, not a failure.
+1. **`format_version`** on `Suite`: an integer, starting at 1, incremented when
+   a vector shape is added that an older validator cannot parse. Added now;
+   adding it later is itself breaking.
+2. **Per-vector feature gating.** `format_version` alone is insufficient: every
+   Tier B negative carries a `chain` array, and an existing validator that
+   ignores unknown fields would find such a vector signature-valid and
+   chain-valid, report "accepted, but must be rejected", and hard-fail on a
+   suite update — precisely the silent invalidation CONTRIBUTING forbids. Each
+   vector therefore carries `min_format_version`. **Validators MUST skip, with a
+   warning, any vector whose `min_format_version` exceeds their supported
+   version, and MUST NOT treat a skip as a failure.** This rule ships in
+   `format_version: 1`, before any vector needs it.
+3. **Chain context for Tier B.** An optional ordered `chain` array of preceding
+   checkpoints. **A validator MUST verify the signature of every checkpoint in
+   the prefix, not merely hash it for linkage** — otherwise a suite could pass
+   against a prefix of forged checkpoints. Stated explicitly because either
+   answer is defensible and silence guarantees divergence.
+4. **`input_raw_hex`.** `input` is a typed object round-tripped through each
+   language's JSON parser, so encoding-level malformations are inexpressible.
+   When `input_raw_hex` is present it is the exact bytes to canonicalize, and
+   `input` is absent.
+5. **`expect` becomes advisory for third parties.** `rejectReason` checks
+   signature before chain, so a validator checking in another order reports a
+   different reason on a vector failing both. Internally the suite guarantees
+   each negative fails exactly one check, and **the generator asserts this at
+   `gen` time** so the invariant cannot rot as vectors accumulate.
+6. **Surface to the SIG, not fixed here:** the signed object carries no version
+   field *inside the signed bytes*. Production gets this right —
+   `schema_version` is inside `checkpointForSigning`. `format_version` versions
+   the file, not the object, so a future canonical-form change is
+   indistinguishable inside a signature.
 
 ## 6. Why there is no `limits` vector category
 
-A vector whose expected outcome is "a conformant verifier accepts this" cannot
-fail: acceptance of a valid chain is already established by the positive
-vectors, so no implementation could fail such a vector without also failing
-those. Undetectability is a claim quantified over all possible verifier
-algorithms; no fixture tests it. Certificate Transparency, TUF, in-toto, SLSA
-and C2PA all keep this class of statement in security-considerations prose.
-Wycheproof's third `acceptable` tier works only because implementations
-genuinely vary there, which is not the case here.
+The conclusion stands; an earlier draft's argument for it did not, and is
+withdrawn. That draft claimed a vector whose expected outcome is "accepted"
+cannot fail. **That is wrong** — accept-vectors catch *over-rejection*, and the
+positive vectors establish acceptance only for the shapes they contain. With B4
+and B5 advisory, there is real implementation variance, which is exactly the
+condition that justifies Wycheproof's third `acceptable` tier.
 
-Limits go in `docs/limits.md`. The one machine-checkable artifact in this area
-is the equivocation proof, and it is deferred until the OTEP has a witness
-section — before that it is speculative.
+The correct narrow claim: undetectability of key-holder rewrite and single-view
+equivocation is quantified over all possible verifier algorithms, and no fixture
+tests that. Prose is the right home for *that* class. CT keeps split-view in RFC
+6962 security considerations; TUF converts freeze into a detectable violation via
+expiry and leaves the rest to prose; in-toto, SLSA and C2PA do the same.
+
+Consequently: no `limits` category, **and** one **must-accept** vector per
+advisory rule — `advisory_stream_recommitted_new_epoch` (B4) and
+`advisory_timestamp_regression` (B5) — each asserting the verifier accepts and
+warns rather than rejects. The equivocation proof is deferred until the OTEP has
+a witness section.
 
 ## 7. Testing
 
-Both validators implement Tiers A and B and must agree. New negatives:
-`duplicate_stream_id`, `ill_formed_utf8` (via `input_raw_hex`), `seq_skip`,
-`stream_recommitted` (B3), `tip_rollback` (B3 with a lower `entry_count`), and
-`integer_out_of_range` (A5, an `entry_count` of 2^53).
-New positives: non-BMP `stream_id` adjacent to a U+E000–U+FFFF one (the tip sort
-is code-point ascending, while JCS sorts *object keys* by UTF-16 code unit — an
-implementer reusing their JCS comparator for tips gets a different order), and
-one at 2^53−1.
+Both validators implement Tiers A and B and must agree, including on which rules
+are advisory and what a warning looks like.
 
-`timestamp` is pinned to `YYYY-MM-DDTHH:MM:SSZ` — no fractional seconds, no
-numeric offsets — so that a re-serializing implementation cannot alter signed
-bytes. `py/requirements.txt` pins `cryptography`.
+**New negatives:** `duplicate_stream_epoch_in_checkpoint` (A3),
+`ill_formed_utf8_bytes` (A4, raw invalid UTF-8), `lone_surrogate_escape` (A4,
+well-formed bytes containing `\ud800`), `integer_out_of_range` (A5, `entry_count`
+of `2^53`), `seq_skip` (B1), `stream_recommitted_same_epoch` (B3),
+`tip_rollback_same_epoch` (B3), `genesis_wrong_seq` and `genesis_wrong_prev_hash`.
+
+A4 needs **two** vectors because the failure modes differ: invalid UTF-8 bytes
+must be caught by an explicit `utf8.Valid` check on the raw input, while a lone
+surrogate *escape* is well-formed UTF-8 that both parsers accept and mangle
+differently — and after parsing, Go cannot distinguish a decoded lone surrogate
+from a literal U+FFFD. **A4 is therefore specified as an explicit validation step
+on raw bytes before parsing, never as an emergent property of the JSON stack.**
+That assumption's absence is exactly defect 2.
+
+**New positives:** a non-BMP `stream_id` adjacent to a U+E000–U+FFFF one (the tip
+sort is code-point ascending, while JCS sorts *object keys* by UTF-16 code unit;
+surrogates sort below U+E000 in UTF-16 and above it by code point, so an
+implementer reusing their JCS comparator for tips gets a different order), one at
+`2^53−1`, and the two must-accept advisory vectors from §6.
+
+**Timestamp profile:** exactly `YYYY-MM-DDTHH:MM:SSZ` — uppercase `T` and `Z`, no
+fractional seconds, no numeric offset, no leap seconds. This matches production's
+`ts.UTC().Format(time.RFC3339)` byte for byte. It is a **producer** rule:
+verifiers treat the timestamp as an opaque signed string and do not enforce the
+profile, so there is no negative vector for it. The hole it closes is two
+producers rendering the same instant differently.
+
+**Surface to the SIG:** OTel's native timestamp is `uint64` nanoseconds, and
+current unix nanoseconds (~1.7×10^18) exceed I-JSON's `2^53−1`. Nanoseconds as a
+JSON integer are therefore incompatible with JCS. This constrains the audit
+record format regardless of checkpoints, and nobody in #2409 has raised it.
+
+`py/requirements.txt` pins `cryptography`.
 
 ## 8. Sequencing
 
-1. `format_version`, pinned `cryptography`, pinned timestamp profile
-2. A3 + deterministic sort + `duplicate_stream_id`. A3 rejects duplicates, so
-   ties cannot reach the sort in a valid checkpoint; the generator still uses
-   `sort.SliceStable` so that malformed input fails loudly at A3 rather than
-   silently producing order-dependent bytes.
-3. Tier B in both validators + `seq_skip`, `stream_recommitted`, `tip_rollback`
-4. `input_raw_hex` + `ill_formed_utf8`, README paragraph citing #50079
-5. Boundary positives
-6. `docs/limits.md`, README corrected from snapshot to delta
+1. `format_version` + `min_format_version` skip rule, pinned `cryptography`,
+   pinned timestamp profile
+2. A3 + `duplicate_stream_epoch_in_checkpoint`. `gen` rejects duplicate
+   `(stream_id, epoch)` **before signing**, so malformed input fails loudly
+   rather than silently producing order-dependent bytes; `sort.SliceStable` is
+   used so the ordering is defined even if A3 is ever bypassed.
+3. Tier B in both validators, with the epoch resolution from §3, plus the B1/B3
+   negatives and the B4/B5 must-accept vectors
+4. `input_raw_hex` + both A4 vectors, README paragraph citing #50079
+5. Remaining boundary positives and genesis negatives
+6. `docs/limits.md`; README corrected from snapshot to delta
 
-Steps 1–3 are the substance. Do not link this repo from
-`open-telemetry/community#2409` until at least step 3 has landed: until then the
-repo would not survive the scrutiny it is modelled on.
+The epoch resolution in §3 is settled **in this document** before step 3 is
+implemented, because CONTRIBUTING freezes published vectors and a Tier B vector
+shipped under the wrong identity rule would have to be superseded rather than
+corrected.
+
+**Gate for linking this repo from `open-telemetry/community#2409`:** steps 1–3
+merged to `main` **and** both validators green on the new suite in CI. Until
+then the repo would not survive the scrutiny it is modelled on. Twelve days of
+thread silence is normal SIG cadence and is not a reason to post early; if
+presence is needed sooner, a concept-only comment on delta-checkpoint semantics
+without the link is the compromise. Posting upstream is the human's action.
