@@ -6,32 +6,41 @@ repo does not want a test-framework dependency for one behavior. Plain script
 with asserts; exits non-zero on failure.
 
 Pins the loop-level skip behavior in main(), not just skip_vector() in
-isolation: it loads the real, committed vectors.json, marks the middle
-positive vector ("single_tip") and one negative ("tampered_signature") as
-requiring a format newer than SUPPORTED_FORMAT_VERSION, writes the result to
-a temp file, and runs main() against it exactly as a real invocation would.
+isolation. Asserting only main()'s return code is not enough: the marked
+vectors are otherwise-valid data that would pass ordinary validation just as
+happily as a skip, so a disabled skip rule would still return 0. This test
+captures stdout instead and checks which vectors were actually reported
+skipped versus actually validated.
+
+testdata/skip_rule_fixture.json (repo root) names the entries to mark and is
+shared with go/version_test.go's equivalent test: both read the same file and
+mark the same names on equivalent input (this file loads the real, committed
+vectors.json; the Go test loads gen()'s output, which CI's no-drift check
+guarantees is byte-identical to it), so a pass in both languages shows the
+two implementations agree, not just that each is internally self-consistent.
 
 vectors.json is never mutated on disk -- only an in-memory copy is written to
-a temp path. The go/version_test.go end-to-end test marks the same two named
-entries, starting from gen()'s output, which CI's no-drift check guarantees
-is byte-identical to this file. So both implementations skip the same
-vectors and must reach the same PASS verdict on equivalent input -- that
-parity is what this test and its Go counterpart together establish.
+a temp path.
 
     python3 py/test_validate.py
 """
 import copy
+import io
 import json
 import os
+import re
 import sys
 import tempfile
+from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import validate  # noqa: E402
 
-VECTORS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "vectors.json"
-)
+HERE = os.path.dirname(os.path.abspath(__file__))
+VECTORS_PATH = os.path.join(HERE, "..", "vectors.json")
+FIXTURE_PATH = os.path.join(HERE, "..", "testdata", "skip_rule_fixture.json")
+
+SKIP_LINE_RE = re.compile(r"^  skip (\S+)\s+requires format_version \d+$", re.MULTILINE)
 
 
 def _load_real_suite():
@@ -39,64 +48,122 @@ def _load_real_suite():
         return json.load(f)
 
 
-def _marked(entries, name, min_ver):
-    """Return a deep copy of entries with entry `name`'s min_format_version
-    set to min_ver. Does not touch canonical/sha256/signature/input -- only
-    the sibling field the skip rule reads."""
+def _load_fixture():
+    with open(FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+def _marked(entries, names, min_ver):
+    """Return a deep copy of entries with each of `names`'s
+    min_format_version set to min_ver. Does not touch
+    canonical/sha256/signature/input -- only the sibling field the skip rule
+    reads."""
     out = copy.deepcopy(entries)
-    found = False
+    remaining = set(names)
     for e in out:
-        if e["name"] == name:
+        if e["name"] in remaining:
             e["min_format_version"] = min_ver
-            found = True
-    assert found, f"fixture entry {name!r} not found in vectors.json"
+            remaining.discard(e["name"])
+    assert not remaining, f"fixture entries {sorted(remaining)!r} not found"
     return out
 
 
-def _run_main(suite):
+def _run_main_capturing_stdout(suite):
     """Write `suite` to a temp file and run validate.main() against it
-    exactly as `python3 validate.py <path>` would, returning its exit code."""
+    exactly as `python3 validate.py <path>` would, returning
+    (exit_code, captured_stdout)."""
     fd, path = tempfile.mkstemp(suffix=".json")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(suite, f)
         old_argv = sys.argv
         sys.argv = ["validate.py", path]
+        buf = io.StringIO()
         try:
-            return validate.main()
+            with redirect_stdout(buf):
+                rc = validate.main()
         finally:
             sys.argv = old_argv
+        return rc, buf.getvalue()
     finally:
         os.unlink(path)
+
+
+def _skipped_names(output):
+    return sorted(m.group(1) for m in SKIP_LINE_RE.finditer(output))
 
 
 def test_baseline_suite_still_passes():
     """Sanity check: the unmodified real suite passes end to end, so the
     skip test below is compared against a known-good baseline."""
-    rc = _run_main(_load_real_suite())
-    assert rc == 0, f"main() returned {rc} on the unmodified real suite, want 0"
+    rc, output = _run_main_capturing_stdout(_load_real_suite())
+    print(output, end="")
+    assert rc == 0, f"main() returned {rc} on the unmodified real suite, want 0\n{output}"
+    assert _skipped_names(output) == [], (
+        f"unmodified real suite reported skips: {_skipped_names(output)}\n{output}"
+    )
 
 
 def test_skip_is_not_a_failure_and_does_not_poison_the_chain():
-    """1. A vector above SUPPORTED_FORMAT_VERSION is skipped and main()
-       still returns 0 -- a skip is never a failure.
-    2. multi_tip_unsorted_input, chained after the skipped single_tip, still
-       validates -- proving the skip does not poison prev_expected for the
-       next vector's chain check. (Without the `prev_expected = None` reset
-       and the `prev_expected is not None` guard, this would instead fail
-       with a spurious chain break, because multi_tip_unsorted_input's real
+    """1. A vector above SUPPORTED_FORMAT_VERSION is actually reported
+       skipped (not silently validated normally -- disabling the skip rule
+       entirely would still return 0 here, since these are otherwise-valid
+       vectors) and main() still returns 0: a skip is never a failure.
+    2. Every vector/negative NOT marked in the fixture is still validated
+       (an "ok" line is present for each) -- this is what catches a
+       "skip everything" mutation, and specifically covers
+       multi_tip_unsorted_input, chained after the skipped single_tip,
+       proving the skip does not poison prev_expected for the next vector's
+       chain check. (Without the `prev_expected = None` reset and the
+       `prev_expected is not None` guard, this would instead fail with a
+       spurious chain break, because multi_tip_unsorted_input's real
        prev_hash chains to single_tip's real hash, not to genesis's.)
     """
+    fixture = _load_fixture()
+    skip_vectors = fixture["skip_vectors"]
+    skip_negatives = fixture["skip_negatives"]
+
     suite = _load_real_suite()
     suite["vectors"] = _marked(
-        suite["vectors"], "single_tip", validate.SUPPORTED_FORMAT_VERSION + 1
+        suite["vectors"], skip_vectors, validate.SUPPORTED_FORMAT_VERSION + 1
     )
     suite["negatives"] = _marked(
-        suite["negatives"], "tampered_signature", validate.SUPPORTED_FORMAT_VERSION + 1
+        suite["negatives"], skip_negatives, validate.SUPPORTED_FORMAT_VERSION + 1
     )
 
-    rc = _run_main(suite)
-    assert rc == 0, f"main() returned {rc}, want 0 (a skip must never fail the run)"
+    rc, output = _run_main_capturing_stdout(suite)
+    print(output, end="")
+    assert rc == 0, f"main() returned {rc}, want 0 (a skip must never fail the run)\n{output}"
+
+    want_skipped = sorted(skip_vectors + skip_negatives)
+    got_skipped = _skipped_names(output)
+    assert got_skipped == want_skipped, (
+        f"skipped names = {got_skipped}, want {want_skipped}\n{output}"
+    )
+
+    marked = set(skip_vectors) | set(skip_negatives)
+    for v in suite["vectors"]:
+        if v["name"] in marked:
+            assert f"ok  {v['name']}" not in output, (
+                f"marked vector {v['name']!r} was validated normally "
+                f"(an \"ok\" line appeared); it must be skipped instead\n{output}"
+            )
+        else:
+            assert f"ok  {v['name']}" in output, (
+                f"unmarked vector {v['name']!r} was not validated "
+                f"(no \"ok\" line found); it must not be skipped\n{output}"
+            )
+    for nv in suite["negatives"]:
+        if nv["name"] in marked:
+            assert f"ok  {nv['name']}" not in output, (
+                f"marked negative {nv['name']!r} was validated normally "
+                f"(an \"ok\" line appeared); it must be skipped instead\n{output}"
+            )
+        else:
+            assert f"ok  {nv['name']}" in output, (
+                f"unmarked negative {nv['name']!r} was not validated "
+                f"(no \"ok\" line found); it must not be skipped\n{output}"
+            )
 
 
 def main():

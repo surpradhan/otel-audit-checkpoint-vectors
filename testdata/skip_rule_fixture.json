@@ -1,0 +1,5 @@
+{
+  "description": "Shared fixture for the Go and Python min_format_version end-to-end skip-rule tests (go/version_test.go, py/test_validate.py). Both tests read this file to decide which real vectors.json entries to mark as requiring a newer format, so a pass in both languages demonstrates the two implementations agree on the same synthetic input -- not just that each is internally self-consistent.",
+  "skip_vectors": ["single_tip"],
+  "skip_negatives": ["tampered_signature"]
+}

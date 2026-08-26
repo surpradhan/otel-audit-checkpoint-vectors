@@ -31,13 +31,15 @@ Before merge, **all** of the following must hold:
 > `.github/workflows/ci.yml`, this block, **and** the GitHub branch-protection
 > required-check contexts in the same PR.
 
-The `verify` job runs four things, and all four are load-bearing:
+The `verify` job runs five things, and all five are load-bearing:
 
-1. The Go validator against `vectors.json`
-2. A **no-drift** check that `vectors.json` is exactly what the generator produces
-3. The independent Python validator against the same file
-4. The Python validator's end-to-end unit tests (`py/test_validate.py`), covering
-   the `min_format_version` skip rule
+1. The Go validator's unit tests (`go test ./...`), covering the
+   `min_format_version` skip rule end to end
+2. The Go validator against `vectors.json`
+3. A **no-drift** check that `vectors.json` is exactly what the generator produces
+4. The independent Python validator against the same file
+5. The Python validator's end-to-end unit tests (`py/test_validate.py`), covering
+   the same skip rule
 
 ## Vector stability discipline (non-negotiable)
 

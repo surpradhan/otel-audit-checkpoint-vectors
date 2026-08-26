@@ -14,6 +14,10 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Go unit tests (skip rule, format_version)
+        working-directory: go
+        run: go test ./... -v
+
       - name: Go validator (RFC 8785 JCS + SHA-256 + Ed25519)
         working-directory: go
         run: go run . validate ../vectors.json
