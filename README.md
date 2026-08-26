@@ -5,6 +5,19 @@ Reproducible test vectors for the canonical form of a signed **audit checkpoint*
 Logging effort). Two independent implementations agree byte-for-byte on the
 canonical bytes, the SHA-256 chain hash, and the Ed25519 signatures.
 
+## Why a checkpoint
+
+Per-record chaining (`prev_hash` plus a monotonic sequence number) makes a single
+stream tamper-evident: you cannot edit or reorder a record inside it without
+breaking the chain. What it cannot do is attest to an **absence**. Nothing inside
+a stream can tell you that the stream was truncated at the tail, or that a whole
+stream stopped arriving and was never seen at all.
+
+A checkpoint is a small signed object that periodically commits the tips of every
+active stream, chained to the previous checkpoint. Truncation and disappearance
+become detectable, because a tip a checkpoint has committed cannot be edited
+without re-signing it.
+
 Field names below are **placeholders** aligned to the sketch; they map to
 whatever the OTEP settles on. The point of this repo is to show the shape is
 concrete, deterministic, and independently verifiable, not to fix a vocabulary.
@@ -87,3 +100,7 @@ Audit Logging vocabulary: signed checkpoints over sealed per-trace chain tips,
 chained via `prev_checkpoint_hash`, committing `{trace_id, tip_hash, entry_count}`
 in batches. The vectors here use JCS (the spec's canonicalization) rather than
 that project's internal canonical form, so they drop straight into the OTEP.
+
+## License
+
+Apache-2.0.
