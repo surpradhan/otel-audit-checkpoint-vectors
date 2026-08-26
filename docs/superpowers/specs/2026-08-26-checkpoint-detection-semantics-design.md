@@ -74,24 +74,59 @@ alone — is the identity that must be unique across the chain.
 `epoch` is **a producer generation counter, not a per-stream commit count.**
 This distinction is load-bearing: after compaction the producer has forgotten it
 ever saw the stream, so it cannot count that stream's prior commits. It always
-knows its own generation. The generation is incremented whenever the dedup
-window resets — on WAL compaction and on process start — and applies to every
-tip committed while it is current.
+knows its own generation.
 
-That converts an undeclared artifact into a declared one:
+Four rules make the scheme sound. All four are necessary; omitting any one
+reintroduces the false-positive class this resolution exists to remove.
 
-- Same `(stream_id, epoch)`, different `tip_hash` → **hard reject.** Nothing
-  legitimate produces this: within one generation the producer's dedup map is
-  intact, so a second commit of the same stream cannot occur.
-- Same `stream_id`, different `epoch` → **accepted, surfaced as advisory.** This
-  is the declared at-least-once path. A verifier reports it, and the operator
-  reconciles or ignores it, exactly as `duplicate_trace_segment` is handled today.
+**R1 — Stamped at `AddTip`, never at `Build`.** The epoch current when a tip is
+added is the epoch recorded on that tip. Build-time stamping is unsound:
+compaction runs after every seal while the default checkpoint interval is 100
+seals, so one pending set spans roughly 100 generations. A stream sealed in
+generation *g* and re-delivered in *g+2* can have both tips pending in the same
+`Build`; stamping at Build gives them the same epoch, a different `tip_hash`, and
+a false hard reject. Stamping at `AddTip` gives them distinct epochs and the
+correct advisory outcome.
 
-**Dependency:** this requires a change in `otel-agent-audit` —
+**R2 — Bump before clear.** The generation increment and the dedup-map reset must
+be atomic with respect to sealing, and if they cannot be, the bump must happen
+first. A seal landing between a clear and a later bump sees a cleared map with
+the old generation, which is precisely a same-epoch duplicate.
+
+**R3 — Generation recovery on restart: `max(epoch) in the last valid checkpoint,
+plus one`.** An in-memory counter reset to zero on start would let a stream
+committed at epoch 5 in a previous run collide with a fresh epoch 5 — the
+original defect reborn. Recovery from the log is sufficient and needs no new
+persistence: epochs are monotonic at `AddTip` time and every tip in checkpoint
+*N+1* was added after `Build(N)`, so the chain-wide maximum always lies in the
+last checkpoint. The existing `readLastCheckpoint` path already recovers `seq`
+and `prev_hash` and can carry this.
+**Epochs need not be contiguous.** `readLastCheckpoint` skips corrupt lines, so a
+torn final line recovers an older checkpoint and a lower maximum; any recovery
+ambiguity must be resolved by over-bumping. A gap in epoch values is harmless; a
+reuse is not.
+
+**R4 — The sort key is `(stream_id, epoch)`, not `stream_id`.** Two tips for the
+same stream with different epochs in one checkpoint are legal under this design
+and occur in the `advisory_stream_recommitted_new_epoch` vector. Sorting on
+`stream_id` alone lets equal keys reach the sort, and a stable sort then makes
+the canonical bytes depend on input order — defect 3 of §1, reintroduced.
+
+Given R1–R4:
+
+- Same `(stream_id, epoch)` → **hard reject**, whether or not the tips differ.
+  Within one generation the dedup map is intact, so no second commit of any kind
+  can occur legitimately; a byte-identical replay lands in a new generation.
+- Same `stream_id`, different `epoch` → **accepted, surfaced as advisory.** The
+  declared at-least-once path, handled as `duplicate_trace_segment` is today.
+
+**Dependency and sequencing.** R1–R3 require a change in `otel-agent-audit`:
 `chain.Accumulator` gains a generation field, bumped by the compaction and start
-paths. That is a chain-format change there and carries that project's
-`schema_version` bump, fixture and doc requirements. This spec covers the vector
-format only; the production change is tracked separately.
+paths, recovered per R3. That is a chain-format change there and carries that
+project's `schema_version` bump, fixture and doc requirements. **This repo does
+not wait for it.** This repo is the proposal artifact; the dependency is on the
+design being settled here, which this document does, not on production landing
+first.
 
 ## 4. Taxonomy
 
@@ -115,9 +150,14 @@ not JCS, if challenged.
 |---|---|---|---|
 | B1 | `seq` increments by exactly 1 | dropped or replayed checkpoint | hard |
 | B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes | reordering, forking | hard (have) |
-| B3 | `(stream_id, epoch)` appears at most once in the chain | re-commit within a generation, rollback | hard |
-| B4 | Same `stream_id` under a different `epoch` | at-least-once re-delivery | **advisory** |
+| B3 | `(stream_id, epoch)` appears at most once in the chain | re-commit within a generation; **same-epoch** rollback | hard |
+| B4 | Same `stream_id` under a different `epoch` | at-least-once re-delivery; **cross-epoch** rollback | **advisory** |
 | B5 | `timestamp` non-decreasing across the chain | clock regression | **advisory** — the operator controls the clock |
+
+A cross-epoch re-commit carrying a lower `entry_count` is advisory, not a hard
+reject. That is not a detection regression: forging a cross-epoch checkpoint
+requires the signing key, which is Tier C territory, and an honest timeout-split
+produces exactly that shape.
 
 B1 is largely subsumed by B2 on a contiguous chain: a dropped or duplicated
 checkpoint breaks `prev_hash` either way. It is retained for precise diagnostics
@@ -159,25 +199,61 @@ Prose only, in `docs/limits.md`, linked to `otel-agent-audit/docs/threat-model.m
    warning, any vector whose `min_format_version` exceeds their supported
    version, and MUST NOT treat a skip as a failure.** This rule ships in
    `format_version: 1`, before any vector needs it.
-3. **Chain context for Tier B.** An optional ordered `chain` array of preceding
-   checkpoints. **A validator MUST verify the signature of every checkpoint in
-   the prefix, not merely hash it for linkage** — otherwise a suite could pass
-   against a prefix of forged checkpoints. Stated explicitly because either
-   answer is defensible and silence guarantees divergence.
-4. **`input_raw_hex`.** `input` is a typed object round-tripped through each
+   Note what this does *not* do: it cannot protect a harness written against
+   today's published file, which ignores the unknown field and still crashes on
+   a missing `input` or hard-fails a `chain` negative. Nothing in-file can. The
+   actual sufficiency argument is sequencing — the skip rule lands in step 1 and
+   the §8 linking gate means the repo gains visibility only after steps 1–3, so
+   the population of pre-rule consumers is effectively zero.
+3. **Chain context for Tier B**, on negatives **and positives** (the advisory
+   must-accept vectors need it too). An optional ordered `chain` array of
+   preceding checkpoints. **A validator MUST verify the signature of every
+   checkpoint in the prefix, not merely hash it for linkage.** The reason is
+   deployed-verifier parity, not fixture trust — the prefix here is trusted test
+   data, but the vector should exercise the behaviour wanted in a production
+   verifier. Stated explicitly because either answer is defensible and silence
+   guarantees divergence.
+4. **`expect_warnings`** on positives, naming the advisory conditions a verifier
+   is expected to surface. Without it a must-accept vector tests nothing beyond a
+   plain positive, because a validator that silently accepts passes. A
+   warning-taxonomy mismatch warns rather than fails, on the same reasoning as
+   `expect` below.
+5. **`input_raw_hex`.** `input` is a typed object round-tripped through each
    language's JSON parser, so encoding-level malformations are inexpressible.
    When `input_raw_hex` is present it is the exact bytes to canonicalize, and
    `input` is absent.
-5. **`expect` becomes advisory for third parties.** `rejectReason` checks
+6. **`expect` becomes advisory for third parties.** `rejectReason` checks
    signature before chain, so a validator checking in another order reports a
    different reason on a vector failing both. Internally the suite guarantees
    each negative fails exactly one check, and **the generator asserts this at
    `gen` time** so the invariant cannot rot as vectors accumulate.
-6. **Surface to the SIG, not fixed here:** the signed object carries no version
+7. **Surface to the SIG, not fixed here:** the signed object carries no version
    field *inside the signed bytes*. Production gets this right —
    `schema_version` is inside `checkpointForSigning`. `format_version` versions
    the file, not the object, so a future canonical-form change is
    indistinguishable inside a signature.
+
+### 5a. `epoch` is a breaking change *in this repo*, and its own rules apply
+
+§3 tracks the production repo's `schema_version` obligation. This repo has one
+too, and the earlier draft ignored it. Adding `epoch` changes the tip field set,
+which CONTRIBUTING defines as a breaking vector change.
+
+The divergence this would otherwise cause is concrete: a typed Go validator
+unmarshals `input` into a struct with no `Epoch` field, silently drops it, and
+fails on canonical mismatch, while a dict-based Python validator carries the
+field through and passes. The two implementations disagree on the new vectors
+for any consumer that has not implemented the skip rule.
+
+Therefore:
+
+- The six existing vectors are **retained unchanged** under `format_version: 1`.
+- The first epoch-bearing vector bumps the file to **`format_version: 2`** and
+  carries `min_format_version: 2`. This bump is co-located with that vector, in
+  step 3 — not with step 1.
+- **An absent `epoch` is valid only in `format_version: 1` vectors.** In version
+  2 and above it is required on every tip.
+- A README note records what changed and why, per CONTRIBUTING.
 
 ## 6. Why there is no `limits` vector category
 
@@ -219,7 +295,14 @@ from a literal U+FFFD. **A4 is therefore specified as an explicit validation ste
 on raw bytes before parsing, never as an emergent property of the JSON stack.**
 That assumption's absence is exactly defect 2.
 
-**New positives:** a non-BMP `stream_id` adjacent to a U+E000–U+FFFF one (the tip
+**A4 needs a positive too.** A raw-text scan for lone surrogate escapes must
+still accept a *valid* surrogate pair, and must handle `\\u` and case variants.
+Without `valid_surrogate_pair` — a raw-hex **positive** containing
+`\ud83d\ude00` — an implementation passes the suite by rejecting every `\ud`
+escape, which is over-rejection: the exact class §6 now says the suite guards
+against.
+
+**New positives:** `valid_surrogate_pair` (above), a non-BMP `stream_id` adjacent to a U+E000–U+FFFF one (the tip
 sort is code-point ascending, while JCS sorts *object keys* by UTF-16 code unit;
 surrogates sort below U+E000 in UTF-16 and above it by code point, so an
 implementer reusing their JCS comparator for tips gets a different order), one at
@@ -231,6 +314,9 @@ fractional seconds, no numeric offset, no leap seconds. This matches production'
 verifiers treat the timestamp as an opaque signed string and do not enforce the
 profile, so there is no negative vector for it. The hole it closes is two
 producers rendering the same instant differently.
+A second argument for the profile, beyond determinism: profile strings sort
+chronologically, so B5 reduces to a lexicographic string comparison and the
+advisory check needs no timestamp parsing at all.
 
 **Surface to the SIG:** OTel's native timestamp is `uint64` nanoseconds, and
 current unix nanoseconds (~1.7×10^18) exceed I-JSON's `2^53−1`. Nanoseconds as a
@@ -243,20 +329,24 @@ record format regardless of checkpoints, and nobody in #2409 has raised it.
 
 1. `format_version` + `min_format_version` skip rule, pinned `cryptography`,
    pinned timestamp profile
-2. A3 + `duplicate_stream_epoch_in_checkpoint`. `gen` rejects duplicate
+2. A3 + `duplicate_stream_epoch_in_checkpoint`. `gen` rejects a duplicate
    `(stream_id, epoch)` **before signing**, so malformed input fails loudly
-   rather than silently producing order-dependent bytes; `sort.SliceStable` is
-   used so the ordering is defined even if A3 is ever bypassed.
-3. Tier B in both validators, with the epoch resolution from §3, plus the B1/B3
-   negatives and the B4/B5 must-accept vectors
+   rather than silently producing order-dependent bytes. Note that A3 forbids
+   duplicate *pairs*, not duplicate `stream_id`s — repeated stream ids are legal
+   across epochs — so ties genuinely can reach the sort and the R4 composite sort
+   key, not a stable sort, is what makes the ordering total.
+3. Tier B in both validators, with R1–R4 from §3, plus the B1/B3 negatives and
+   the B4/B5 must-accept vectors. **This step bumps the file to
+   `format_version: 2`** per §5a; the six existing vectors stay at version 1.
 4. `input_raw_hex` + both A4 vectors, README paragraph citing #50079
 5. Remaining boundary positives and genesis negatives
 6. `docs/limits.md`; README corrected from snapshot to delta
 
-The epoch resolution in §3 is settled **in this document** before step 3 is
-implemented, because CONTRIBUTING freezes published vectors and a Tier B vector
-shipped under the wrong identity rule would have to be superseded rather than
-corrected.
+R1–R4 are settled **in this document** before step 3 is implemented, because
+CONTRIBUTING freezes published vectors and a Tier B vector shipped under the
+wrong identity rule would have to be superseded rather than corrected. R3 in
+particular: an epoch scheme shipped without the generation-recovery rule
+contains the same false-positive class the epoch was introduced to remove.
 
 **Gate for linking this repo from `open-telemetry/community#2409`:** steps 1–3
 merged to `main` **and** both validators green on the new suite in CI. Until
