@@ -157,6 +157,10 @@ its `expect` field:
 - `chain_prefix_missing_epoch` — a correctly signed version-2 chain prefix whose
   tip omits `epoch`. Left unchecked it would be read as epoch 0 and feed the B3
   identity and B4 comparisons. Rejected: schema.
+- `tampered_second_prefix_signature` — a **two-prefix** chain whose *second*
+  prefix has a flipped signature byte. Every other chain in the suite has one
+  prefix, so this is what catches a validator that verifies only `chain[0]`.
+  Rejected: signature.
 - `negative_epoch` — a tip with `epoch: -1` (again not the first tip).
   Rejected: schema.
 
@@ -171,8 +175,20 @@ carry a `chain` field.
 |------|-----------|---------|
 | B1 | `seq` must increment by exactly 1 | reject (`tier_b`) |
 | B3 | the same `(stream_id, epoch)` must not be committed twice | reject (`tier_b`) |
-| B4 | the same stream re-committed under a **new** epoch | accept, warn `B4:<stream_id>` |
+| B4 | a stream's `epoch` differs from its previous committed `epoch` | accept, warn `B4:<stream_id>` |
 | B5 | `timestamp` regresses against the previous checkpoint | accept, warn `B5:<seq>` |
+
+B4 is defined **per transition**, not per checkpoint pair: it fires whenever a
+stream's `epoch` differs from its previous committed `epoch`, whether that
+previous commit is in the same checkpoint or an earlier one. The operational
+fact it reports — this stream's producer generation changed between two commits,
+so an `entry_count` regression is an at-least-once artefact rather than a
+rollback — is identical either way, and scoping it to chains would make an
+operator's warning depend on how the producer batched its commits.
+
+It follows that B4 is emitted **once per transition**. One stream committed at
+three epochs in a single checkpoint makes two transitions and yields two
+identical `B4:<stream_id>` tokens — see `multi_epoch_same_stream`.
 
 B4 and B5 are advisory on purpose. B4 is the declared at-least-once path: an
 honest timeout-split produces exactly that shape, including an `entry_count`
@@ -189,9 +205,13 @@ raises both, the interleaving is part of the contract: B4 (raised per tip, in
 tip-identity order) precedes B5 (raised once per checkpoint). The
 `advisory_new_epoch_and_timestamp_regression` vector pins that pair.
 
-Tips are examined in `(stream_id, epoch)` order rather than input order, so a
-checkpoint carrying two epochs for one stream leaves a deterministic epoch
-behind for the next checkpoint's B4 comparison.
+Tips are examined in `(stream_id, epoch)` order rather than input order. This
+matters because a checkpoint's `input.tips` are explicitly allowed to be
+unsorted: when two different streams each change epoch in one checkpoint, an
+input-order walk emits their `B4` tokens in whatever order the tips happened to
+be supplied, so two conformant validators handed identical signed bytes could
+report different warning sequences. The `advisory_two_streams_new_epoch` vector
+supplies exactly that pair in non-identity order and pins the result.
 
 Rules R1–R3 of the spec constrain the *producer* (how epochs are allocated and
 recovered) rather than the verifier, and are documented rather than implemented

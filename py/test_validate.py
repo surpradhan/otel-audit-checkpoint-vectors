@@ -403,6 +403,78 @@ def test_b4_and_b5_both_raised_in_order():
     assert warns == ["B4:s1", "B5:2"], f"warnings = {warns}, want ['B4:s1', 'B5:2']"
 
 
+# --- Round-2 review fixes -------------------------------------------------
+
+def test_b4_token_order_is_independent_of_tip_input_order():
+    """The identity-order tip walk. Two DIFFERENT streams each changing epoch
+    in one checkpoint must emit their B4 tokens in a fixed order regardless of
+    how the tips were supplied -- warnings are compared as ordered lists, and a
+    checkpoint's tips are explicitly allowed to arrive unsorted."""
+    prefix = _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa"), _tip("s2", 0, 2, 2, "bb")])
+    lo, hi = _tip("s1", 1, 3, 3, "cc"), _tip("s2", 1, 4, 4, "dd")
+
+    err_a, warns_a = validate.check_tier_b([prefix, _cp(2, "2026-01-01T00:00:05Z", [lo, hi])])
+    err_b, warns_b = validate.check_tier_b([prefix, _cp(2, "2026-01-01T00:00:05Z", [hi, lo])])
+    assert err_a is None and err_b is None, f"neither ordering may reject: {err_a} / {err_b}"
+    want = ["B4:s1", "B4:s2"]
+    assert warns_a == want, f"identity-order input: warnings = {warns_a}, want {want}"
+    assert warns_b == want, (
+        f"reversed input: warnings = {warns_b}, want {want} -- "
+        "tip input order leaked into the warning sequence")
+
+
+def test_b4_emitted_once_per_transition():
+    """B4 is emitted once per epoch TRANSITION, not once per checkpoint: one
+    stream at three epochs in a single checkpoint yields two identical tokens."""
+    chain = [
+        _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 2, 3, 3, "bb"), _tip("s1", 1, 2, 2, "cc")]),
+    ]
+    err, warns = validate.check_tier_b(chain)
+    assert err is None, f"three epochs for one stream is legal (R4), got: {err}"
+    assert warns == ["B4:s1", "B4:s1"], (
+        f"warnings = {warns}, want ['B4:s1', 'B4:s1'] (0->1 and 1->2 are two transitions)")
+
+
+def test_verify_prefixes_checks_every_prefix():
+    """verify_prefixes must check EVERY prefix, not just chain[0]."""
+    import base64 as _b64
+    pub = _pub()
+    good = _signed_from_vectors("advisory_stream_recommitted_new_epoch")
+    raw = bytearray(_b64.b64decode(good["signature"]))
+    raw[0] ^= 0x01
+    bad = {"input": good["input"], "signature": _b64.b64encode(bytes(raw)).decode()}
+    _, reason = validate.verify_prefixes(pub, [good, bad], 2)
+    assert reason == "signature", (
+        f"tampered SECOND prefix: reason={reason!r}, want 'signature' -- "
+        "a chain[0]-only check misses it")
+
+
+def test_chainless_expect_warnings_are_still_checked():
+    """The positive-path Tier B guard fires on expect_warnings alone, not only
+    when a chain is present. Without that arm a chainless vector's advisory
+    assertion is never evaluated and a validator that ignores B4 still passes
+    the whole suite."""
+    suite = _load_real_suite()
+    v = None
+    for cand in suite["vectors"]:
+        if cand["name"] == "multi_epoch_same_stream":
+            v = copy.deepcopy(cand)
+    assert v is not None, "multi_epoch_same_stream not found in vectors.json"
+    # Drop the chain (the signature covers only the input, so it still
+    # verifies) and state warnings that cannot be right.
+    v.pop("chain", None)
+    v["expect_warnings"] = ["B4:this-stream-does-not-exist"]
+    suite["vectors"] = [v]
+    suite["negatives"] = []
+
+    rc, output = _run_main_capturing_stdout(suite)
+    assert rc != 0, (
+        "a chainless vector with wrong expect_warnings was accepted; the Tier B "
+        f"guard must fire on expect_warnings alone\n{output}")
+    assert "warnings" in output, f"rejected, but not for the warning mismatch:\n{output}"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -422,6 +494,10 @@ def main():
         test_negative_epoch_rejected,
         test_composite_sort_key_is_numeric_for_multi_digit_epochs,
         test_b4_and_b5_both_raised_in_order,
+        test_b4_token_order_is_independent_of_tip_input_order,
+        test_b4_emitted_once_per_transition,
+        test_verify_prefixes_checks_every_prefix,
+        test_chainless_expect_warnings_are_still_checked,
     ]
     failed = []
     for t in tests:

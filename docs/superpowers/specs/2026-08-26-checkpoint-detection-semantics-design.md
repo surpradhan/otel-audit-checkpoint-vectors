@@ -151,8 +151,22 @@ not JCS, if challenged.
 | B1 | `seq` increments by exactly 1 | dropped or replayed checkpoint | hard |
 | B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes | reordering, forking | hard (have) |
 | B3 | `(stream_id, epoch)` appears at most once in the chain | re-commit within a generation; **same-epoch** rollback | hard |
-| B4 | Same `stream_id` under a different `epoch` | at-least-once re-delivery; **cross-epoch** rollback | **advisory** |
+| B4 | A stream's `epoch` differs from its previous committed `epoch` (same checkpoint or an earlier one) | at-least-once re-delivery; **cross-epoch** rollback | **advisory** |
 | B5 | `timestamp` non-decreasing across the chain | clock regression | **advisory** — the operator controls the clock |
+
+B4 is defined **per transition**, not per checkpoint pair. Two commits of one
+stream at different epochs raise it whether they land in the same checkpoint or
+in two, because the operational fact reported — the producer's generation
+changed between those commits — is identical either way; scoping it to chains
+would make the warning depend on the producer's batching, which is exactly the
+input-shape dependence this design removes. It is emitted once per transition,
+so a stream committed at three epochs in one checkpoint yields two identical
+`B4:<stream_id>` tokens.
+
+Because warnings are compared as ordered lists, tips are walked in
+`(stream_id, epoch)` order rather than input order: a checkpoint's tips may
+arrive unsorted, and an input-order walk would let that order decide the
+sequence of `B4` tokens when two different streams each change epoch.
 
 A cross-epoch re-commit carrying a lower `entry_count` is advisory, not a hard
 reject. That is not a detection regression: forging a cross-epoch checkpoint

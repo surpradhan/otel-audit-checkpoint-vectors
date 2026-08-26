@@ -64,8 +64,8 @@
     {
       "name": "multi_epoch_same_stream",
       "input": {
-        "prev_hash": "8d0277707e12f87e82264281e30e5a8abb636170c01e0deb0205d07f61f82fbc",
-        "seq": 4,
+        "prev_hash": "0c4e9f20d31a5fc8439ec0706207d5a02f19dbd5c69a4502e8af1317a5e9f749",
+        "seq": 2,
         "timestamp": "2026-01-01T00:00:15Z",
         "tips": [
           {
@@ -84,10 +84,30 @@
           }
         ]
       },
-      "canonical": "{\"prev_hash\":\"8d0277707e12f87e82264281e30e5a8abb636170c01e0deb0205d07f61f82fbc\",\"seq\":4,\"timestamp\":\"2026-01-01T00:00:15Z\",\"tips\":[{\"entry_count\":3,\"epoch\":2,\"sequence_number\":3,\"stream_id\":\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\",\"tip_hash\":\"aa00000000000000000000000000000000000000000000000000000000000000\"},{\"entry_count\":11,\"epoch\":10,\"sequence_number\":11,\"stream_id\":\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\",\"tip_hash\":\"bb00000000000000000000000000000000000000000000000000000000000000\"}]}",
-      "sha256": "04308ff6f528b486c9a913324210832be27d821cefa61340cd10bed796337a82",
-      "signature": "bW8NZDFximCJTAUzzcpEEaJ5DEoaVKmSdjiF6biZ/RusVVxtbo5z1enM80TRI8J45nKXV58Ey1Jfpzz8rGjBAg==",
+      "canonical": "{\"prev_hash\":\"0c4e9f20d31a5fc8439ec0706207d5a02f19dbd5c69a4502e8af1317a5e9f749\",\"seq\":2,\"timestamp\":\"2026-01-01T00:00:15Z\",\"tips\":[{\"entry_count\":3,\"epoch\":2,\"sequence_number\":3,\"stream_id\":\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\",\"tip_hash\":\"aa00000000000000000000000000000000000000000000000000000000000000\"},{\"entry_count\":11,\"epoch\":10,\"sequence_number\":11,\"stream_id\":\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\",\"tip_hash\":\"bb00000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "93195d1e710eadd10cd8420d093b4fec19c870db28fedf54d22e6a6774c26780",
+      "signature": "jEyDaJMQqeBSQiHdcuvSs+qjVBuNpqXzZ46MWsAEN9ve7x1NMrYhnmZ0Cj8cprDD3oO4xGme97yTuyjfvKXyDg==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-01-01T00:00:10Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                "tip_hash": "0a00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "mS14EGKA5TOjBoPBtum3P0vFXWrXl/t3ddL5igvL9nC1pk71bVy1s9D6nT6BHi0BCdX3LGcwQSrD9EUw/DTdDg=="
+        }
+      ],
       "expect_warnings": [
+        "B4:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
         "B4:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
       ],
       "min_format_version": 2
@@ -219,6 +239,64 @@
       "expect_warnings": [
         "B4:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "B5:2"
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "advisory_two_streams_new_epoch",
+      "input": {
+        "prev_hash": "da3c6f2dcb6fee11514b5e73f848ffd64b67bc8cd94f6999638fa45c79d56dcc",
+        "seq": 2,
+        "timestamp": "2026-04-01T00:00:05Z",
+        "tips": [
+          {
+            "entry_count": 4,
+            "epoch": 1,
+            "sequence_number": 4,
+            "stream_id": "20000000-0000-4000-8000-000000000002",
+            "tip_hash": "2b00000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "entry_count": 3,
+            "epoch": 1,
+            "sequence_number": 3,
+            "stream_id": "10000000-0000-4000-8000-000000000001",
+            "tip_hash": "1b00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"da3c6f2dcb6fee11514b5e73f848ffd64b67bc8cd94f6999638fa45c79d56dcc\",\"seq\":2,\"timestamp\":\"2026-04-01T00:00:05Z\",\"tips\":[{\"entry_count\":3,\"epoch\":1,\"sequence_number\":3,\"stream_id\":\"10000000-0000-4000-8000-000000000001\",\"tip_hash\":\"1b00000000000000000000000000000000000000000000000000000000000000\"},{\"entry_count\":4,\"epoch\":1,\"sequence_number\":4,\"stream_id\":\"20000000-0000-4000-8000-000000000002\",\"tip_hash\":\"2b00000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "5e7ea3a60fd0648061691353590b1a74d276e814160999db7e600f898ad0292e",
+      "signature": "Tyq0iTgJ9YCySn+V3vJpxSgLrtFZX9lDP6dY43HjF+sw5SYe7/VjVp//PCE7/2yACQteVuyqs7xCh5mS3h+8Cg==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-04-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "10000000-0000-4000-8000-000000000001",
+                "tip_hash": "1a00000000000000000000000000000000000000000000000000000000000000"
+              },
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "20000000-0000-4000-8000-000000000002",
+                "tip_hash": "2a00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "GGuuKWRU0fXtGAOTkMe03UUTc6whvLo+JEpkb5uyvthdIimN/+MaKbTQleY+hpHDtCxl4eJBiIxj/TD9Eow8Bg=="
+        }
+      ],
+      "expect_warnings": [
+        "B4:10000000-0000-4000-8000-000000000001",
+        "B4:20000000-0000-4000-8000-000000000002"
       ],
       "min_format_version": 2
     }
@@ -458,6 +536,63 @@
         ]
       },
       "signature": "z9JlHfBpEU0/gqrkZM4Mjyb0kh5+KZ9D/mR2H5zT0hmdFPZ33zD/Lph+WCUSZjsejrMpD3gM9lRT0S3fk+S2Cw==",
+      "min_format_version": 2
+    },
+    {
+      "name": "tampered_second_prefix_signature",
+      "expect": "signature",
+      "reason": "one byte of the SECOND chain prefix's signature is flipped; a validator that verifies only the first prefix accepts this",
+      "input": {
+        "prev_hash": "edeb41903c066839f88958c15963c4c33692a63366921f99d0da0039b49b162c",
+        "seq": 3,
+        "timestamp": "2026-05-01T00:00:10Z",
+        "tips": [
+          {
+            "entry_count": 3,
+            "epoch": 0,
+            "sequence_number": 3,
+            "stream_id": "cccc3333-3333-4333-8333-333333333333",
+            "tip_hash": "c300000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "yMQIngRgaquEsFTzLriwmUcjPVuMy6qYJVGp8YXmGkpciOL0tlloyqgGy+3VcJFUqjGVJGmjeddWKK8cziJVAQ==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-05-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "aaaa1111-1111-4111-8111-111111111111",
+                "tip_hash": "a100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "24PulKdUVIMTtjTCLfT56Rl+u7jGzmnqf5nH6rgq0gzkNlkpjWQCEcmF+InvickEbOL3xS9fAJaOHimy3GwqDA=="
+        },
+        {
+          "input": {
+            "prev_hash": "751d97624bdd23c1c9cccdc8be9a35fb89823d10d68beb63fd5e59bc6143b1b0",
+            "seq": 2,
+            "timestamp": "2026-05-01T00:00:05Z",
+            "tips": [
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "bbbb2222-2222-4222-8222-222222222222",
+                "tip_hash": "b200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "YaNPK7dyk8ZUi7nCcxc1D08o+4qU7YY0oRmfVoqJFroBvgVScKKsmUsQvoOowI9qsUNgK276XkCYSzcRCNB9CQ=="
+        }
+      ],
       "min_format_version": 2
     },
     {

@@ -114,10 +114,16 @@ def check_tier_b(chain: list) -> tuple:
     for i, cp in enumerate(chain):
         if i > 0 and cp["seq"] != chain[i - 1]["seq"] + 1:
             return (f"B1: checkpoint seq {cp['seq']} follows {chain[i-1]['seq']}", warns)
-        # Iterate tips in identity order, not input order. Two tips for one
-        # stream at different epochs are legal in a single checkpoint (R4), so
-        # input order would otherwise decide which epoch last_epoch retains and
-        # thus whether the NEXT checkpoint raises B4.
+        # Iterate tips in identity order, not input order. Warnings are
+        # compared as ORDERED lists and a checkpoint's tips are explicitly
+        # allowed to arrive unsorted, so when two streams each change epoch in
+        # one checkpoint an input-order walk emits their B4 tokens in whatever
+        # order the tips happened to be supplied -- two conformant validators
+        # handed the same signed bytes could report different sequences.
+        # (It does NOT change whether a later checkpoint warns: B3 rejects any
+        # repeat of a (stream_id, epoch), so the next epoch differs from every
+        # value last_epoch could hold and B4 fires either way.)
+        # advisory_two_streams_new_epoch is the vector that pins this.
         for t in sorted(cp.get("tips", []), key=tip_identity):
             ident = tip_identity(t)
             if ident in seen_identity:

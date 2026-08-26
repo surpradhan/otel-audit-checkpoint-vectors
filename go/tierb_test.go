@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -255,5 +259,113 @@ func TestCommittedVectorsStillValidate(t *testing.T) {
 	out := captureStdout(t, func() { err = validate("../vectors.json") })
 	if err != nil {
 		t.Fatalf("the committed vectors.json no longer validates: %v\noutput:\n%s", err, out)
+	}
+}
+
+// --- Round-2 review fixes -------------------------------------------------
+
+// The identity-order tip walk. Two DIFFERENT streams each changing epoch in one
+// checkpoint must emit their B4 tokens in a fixed order regardless of how the
+// tips were supplied -- warnings are compared as ordered lists, and a
+// checkpoint's tips are explicitly allowed to arrive unsorted.
+func TestB4TokenOrderIsIndependentOfTipInputOrder(t *testing.T) {
+	prefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{
+		mkTip("s1", 0, 1, 1, "aa"), mkTip("s2", 0, 2, 2, "bb"),
+	}}
+	lo, hi := mkTip("s1", 1, 3, 3, "cc"), mkTip("s2", 1, 4, 4, "dd")
+
+	sorted := []Checkpoint{prefix, {Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{lo, hi}}}
+	reversed := []Checkpoint{prefix, {Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{hi, lo}}}
+
+	errA, warnsA := checkTierB(sorted)
+	errB, warnsB := checkTierB(reversed)
+	if errA != nil || errB != nil {
+		t.Fatalf("neither ordering may reject: %v / %v", errA, errB)
+	}
+	want := []string{"B4:s1", "B4:s2"}
+	if !slices.Equal(warnsA, want) {
+		t.Errorf("identity-order input: warnings = %v, want %v", warnsA, want)
+	}
+	if !slices.Equal(warnsB, want) {
+		t.Errorf("reversed input: warnings = %v, want %v -- tip input order leaked into the warning sequence", warnsB, want)
+	}
+}
+
+// B4 is emitted once per epoch TRANSITION, not once per checkpoint: one stream
+// at three epochs in a single checkpoint yields two identical tokens.
+func TestB4EmittedOncePerTransition(t *testing.T) {
+	chain := []Checkpoint{
+		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 2, 3, 3, "bb"), mkTip("s1", 1, 2, 2, "cc")}},
+	}
+	err, warns := checkTierB(chain)
+	if err != nil {
+		t.Fatalf("three epochs for one stream is legal (R4), got: %v", err)
+	}
+	want := []string{"B4:s1", "B4:s1"}
+	if !slices.Equal(warns, want) {
+		t.Fatalf("warnings = %v, want %v (0->1 and 1->2 are two transitions)", warns, want)
+	}
+}
+
+// verifyPrefixes must check EVERY prefix, not just chain[0].
+func TestVerifyPrefixesChecksEveryPrefix(t *testing.T) {
+	pub := testPub(t)
+	first := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}}
+	second := Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 2, 2, "bb")}}
+	secondSigned := signed(t, second)
+	raw, err := base64.StdEncoding.DecodeString(secondSigned.Signature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[0] ^= 0x01
+	chain := []SignedCheckpoint{
+		signed(t, first),
+		{Input: second, Signature: base64.StdEncoding.EncodeToString(raw)},
+	}
+	if _, reason := verifyPrefixes(pub, chain, 2); reason != "signature" {
+		t.Fatalf("tampered SECOND prefix: reason = %q, want \"signature\" -- a chain[0]-only check misses it", reason)
+	}
+}
+
+// The positive-path Tier B guard fires on ExpectWarnings alone, not only when a
+// chain is present. Without that arm a chainless vector's advisory assertion is
+// never evaluated and a validator that ignores B4 still passes the suite.
+func TestChainlessExpectWarningsAreStillChecked(t *testing.T) {
+	full := gen()
+	var v Vector
+	for _, cand := range full.Vectors {
+		if cand.Name == "multi_epoch_same_stream" {
+			v = cand
+		}
+	}
+	if v.Name == "" {
+		t.Fatal("multi_epoch_same_stream not found in gen() output")
+	}
+	// Drop the chain (the signature covers only the input, so it still
+	// verifies) and state warnings that cannot be right.
+	v.Chain = nil
+	v.ExpectWarnings = []string{"B4:this-stream-does-not-exist"}
+
+	suite := Suite{
+		FormatVersion: full.FormatVersion, Description: full.Description,
+		Algorithm: full.Algorithm, SeedHex: full.SeedHex, PublicKeyHex: full.PublicKeyHex,
+		Vectors: []Vector{v},
+	}
+	out, err := json.MarshalIndent(suite, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "chainless_warnings.json")
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var verr error
+	captured := captureStdout(t, func() { verr = validate(path) })
+	if verr == nil {
+		t.Fatalf("a chainless vector with wrong expect_warnings was accepted; the Tier B guard must fire on ExpectWarnings alone\noutput:\n%s", captured)
+	}
+	if !strings.Contains(verr.Error(), "warnings") {
+		t.Fatalf("rejected, but not for the warning mismatch: %v", verr)
 	}
 }

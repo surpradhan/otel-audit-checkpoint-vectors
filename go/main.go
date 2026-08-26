@@ -229,7 +229,21 @@ func gen() Suite {
 	// would disagree on published bytes and nothing else in the suite would
 	// notice. Given in reverse order so the sort has to fix it. This vector is
 	// the only thing that pins the zero-padding width.
-	multiEpoch := Checkpoint{PrevHash: prev, Seq: 4, Timestamp: "2026-01-01T00:00:15Z", Tips: []Tip{
+	//
+	// It carries a chain prefix committing the same stream at epoch 0, so the
+	// checkpoint makes TWO epoch transitions (0->2 and 2->10) and B4 is emitted
+	// once per transition -- two identical tokens. The chain also keeps the
+	// vector's advisory assertion binding: a positive vector's Tier B block
+	// must run for it, chain or no chain.
+	mePrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "0a" + repeat("00", 31)},
+	}}
+	mePrefixCanon, err := canonical(mePrefix)
+	if err != nil {
+		panic(fmt.Sprintf("gen: multi-epoch prefix is malformed: %v", err))
+	}
+	mePrefixSum := sha256.Sum256(mePrefixCanon)
+	multiEpoch := Checkpoint{PrevHash: hex.EncodeToString(mePrefixSum[:]), Seq: 2, Timestamp: "2026-01-01T00:00:15Z", Tips: []Tip{
 		{EntryCount: 11, Epoch: ptr(10), SequenceNumber: 11, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "bb" + repeat("00", 31)},
 		{EntryCount: 3, Epoch: ptr(2), SequenceNumber: 3, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "aa" + repeat("00", 31)},
 	}}
@@ -244,12 +258,14 @@ func gen() Suite {
 		Canonical: string(meCanon),
 		SHA256:    hex.EncodeToString(meSum[:]),
 		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(priv, meCanon)),
-		// One stream spanning a dedup reset: the epoch changes, so B4 fires
-		// within the single checkpoint just as it would across two.
-		ExpectWarnings:   []string{"B4:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
+		Chain:     []SignedCheckpoint{signCP(priv, mePrefix)},
+		// Once per transition: 0->2 and 2->10.
+		ExpectWarnings: []string{
+			"B4:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+			"B4:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		},
 		MinFormatVersion: 2,
 	})
-	prev = hex.EncodeToString(meSum[:])
 
 	// Negative vectors: a conformant validator MUST reject each of these.
 	base := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-02-01T00:00:00Z", Tips: []Tip{
@@ -444,6 +460,87 @@ func gen() Suite {
 		MinFormatVersion: 2,
 	})
 
+	// Two DIFFERENT streams each changing epoch in one checkpoint, with the
+	// tips supplied in non-identity input order. This is what makes the
+	// identity-order tip walk load-bearing: an input-order walk emits
+	// ["B4:2000...", "B4:1000..."] here and ["B4:1000...", "B4:2000..."] if the
+	// same two tips are supplied the other way round. Warnings are compared as
+	// ordered lists and a checkpoint's input.tips are explicitly allowed to be
+	// unsorted, so without a fixed walk order the two implementations can
+	// disagree on the warning sequence for identical signed bytes.
+	twoStreamsPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-04-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "10000000-0000-4000-8000-000000000001", TipHash: "1a" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "20000000-0000-4000-8000-000000000002", TipHash: "2a" + repeat("00", 31)},
+	}}
+	tsPrefixCanon, err := canonical(twoStreamsPrefix)
+	if err != nil {
+		panic(fmt.Sprintf("gen: two-stream prefix is malformed: %v", err))
+	}
+	tsPrefixSum := sha256.Sum256(tsPrefixCanon)
+	twoStreams := Checkpoint{PrevHash: hex.EncodeToString(tsPrefixSum[:]), Seq: 2, Timestamp: "2026-04-01T00:00:05Z", Tips: []Tip{
+		// Deliberately NOT in identity order.
+		{EntryCount: 4, Epoch: ptr(1), SequenceNumber: 4, StreamID: "20000000-0000-4000-8000-000000000002", TipHash: "2b" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(1), SequenceNumber: 3, StreamID: "10000000-0000-4000-8000-000000000001", TipHash: "1b" + repeat("00", 31)},
+	}}
+	tsCanon, err := canonical(twoStreams)
+	if err != nil {
+		panic(fmt.Sprintf("gen: two-stream vector is malformed: %v", err))
+	}
+	tsSum := sha256.Sum256(tsCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:             "advisory_two_streams_new_epoch",
+		Input:            twoStreams,
+		Canonical:        string(tsCanon),
+		SHA256:           hex.EncodeToString(tsSum[:]),
+		Signature:        base64.StdEncoding.EncodeToString(ed25519.Sign(priv, tsCanon)),
+		Chain:            []SignedCheckpoint{signCP(priv, twoStreamsPrefix)},
+		ExpectWarnings:   []string{"B4:10000000-0000-4000-8000-000000000001", "B4:20000000-0000-4000-8000-000000000002"},
+		MinFormatVersion: 2,
+	})
+
+	// A TWO-prefix chain whose SECOND prefix is tampered. Every other chain in
+	// the suite has exactly one prefix, so per-prefix logic that is right at
+	// index 0 and wrong afterwards would be invisible. The input and both
+	// prefixes are otherwise clean and the whole chain passes Tier B, so only
+	// a validator that verifies every prefix rejects this.
+	p1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-05-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "aaaa1111-1111-4111-8111-111111111111", TipHash: "a1" + repeat("00", 31)},
+	}}
+	p1Canon, err := canonical(p1)
+	if err != nil {
+		panic(fmt.Sprintf("gen: first prefix is malformed: %v", err))
+	}
+	p1Sum := sha256.Sum256(p1Canon)
+	p2 := Checkpoint{PrevHash: hex.EncodeToString(p1Sum[:]), Seq: 2, Timestamp: "2026-05-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "bbbb2222-2222-4222-8222-222222222222", TipHash: "b2" + repeat("00", 31)},
+	}}
+	p2Signed := signCP(priv, p2)
+	p2Raw, err := base64.StdEncoding.DecodeString(p2Signed.Signature)
+	if err != nil {
+		panic(fmt.Sprintf("gen: second prefix signature is not base64: %v", err))
+	}
+	p2Bad := append([]byte(nil), p2Raw...)
+	p2Bad[0] ^= 0x01
+	p2Canon, err := canonical(p2)
+	if err != nil {
+		panic(fmt.Sprintf("gen: second prefix is malformed: %v", err))
+	}
+	p2Sum := sha256.Sum256(p2Canon)
+	afterP2 := Checkpoint{PrevHash: hex.EncodeToString(p2Sum[:]), Seq: 3, Timestamp: "2026-05-01T00:00:10Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "cccc3333-3333-4333-8333-333333333333", TipHash: "c3" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "tampered_second_prefix_signature", Expect: "signature",
+		Reason:    "one byte of the SECOND chain prefix's signature is flipped; a validator that verifies only the first prefix accepts this",
+		Input:     afterP2,
+		Signature: signCP(priv, afterP2).Signature,
+		Chain: []SignedCheckpoint{
+			signCP(priv, p1),
+			{Input: p2, Signature: base64.StdEncoding.EncodeToString(p2Bad)},
+		},
+		MinFormatVersion: 2,
+	})
+
 	// A chain prefix whose signature is tampered. The input is otherwise clean
 	// and passes Tier B on its own, so the ONLY thing that rejects this vector
 	// is actually verifying the prefix signature -- which is what makes the
@@ -526,10 +623,16 @@ func checkTierB(chain []Checkpoint) (error, []string) {
 			return fmt.Errorf("B1: checkpoint seq %d follows %d; must increment by exactly 1",
 				cp.Seq, chain[i-1].Seq), warns
 		}
-		// Iterate tips in identity order, not input order. Two tips for one
-		// stream at different epochs are legal in a single checkpoint (R4), so
-		// input order would otherwise decide which epoch lastEpoch retains and
-		// thus whether the NEXT checkpoint raises B4.
+		// Iterate tips in identity order, not input order. Warnings are
+		// compared as ORDERED lists and a checkpoint's tips are explicitly
+		// allowed to arrive unsorted, so when two streams each change epoch in
+		// one checkpoint an input-order walk emits their B4 tokens in whatever
+		// order the tips happened to be supplied -- two conformant validators
+		// handed the same signed bytes could report different sequences.
+		// (It does NOT change whether a later checkpoint warns: B3 rejects any
+		// repeat of a (stream_id, epoch), so the next epoch differs from every
+		// value lastEpoch could hold and B4 fires either way.)
+		// advisory_two_streams_new_epoch is the vector that pins this.
 		tips := make([]Tip, len(cp.Tips))
 		copy(tips, cp.Tips)
 		sort.Slice(tips, func(a, b int) bool { return tipIdentity(tips[a]) < tipIdentity(tips[b]) })
