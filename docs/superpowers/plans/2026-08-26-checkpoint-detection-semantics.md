@@ -493,16 +493,18 @@ git commit -m "feat: reject duplicate tip identities so canonical bytes cannot d
 The substance. Adds `epoch`, widens tip identity, and gives both validators the Tier B rules — the first code in this repo that could detect a rollback.
 
 **Files:**
-- Modify: `go/main.go` (`Tip`, `tipIdentity`, `Suite`, `NegativeVector`, `gen`, `validate`, `rejectReason`)
-- Modify: `py/validate.py` (`tip_identity`, `main`)
+- Modify: `go/main.go` (`Tip`, `tipIdentity`, `Vector`, `NegativeVector`, `gen`, `validate`, `rejectReason`)
+- Modify: `py/validate.py`
 - Modify: `README.md`
 - Test: `go/tierb_test.go`
 
 **Interfaces:**
 - Consumes: `tipIdentity`/`tip_identity` from Task 2; `skipVector`/`skip_vector` and `supportedFormatVersion`/`SUPPORTED_FORMAT_VERSION` from Task 1.
-- Produces: `Tip.Epoch int` (JSON `epoch`), `NegativeVector.Chain []SignedCheckpoint` (JSON `chain`), `type SignedCheckpoint struct { Input Checkpoint; Signature string }`, and `func checkTierB(chain []Checkpoint) error`.
+- Produces: `Tip.Epoch *int` (JSON `epoch`, omitted when nil), `func ptr(i int) *int`, `func tipEpoch(t Tip) int`, `NegativeVector.Chain []SignedCheckpoint`, `Vector.ExpectWarnings []string`, `type SignedCheckpoint struct { Input Checkpoint; Signature string }`, `func checkTierB(chain []Checkpoint) (error, []string)`.
 
-**Read first:** spec §3 R1–R4 and §5a. R1–R3 constrain the *producer* (`otel-agent-audit`) and are documented here, not implemented here. R4 — the composite sort key — is implemented in this task.
+**Read first:** spec §3 R1–R4 and §5a. R1–R3 constrain the *producer* (`otel-agent-audit`) and are documented, not implemented, here. R4 — the composite sort key — is implemented in this task.
+
+**The `*int` decision, and why it is not an ambiguity.** `Epoch` is a pointer with `omitempty`: `nil` omits the key, `ptr(0)` emits `"epoch":0`. This is what lets the six version-1 vectors regenerate to byte-identical output — they are built with `Epoch: nil`, exactly as they serialize on `main` today. Absent and zero are **not** two serializations of one value: they are two objects under two format versions, and the boundary is enforced (Step 7) and tested (`missing_epoch_in_v2`). Within any single format version there is exactly one serialization per value. A plain `int` would make `canonical()` inject `"epoch":0` when re-marshalling a version-1 input, so Go would fail canonical-mismatch on vectors Python passes — the two implementations disagreeing on our own published file.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -514,7 +516,7 @@ package main
 import "testing"
 
 func mkTip(stream string, epoch, seq, count int, tip string) Tip {
-	return Tip{EntryCount: count, Epoch: epoch, SequenceNumber: seq, StreamID: stream, TipHash: tip}
+	return Tip{EntryCount: count, Epoch: ptr(epoch), SequenceNumber: seq, StreamID: stream, TipHash: tip}
 }
 
 // B3: the same (stream_id, epoch) committed twice in one chain is a hard
@@ -525,21 +527,40 @@ func TestB3RejectsSameStreamSameEpoch(t *testing.T) {
 		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 3, 3, "aa")}},
 		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 0, 2, 2, "bb")}},
 	}
-	if err := checkTierB(chain); err == nil {
+	if err, _ := checkTierB(chain); err == nil {
 		t.Fatal("checkTierB accepted a same-epoch re-commit; want a rejection")
 	}
 }
 
 // B4: the same stream under a NEW epoch is the declared at-least-once path.
 // It must be accepted even when entry_count goes backwards, because an honest
-// timeout-split produces exactly that shape.
-func TestB4AcceptsSameStreamNewEpoch(t *testing.T) {
+// timeout-split produces exactly that shape — and it must warn.
+func TestB4AcceptsSameStreamNewEpochWithWarning(t *testing.T) {
 	chain := []Checkpoint{
 		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 7, 7, "aa")}},
 		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 1, 5, 5, "bb")}},
 	}
-	if err := checkTierB(chain); err != nil {
+	err, warns := checkTierB(chain)
+	if err != nil {
 		t.Fatalf("checkTierB rejected a legitimate cross-epoch re-commit: %v", err)
+	}
+	if len(warns) != 1 || warns[0] != "B4:s1" {
+		t.Fatalf("warnings = %v, want exactly [B4:s1]", warns)
+	}
+}
+
+// B5: a timestamp regression warns and does not reject.
+func TestB5WarnsOnTimestampRegression(t *testing.T) {
+	chain := []Checkpoint{
+		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 1, 1, "bb")}},
+	}
+	err, warns := checkTierB(chain)
+	if err != nil {
+		t.Fatalf("timestamp regression must warn, not reject: %v", err)
+	}
+	if len(warns) != 1 || warns[0] != "B5:2" {
+		t.Fatalf("warnings = %v, want exactly [B5:2]", warns)
 	}
 }
 
@@ -549,7 +570,7 @@ func TestB1RejectsSeqSkip(t *testing.T) {
 		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
 		{Seq: 3, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 1, 1, "bb")}},
 	}
-	if err := checkTierB(chain); err == nil {
+	if err, _ := checkTierB(chain); err == nil {
 		t.Fatal("checkTierB accepted a seq gap; want a rejection")
 	}
 }
@@ -571,12 +592,29 @@ func TestR4CompositeSortKey(t *testing.T) {
 		t.Errorf("input order changed canonical bytes:\n %s\n %s", c1, c2)
 	}
 }
+
+// A version-1 tip carries no epoch key, and re-marshalling must not add one.
+// This is what keeps the six frozen vectors byte-identical.
+func TestVersion1TipOmitsEpoch(t *testing.T) {
+	cp := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: nil, SequenceNumber: 1, StreamID: "s1", TipHash: "aa"},
+	}}
+	cb, err := canonical(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(cb, []byte("epoch")) {
+		t.Errorf("version-1 canonical bytes must not contain an epoch key: %s", cb)
+	}
+}
 ```
+
+Add `"bytes"` to the test file's imports.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go && go test -run 'TestB1|TestB3|TestB4|TestR4' -v`
-Expected: FAIL — `Tip.Epoch` and `checkTierB` are undefined.
+Run: `cd go && go test -run 'TestB1|TestB3|TestB4|TestB5|TestR4|TestVersion1' -v`
+Expected: FAIL — `ptr`, `Tip.Epoch` and `checkTierB` are undefined.
 
 - [ ] **Step 3: Add the epoch field and widen the identity**
 
@@ -585,78 +623,92 @@ In `go/main.go`, replace `Tip` (fields stay alphabetical so JSON key order match
 ```go
 type Tip struct {
 	EntryCount     int    `json:"entry_count"`
-	Epoch          int    `json:"epoch"`
+	Epoch          *int   `json:"epoch,omitempty"`
 	SequenceNumber int    `json:"sequence_number"`
 	StreamID       string `json:"stream_id"`
 	TipHash        string `json:"tip_hash"`
 }
+
+// ptr returns a pointer to i, for building tips with an explicit epoch.
+func ptr(i int) *int { return &i }
+
+// tipEpoch reads a tip's epoch, treating an absent value as 0. Absence is
+// legal only in format_version 1 vectors; Step 7 enforces that.
+func tipEpoch(t Tip) int {
+	if t.Epoch == nil {
+		return 0
+	}
+	return *t.Epoch
+}
 ```
 
-Replace `tipIdentity` — this is R4, and it is the only change Task 2's design required:
+Replace `tipIdentity` — this is R4:
 
 ```go
 // tipIdentity is the uniqueness and sort key. Epoch is part of it (spec R4):
 // two tips for one stream at different epochs are legal in a single checkpoint,
 // so sorting on stream_id alone would let input order leak into signed bytes.
 func tipIdentity(t Tip) string {
-	return fmt.Sprintf("%s\x00%020d", t.StreamID, t.Epoch)
+	return fmt.Sprintf("%s\x00%020d", t.StreamID, tipEpoch(t))
 }
 ```
 
-The `\x00` separator cannot occur in a stream id and sorts below every printable byte; the zero-padded epoch makes the string comparison agree with numeric order.
+The `\x00` separator cannot occur in a stream id and sorts below every printable byte; the zero-padded epoch makes string comparison agree with numeric order.
 
 - [ ] **Step 4: Implement the Tier B rules**
 
 Add to `go/main.go` above `validate`:
 
 ```go
-// checkTierB applies the cross-checkpoint rules to an ordered chain.
-// B1: seq increments by exactly 1. B3: (stream_id, epoch) appears at most once
-// across the chain. B4 and B5 are advisory and are reported, not rejected.
-// Signatures are verified by the caller, before the chain is assembled.
-func checkTierB(chain []Checkpoint) error {
-	seenIdentity := make(map[string]int)  // identity -> checkpoint seq
-	lastEpochForStream := make(map[string]int)
+// checkTierB applies the cross-checkpoint rules to an ordered chain, returning
+// a rejection error (B1, B3) and the advisory warnings raised (B4, B5).
+// Warning tokens are stable, machine-comparable strings so the Go and Python
+// validators can be checked for agreement rather than eyeballed.
+//
+// Tier B applies only to chains whose checkpoints are all format_version 2 or
+// above; mixed-version chains are out of scope and are never constructed here.
+func checkTierB(chain []Checkpoint) (error, []string) {
+	var warns []string
+	seenIdentity := make(map[string]uint64)
+	lastEpoch := make(map[string]int)
 	for i, cp := range chain {
 		if i > 0 && cp.Seq != chain[i-1].Seq+1 {
 			return fmt.Errorf("B1: checkpoint seq %d follows %d; must increment by exactly 1",
-				cp.Seq, chain[i-1].Seq)
+				cp.Seq, chain[i-1].Seq), warns
 		}
 		for _, t := range cp.Tips {
 			id := tipIdentity(t)
 			if prevSeq, dup := seenIdentity[id]; dup {
 				return fmt.Errorf("B3: stream %q epoch %d committed in checkpoint %d and again in %d",
-					t.StreamID, t.Epoch, prevSeq, cp.Seq)
+					t.StreamID, tipEpoch(t), prevSeq, cp.Seq), warns
 			}
 			seenIdentity[id] = cp.Seq
-			if prevEpoch, seen := lastEpochForStream[t.StreamID]; seen && t.Epoch != prevEpoch {
-				fmt.Printf("  warn B4: stream %q re-committed at epoch %d (was %d) — at-least-once re-delivery\n",
-					t.StreamID, t.Epoch, prevEpoch)
+			if prev, seen := lastEpoch[t.StreamID]; seen && tipEpoch(t) != prev {
+				warns = append(warns, "B4:"+t.StreamID)
 			}
-			lastEpochForStream[t.StreamID] = t.Epoch
+			lastEpoch[t.StreamID] = tipEpoch(t)
 		}
 		if i > 0 && cp.Timestamp < chain[i-1].Timestamp {
-			fmt.Printf("  warn B5: checkpoint %d timestamp %q precedes checkpoint %d's %q\n",
-				cp.Seq, cp.Timestamp, chain[i-1].Seq, chain[i-1].Timestamp)
+			warns = append(warns, fmt.Sprintf("B5:%d", cp.Seq))
 		}
 	}
-	return nil
+	return nil, warns
 }
 ```
 
-B5 is a plain string comparison: the pinned `YYYY-MM-DDTHH:MM:SSZ` profile sorts chronologically, so no timestamp parsing is needed.
+`Checkpoint.Seq` is the existing field's type — if it is `int` rather than `uint64`, use `int` in the map declaration to match. B5 is a plain string comparison: the pinned `YYYY-MM-DDTHH:MM:SSZ` profile sorts chronologically, so no date parsing is needed.
 
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `cd go && go test -v`
-Expected: all PASS. Task 2's `TestCanonicalIsInputOrderIndependent` and `TestDuplicateTipIdentityRejected` must still pass — the identity widened, the rule did not change.
+Expected: all PASS, including Task 1 and Task 2's tests. `TestCanonicalIsInputOrderIndependent` and `TestDuplicateTipIdentityRejected` must still pass — the identity widened, the rule did not change.
 
-- [ ] **Step 6: Add chain context to negative vectors**
+- [ ] **Step 6: Add chain context and warning expectations**
 
-Add to `go/main.go` above `NegativeVector`:
+Add above `NegativeVector`:
 
 ```go
-// SignedCheckpoint is one checkpoint of a negative vector's preceding context.
+// SignedCheckpoint is one checkpoint of a vector's preceding context.
 // A validator MUST verify each prefix signature, not merely hash it for
 // linkage — the vector should exercise what a production verifier does.
 type SignedCheckpoint struct {
@@ -671,7 +723,54 @@ Add to `NegativeVector`, before `MinFormatVersion`:
 	Chain []SignedCheckpoint `json:"chain,omitempty"`
 ```
 
-Extend `rejectReason` — insert after the existing signature check and before the `PrevSHA256` check:
+Add to `Vector`, before `MinFormatVersion`:
+
+```go
+	Chain          []SignedCheckpoint `json:"chain,omitempty"`
+	ExpectWarnings []string           `json:"expect_warnings,omitempty"`
+```
+
+`ExpectWarnings` is what makes an advisory rule testable: without it a validator that silently accepts passes a must-accept vector, and B4/B5 would be asserted but never exercised.
+
+- [ ] **Step 7: Enforce the version boundary**
+
+Add to `go/main.go` above `validate`:
+
+```go
+// checkEpochPresence enforces the format_version boundary from spec §5a:
+// epoch is required on every tip at version 2 and above, and must be absent in
+// version 1 vectors. Without this the absent-vs-zero distinction is unenforced
+// spec text, and a version-2 tip missing epoch would silently validate as 0.
+func checkEpochPresence(cp Checkpoint, minVer int) error {
+	for _, t := range cp.Tips {
+		if minVer >= 2 && t.Epoch == nil {
+			return fmt.Errorf("stream %q: epoch is required at format_version >= 2", t.StreamID)
+		}
+		if minVer < 2 && t.Epoch != nil {
+			return fmt.Errorf("stream %q: epoch is not permitted in a format_version 1 vector", t.StreamID)
+		}
+	}
+	return nil
+}
+```
+
+In `rejectReason`, as the first check, before canonicalization:
+
+```go
+	if err := checkEpochPresence(nv.Input, nv.MinFormatVersion); err != nil {
+		return "schema"
+	}
+```
+
+In `validate`, inside the positive loop after the skip check:
+
+```go
+		if err := checkEpochPresence(v.Input, v.MinFormatVersion); err != nil {
+			return fmt.Errorf("[%s] %v", v.Name, err)
+		}
+```
+
+Then extend `rejectReason` for chain context — after the existing signature check and before the `PrevSHA256` check:
 
 ```go
 	if len(nv.Chain) > 0 {
@@ -688,13 +787,36 @@ Extend `rejectReason` — insert after the existing signature check and before t
 			full = append(full, sc.Input)
 		}
 		full = append(full, nv.Input)
-		if checkTierB(full) != nil {
+		if err, _ := checkTierB(full); err != nil {
 			return "tier_b"
 		}
 	}
 ```
 
-- [ ] **Step 7: Generate the Tier B vectors**
+And check warnings on positives — in `validate`, inside the positive loop after the signature check:
+
+```go
+		if len(v.Chain) > 0 || len(v.ExpectWarnings) > 0 {
+			full := make([]Checkpoint, 0, len(v.Chain)+1)
+			for _, sc := range v.Chain {
+				full = append(full, sc.Input)
+			}
+			full = append(full, v.Input)
+			err, warns := checkTierB(full)
+			if err != nil {
+				return fmt.Errorf("[%s] must be accepted, but Tier B rejected it: %v", v.Name, err)
+			}
+			if strings.Join(warns, ",") != strings.Join(v.ExpectWarnings, ",") {
+				return fmt.Errorf("[%s] warnings %v, want %v", v.Name, warns, v.ExpectWarnings)
+			}
+		}
+```
+
+Add `"strings"` to the imports.
+
+- [ ] **Step 8: Generate the version-2 vectors**
+
+In `gen()`, the three existing positive inputs are **left exactly as they are** — their tips have no `Epoch` field set, so it stays `nil` and they serialize unchanged. Do not touch them.
 
 Add a helper above `gen()`:
 
@@ -713,9 +835,9 @@ func signCP(priv ed25519.PrivateKey, cp Checkpoint) SignedCheckpoint {
 In `gen()`, after the `duplicate_tip_identity` negative:
 
 ```go
-	// Tier B. Each carries one preceding checkpoint as chain context.
+	// Tier B, all at format_version 2. Each carries one preceding checkpoint.
 	tbBase := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 7, Epoch: 0, SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + repeat("00", 31)},
+		{EntryCount: 7, Epoch: ptr(0), SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + repeat("00", 31)},
 	}}
 	tbSigned := signCP(priv, tbBase)
 	tbBaseCanon, err := canonical(tbBase)
@@ -725,48 +847,100 @@ In `gen()`, after the `duplicate_tip_identity` negative:
 	tbSum := sha256.Sum256(tbBaseCanon)
 	tbPrev := hex.EncodeToString(tbSum[:])
 
-	// B3: the same stream and epoch committed a second time.
+	// B3: same stream and epoch committed a second time.
 	reco := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 9, Epoch: 0, SequenceNumber: 9, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "cc" + repeat("00", 31)},
+		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "cc" + repeat("00", 31)},
 	}}
-	recoSigned := signCP(priv, reco)
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "stream_recommitted_same_epoch", Expect: "tier_b",
 		Reason:           "stream committed twice under the same epoch; within one producer generation the dedup map is intact, so no second commit is legitimate",
 		Input:            reco,
-		Signature:        recoSigned.Signature,
+		Signature:        signCP(priv, reco).Signature,
 		Chain:            []SignedCheckpoint{tbSigned},
 		MinFormatVersion: 2,
 	})
 
 	// B3: same identity, lower entry_count — a rollback inside one generation.
 	roll := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 5, Epoch: 0, SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "dd" + repeat("00", 31)},
+		{EntryCount: 5, Epoch: ptr(0), SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "dd" + repeat("00", 31)},
 	}}
-	rollSigned := signCP(priv, roll)
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "tip_rollback_same_epoch", Expect: "tier_b",
 		Reason:           "committed tip regresses (entry_count 7 to 5) under the same epoch",
 		Input:            roll,
-		Signature:        rollSigned.Signature,
+		Signature:        signCP(priv, roll).Signature,
 		Chain:            []SignedCheckpoint{tbSigned},
 		MinFormatVersion: 2,
 	})
 
 	// B1: a checkpoint that skips a sequence number.
 	skip := Checkpoint{PrevHash: tbPrev, Seq: 3, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 2, Epoch: 0, SequenceNumber: 2, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "bb" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "bb" + repeat("00", 31)},
 	}}
-	skipSigned := signCP(priv, skip)
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "seq_skip", Expect: "tier_b",
 		Reason:           "checkpoint seq jumps from 1 to 3",
 		Input:            skip,
-		Signature:        skipSigned.Signature,
+		Signature:        signCP(priv, skip).Signature,
 		Chain:            []SignedCheckpoint{tbSigned},
 		MinFormatVersion: 2,
 	})
+
+	// A version-2 tip with no epoch: the boundary rule must be enforced, not
+	// merely stated, or a v2 tip missing epoch silently validates as epoch 0.
+	noEpoch := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: nil, SequenceNumber: 1, StreamID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", TipHash: "cc" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "missing_epoch_in_v2", Expect: "schema",
+		Reason:           "epoch is required on every tip at format_version 2 and above",
+		Input:            noEpoch,
+		Signature:        signCP(priv, noEpoch).Signature,
+		MinFormatVersion: 2,
+	})
+
+	// Must-accept: the declared at-least-once path. Accepted, with a B4 warning.
+	adv := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "ee" + repeat("00", 31)},
+	}}
+	advCanon, err := canonical(adv)
+	if err != nil {
+		panic(fmt.Sprintf("gen: advisory vector is malformed: %v", err))
+	}
+	advSum := sha256.Sum256(advCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:             "advisory_stream_recommitted_new_epoch",
+		Input:            adv,
+		Canonical:        string(advCanon),
+		SHA256:           hex.EncodeToString(advSum[:]),
+		Signature:        base64.StdEncoding.EncodeToString(ed25519.Sign(priv, advCanon)),
+		Chain:            []SignedCheckpoint{tbSigned},
+		ExpectWarnings:   []string{"B4:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+		MinFormatVersion: 2,
+	})
+
+	// Must-accept: a timestamp regression warns and is not rejected.
+	back := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-02-28T23:59:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", TipHash: "ff" + repeat("00", 31)},
+	}}
+	backCanon, err := canonical(back)
+	if err != nil {
+		panic(fmt.Sprintf("gen: advisory timestamp vector is malformed: %v", err))
+	}
+	backSum := sha256.Sum256(backCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:             "advisory_timestamp_regression",
+		Input:            back,
+		Canonical:        string(backCanon),
+		SHA256:           hex.EncodeToString(backSum[:]),
+		Signature:        base64.StdEncoding.EncodeToString(ed25519.Sign(priv, backCanon)),
+		Chain:            []SignedCheckpoint{tbSigned},
+		ExpectWarnings:   []string{"B5:2"},
+		MinFormatVersion: 2,
+	})
 ```
+
+**Important:** the two must-accept vectors append to `suite.Vectors`, which the positive loop chain-checks with `prevExpected`. They carry their own `chain` context and are not part of the v1 positives' hash chain, so the positive loop's `prevExpected` comparison must be skipped for any vector carrying `ExpectWarnings` or `Chain`. Guard the existing chain check with `&& len(v.Chain) == 0`.
 
 Set the suite version — replace the `suite.FormatVersion` assignment from Task 1 with:
 
@@ -780,49 +954,88 @@ and raise the constant:
 const supportedFormatVersion = 2
 ```
 
-The six pre-existing vectors keep no `min_format_version` (it is omitted when 0), so a version-1 validator still runs them and skips only the new ones. Per spec §5a, an absent `epoch` is valid only in version-1 vectors; the three original positives predate the field and are frozen as they are.
-
-**Expected `vectors.json` diff:** `format_version` 1→2; three new negatives appended; **and every existing vector's canonical bytes, sha256 and signature changed**, because `Tip` gained a field that appears in the signed object. That is the breaking change §5a authorises. It is the one time in this plan a regenerated signature is correct.
-
-- [ ] **Step 8: Mirror in Python**
+- [ ] **Step 9: Mirror in Python**
 
 Replace `tip_identity`:
 
 ```python
+def tip_epoch(t: dict) -> int:
+    """Epoch, treating absence as 0. Absence is legal only in v1 vectors."""
+    return t.get("epoch", 0)
+
+
 def tip_identity(t: dict) -> tuple:
     """Uniqueness and sort key (spec R4). Epoch is part of the identity: two
     tips for one stream at different epochs are legal in a single checkpoint."""
-    return (t["stream_id"], t.get("epoch", 0))
+    return (t["stream_id"], tip_epoch(t))
 ```
 
 Add above `main()`:
 
 ```python
-def check_tier_b(chain: list) -> str | None:
-    """Cross-checkpoint rules. Returns an error string, or None if the chain is
-    acceptable. B4 and B5 are advisory: reported, never rejected."""
+def check_epoch_presence(cp: dict, min_ver: int) -> str | None:
+    """Spec §5a boundary: epoch required at v2+, absent at v1."""
+    for t in cp.get("tips", []):
+        if min_ver >= 2 and "epoch" not in t:
+            return f"stream {t['stream_id']!r}: epoch required at format_version >= 2"
+        if min_ver < 2 and "epoch" in t:
+            return f"stream {t['stream_id']!r}: epoch not permitted in a v1 vector"
+    return None
+
+
+def check_tier_b(chain: list) -> tuple:
+    """Cross-checkpoint rules. Returns (error_or_None, warnings). B4 and B5 are
+    advisory: reported as stable tokens, never rejected."""
+    warns = []
     seen_identity = {}
     last_epoch = {}
     for i, cp in enumerate(chain):
         if i > 0 and cp["seq"] != chain[i - 1]["seq"] + 1:
-            return f"B1: checkpoint seq {cp['seq']} follows {chain[i-1]['seq']}"
+            return (f"B1: checkpoint seq {cp['seq']} follows {chain[i-1]['seq']}", warns)
         for t in cp.get("tips", []):
             ident = tip_identity(t)
             if ident in seen_identity:
-                return (f"B3: stream {t['stream_id']!r} epoch {t.get('epoch', 0)} "
-                        f"committed in checkpoint {seen_identity[ident]} and again in {cp['seq']}")
+                return (f"B3: stream {t['stream_id']!r} epoch {tip_epoch(t)} "
+                        f"committed in checkpoint {seen_identity[ident]} and again in {cp['seq']}", warns)
             seen_identity[ident] = cp["seq"]
             prev = last_epoch.get(t["stream_id"])
-            if prev is not None and t.get("epoch", 0) != prev:
-                print(f"  warn B4: stream {t['stream_id']!r} re-committed at epoch "
-                      f"{t.get('epoch', 0)} (was {prev}) — at-least-once re-delivery")
-            last_epoch[t["stream_id"]] = t.get("epoch", 0)
+            if prev is not None and tip_epoch(t) != prev:
+                warns.append("B4:" + t["stream_id"])
+            last_epoch[t["stream_id"]] = tip_epoch(t)
         if i > 0 and cp["timestamp"] < chain[i - 1]["timestamp"]:
-            print(f"  warn B5: checkpoint {cp['seq']} timestamp precedes checkpoint {chain[i-1]['seq']}'s")
-    return None
+            warns.append(f"B5:{cp['seq']}")
+    return (None, warns)
 ```
 
-In `reject_reason`, after the existing signature check and before the `prev_sha256` check:
+In the positive loop, after the signature check:
+
+```python
+        err = check_epoch_presence(v["input"], v.get("min_format_version", 0))
+        if err:
+            print(f"FAIL [{v['name']}] {err}")
+            return 1
+        if v.get("chain") or v.get("expect_warnings"):
+            full = [sc["input"] for sc in v.get("chain", [])] + [v["input"]]
+            tb_err, warns = check_tier_b(full)
+            if tb_err:
+                print(f"FAIL [{v['name']}] must be accepted, but Tier B rejected it: {tb_err}")
+                return 1
+            if warns != v.get("expect_warnings", []):
+                print(f"FAIL [{v['name']}] warnings {warns}, want {v.get('expect_warnings', [])}")
+                return 1
+```
+
+and guard the `prev_expected` chain check with `and not v.get("chain")`.
+
+In `reject_reason`, as the first check:
+
+```python
+        err = check_epoch_presence(nv["input"], nv.get("min_format_version", 0))
+        if err:
+            return "schema"
+```
+
+and after the signature check, before the `prev_sha256` check:
 
 ```python
         if nv.get("chain"):
@@ -838,7 +1051,8 @@ In `reject_reason`, after the existing signature check and before the `prev_sha2
                     return "signature"
                 full.append(sc["input"])
             full.append(nv["input"])
-            if check_tier_b(full) is not None:
+            tb_err, _ = check_tier_b(full)
+            if tb_err:
                 return "tier_b"
 ```
 
@@ -848,21 +1062,29 @@ Raise the supported version:
 SUPPORTED_FORMAT_VERSION = 2
 ```
 
-- [ ] **Step 9: Regenerate and verify both validators**
+- [ ] **Step 10: Regenerate and verify the frozen vectors did not move**
 
 ```bash
 cd go && go run . gen ../vectors.json && go run . validate ../vectors.json
 cd .. && python3 py/validate.py vectors.json
 ```
 
-Expected: both PASS with 3 positive + 7 negative, and both print the same `warn B4` lines in the same order. If Go and Python disagree on any canonical byte string, **stop and resolve it against RFC 8785** — per `CLAUDE.md` that is a finding, not a bug to paper over.
+Expected: both PASS with 5 positive + 7 negative.
 
-- [ ] **Step 10: Document epoch in the README**
+**Then verify the freeze held — this is the gate for this task:**
+
+```bash
+git diff vectors.json | grep -E '^[-+].*(canonical|sha256|signature)' | grep '^-' || echo "FREEZE HELD: no existing canonical/sha256/signature line was removed"
+```
+
+Expected: `FREEZE HELD`. Every line for the six version-1 vectors must be untouched — only additions. If any `-` line appears for `canonical`, `sha256` or `signature`, **stop**: `epoch` is leaking into version-1 bytes, which means `Epoch` is not a pointer or a v1 input was given an explicit epoch.
+
+- [ ] **Step 11: Document epoch in the README**
 
 Add to the `Each tips entry` table, between `stream_id` and `sequence_number`:
 
 ```markdown
-| `epoch` | integer | Producer *generation* counter, not a per-stream commit count. Incremented whenever the producer's dedup window resets. `(stream_id, epoch)` is the tip's unique identity. |
+| `epoch` | integer | Producer *generation* counter, not a per-stream commit count. Incremented whenever the producer's dedup window resets. `(stream_id, epoch)` is the tip's unique identity. Required at `format_version` 2 and above; absent in version-1 vectors. |
 ```
 
 Add after that table:
@@ -875,25 +1097,29 @@ re-delivered record after the producer's dedup window has reset. Without a way
 to tell that apart from a replay, a rule rejecting repeated stream ids would
 flag honest behaviour. The epoch makes the difference explicit: the same
 `(stream_id, epoch)` twice is a hard reject, while the same stream under a new
-epoch is the declared at-least-once path and is reported as a warning.
+epoch is the declared at-least-once path, accepted with a `B4` warning.
 
 The epoch is a producer generation counter rather than a per-stream count
 because after a dedup reset the producer has forgotten the stream and cannot
 count its prior commits — it always knows its own generation. See spec §3
 R1–R4 for the rules a conformant producer must follow, including the
 generation-recovery rule that keeps epochs from being reused after a restart.
+
+Version-1 vectors predate the field and carry no `epoch` key; they are retained
+byte-identical. A tip missing `epoch` in a version-2 vector is rejected, not
+defaulted — see the `missing_epoch_in_v2` vector.
 ```
 
-Update the `## Suite format` section from Task 1: `format_version` is now 2, and note that version-1 vectors have no `epoch` and are retained frozen.
+Update the `## Suite format` section from Task 1: `format_version` is now 2, and note that `expect_warnings` on a positive vector names the advisory conditions a verifier must surface.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add go/main.go go/tierb_test.go py/validate.py vectors.json README.md
 git commit -m "feat: add tip epoch and Tier B cross-checkpoint detection"
 ```
 
-- [ ] **Step 12: Open the PR**
+- [ ] **Step 13: Open the PR**
 
 ```bash
 git push -u origin feat/checkpoint-detection-semantics
@@ -902,15 +1128,14 @@ gh pr create --title "feat: checkpoint detection semantics (spec steps 1-3)" --b
 - Suite format_version with a per-vector min_format_version skip rule
 - Duplicate tip identities rejected so canonical bytes cannot depend on input order
 - Tip epoch (producer generation counter) making (stream_id, epoch) the tip identity
-- Tier B cross-checkpoint rules: B1 seq contiguity and B3 identity uniqueness as hard rejects, B4 cross-epoch re-commit and B5 timestamp regression as advisory
-- Suite bumped to format_version 2; the six version-1 vectors are retained
+- Tier B: B1 seq contiguity and B3 identity uniqueness as hard rejects; B4 cross-epoch re-commit and B5 timestamp regression as advisory, tested via expect_warnings
+- Version boundary enforced: epoch required at v2+, absent at v1, with missing_epoch_in_v2 covering it
+- Suite bumped to format_version 2; **the six version-1 vectors are byte-identical**
 
-Both validators agree byte-for-byte. This is the first code in the repo that could detect a rollback."
+Both validators agree byte-for-byte, including on advisory warning tokens. This is the first code in the repo that could detect a rollback."
 ```
 
 **Stop here.** CI green is not review — leave the PR for a human.
-
----
 
 ## Out of scope for this plan
 
