@@ -17,8 +17,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
-	"strings"
 
 	"github.com/gowebpki/jcs"
 )
@@ -110,6 +110,9 @@ func canonical(c Checkpoint) ([]byte, error) {
 // SignedCheckpoint is one checkpoint of a vector's preceding context.
 // A validator MUST verify each prefix signature, not merely hash it for
 // linkage -- the vector should exercise what a production verifier does.
+// verifyPrefixes is the single place that MUST is enforced, and it is used by
+// the positive and the negative path alike; the tampered_prefix_signature
+// vector is what makes skipping it detectable from outside.
 type SignedCheckpoint struct {
 	Input     Checkpoint `json:"input"`
 	Signature string     `json:"signature"`
@@ -218,6 +221,35 @@ func gen() Suite {
 		})
 		prev = hexSum
 	}
+
+	// R4: two tips for ONE stream at different epochs are legal in a single
+	// checkpoint, so the sort key is composite. Epochs 2 and 10 are chosen
+	// deliberately: with a naive "%s\x00%d" key Go orders them [10, 2] while
+	// Python's tuple compare orders them [2, 10], so the two implementations
+	// would disagree on published bytes and nothing else in the suite would
+	// notice. Given in reverse order so the sort has to fix it. This vector is
+	// the only thing that pins the zero-padding width.
+	multiEpoch := Checkpoint{PrevHash: prev, Seq: 4, Timestamp: "2026-01-01T00:00:15Z", Tips: []Tip{
+		{EntryCount: 11, Epoch: ptr(10), SequenceNumber: 11, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "bb" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(2), SequenceNumber: 3, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "aa" + repeat("00", 31)},
+	}}
+	meCanon, err := canonical(multiEpoch)
+	if err != nil {
+		panic(fmt.Sprintf("gen: multi-epoch vector is malformed: %v", err))
+	}
+	meSum := sha256.Sum256(meCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:      "multi_epoch_same_stream",
+		Input:     multiEpoch,
+		Canonical: string(meCanon),
+		SHA256:    hex.EncodeToString(meSum[:]),
+		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(priv, meCanon)),
+		// One stream spanning a dedup reset: the epoch changes, so B4 fires
+		// within the single checkpoint just as it would across two.
+		ExpectWarnings:   []string{"B4:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
+		MinFormatVersion: 2,
+	})
+	prev = hex.EncodeToString(meSum[:])
 
 	// Negative vectors: a conformant validator MUST reject each of these.
 	base := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-02-01T00:00:00Z", Tips: []Tip{
@@ -336,12 +368,15 @@ func gen() Suite {
 
 	// A version-2 tip with no epoch: the boundary rule must be enforced, not
 	// merely stated, or a v2 tip missing epoch silently validates as epoch 0.
+	// The offending tip is deliberately NOT first: a check that inspects only
+	// Tips[0] would pass this vector.
 	noEpoch := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: nil, SequenceNumber: 1, StreamID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", TipHash: "cc" + repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", TipHash: "ca" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: nil, SequenceNumber: 1, StreamID: "dddddddd-dddd-4ddd-8ddd-ddddddddddd1", TipHash: "cc" + repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "missing_epoch_in_v2", Expect: "schema",
-		Reason:           "epoch is required on every tip at format_version 2 and above",
+		Reason:           "epoch is required on every tip at format_version 2 and above; here the second tip omits it",
 		Input:            noEpoch,
 		Signature:        signCP(priv, noEpoch).Signature,
 		MinFormatVersion: 2,
@@ -387,6 +422,91 @@ func gen() Suite {
 		MinFormatVersion: 2,
 	})
 
+	// Must-accept: B4 and B5 raised by the SAME checkpoint. Without this the
+	// two warnings never co-occur, so their relative order is mirrored between
+	// the implementations but verified by nothing.
+	both := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-02-28T23:59:00Z", Tips: []Tip{
+		{EntryCount: 6, Epoch: ptr(1), SequenceNumber: 6, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "1a" + repeat("00", 31)},
+	}}
+	bothCanon, err := canonical(both)
+	if err != nil {
+		panic(fmt.Sprintf("gen: dual-warning vector is malformed: %v", err))
+	}
+	bothSum := sha256.Sum256(bothCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:             "advisory_new_epoch_and_timestamp_regression",
+		Input:            both,
+		Canonical:        string(bothCanon),
+		SHA256:           hex.EncodeToString(bothSum[:]),
+		Signature:        base64.StdEncoding.EncodeToString(ed25519.Sign(priv, bothCanon)),
+		Chain:            []SignedCheckpoint{tbSigned},
+		ExpectWarnings:   []string{"B4:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "B5:2"},
+		MinFormatVersion: 2,
+	})
+
+	// A chain prefix whose signature is tampered. The input is otherwise clean
+	// and passes Tier B on its own, so the ONLY thing that rejects this vector
+	// is actually verifying the prefix signature -- which is what makes the
+	// MUST on SignedCheckpoint enforceable rather than decorative.
+	tbSigRaw, err := base64.StdEncoding.DecodeString(tbSigned.Signature)
+	if err != nil {
+		panic(fmt.Sprintf("gen: tier-B base signature is not base64: %v", err))
+	}
+	badSig := append([]byte(nil), tbSigRaw...)
+	badSig[0] ^= 0x01
+	tamperedPrefix := SignedCheckpoint{Input: tbBase, Signature: base64.StdEncoding.EncodeToString(badSig)}
+	cleanNext := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "99999999-9999-4999-8999-999999999999", TipHash: "9a" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "tampered_prefix_signature", Expect: "signature",
+		Reason:           "one byte of the CHAIN PREFIX's signature is flipped; the vector's own input is valid and passes Tier B, so only a validator that verifies prefix signatures rejects this",
+		Input:            cleanNext,
+		Signature:        signCP(priv, cleanNext).Signature,
+		Chain:            []SignedCheckpoint{tamperedPrefix},
+		MinFormatVersion: 2,
+	})
+
+	// A correctly signed chain prefix whose tip omits epoch at version 2. Left
+	// unchecked, tipEpoch reads it as 0 and it silently feeds B3 identity and
+	// B4 comparisons -- the Step 7 failure, one level down.
+	badPrefixCP := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: nil, SequenceNumber: 3, StreamID: "66666666-6666-4666-8666-666666666666", TipHash: "6a" + repeat("00", 31)},
+	}}
+	badPrefixCanon, err := canonical(badPrefixCP)
+	if err != nil {
+		panic(fmt.Sprintf("gen: bad-prefix vector is malformed: %v", err))
+	}
+	badPrefixSum := sha256.Sum256(badPrefixCanon)
+	afterBadPrefix := Checkpoint{PrevHash: hex.EncodeToString(badPrefixSum[:]), Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "55555555-5555-4555-8555-555555555555", TipHash: "5a" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "chain_prefix_missing_epoch", Expect: "schema",
+		Reason:           "a version-2 chain prefix omits epoch on its tip; the boundary applies to prefixes, not only to the vector's own input",
+		Input:            afterBadPrefix,
+		Signature:        signCP(priv, afterBadPrefix).Signature,
+		Chain:            []SignedCheckpoint{signCP(priv, badPrefixCP)},
+		MinFormatVersion: 2,
+	})
+
+	// A negative epoch. Go zero-pads the epoch into the sort key and Python
+	// compares it as a tuple element: "-1" sorts above the digits in Go, while
+	// -10 sorts below -1 in Python. The two implementations would order the
+	// same tips differently, so the value is rejected outright. The offending
+	// tip is again NOT first.
+	negEpoch := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "77777777-7777-4777-8777-777777777777", TipHash: "7a" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(-1), SequenceNumber: 2, StreamID: "88888888-8888-4888-8888-888888888888", TipHash: "8a" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "negative_epoch", Expect: "schema",
+		Reason:           "epoch must be non-negative; a negative value sorts differently in the two implementations, so it is rejected rather than ordered arbitrarily",
+		Input:            negEpoch,
+		Signature:        signCP(priv, negEpoch).Signature,
+		MinFormatVersion: 2,
+	})
+
 	return suite
 }
 
@@ -406,7 +526,14 @@ func checkTierB(chain []Checkpoint) (error, []string) {
 			return fmt.Errorf("B1: checkpoint seq %d follows %d; must increment by exactly 1",
 				cp.Seq, chain[i-1].Seq), warns
 		}
-		for _, t := range cp.Tips {
+		// Iterate tips in identity order, not input order. Two tips for one
+		// stream at different epochs are legal in a single checkpoint (R4), so
+		// input order would otherwise decide which epoch lastEpoch retains and
+		// thus whether the NEXT checkpoint raises B4.
+		tips := make([]Tip, len(cp.Tips))
+		copy(tips, cp.Tips)
+		sort.Slice(tips, func(a, b int) bool { return tipIdentity(tips[a]) < tipIdentity(tips[b]) })
+		for _, t := range tips {
 			id := tipIdentity(t)
 			if prevSeq, dup := seenIdentity[id]; dup {
 				return fmt.Errorf("B3: stream %q epoch %d committed in checkpoint %d and again in %d",
@@ -439,8 +566,44 @@ func checkEpochPresence(cp Checkpoint, minVer int) error {
 		if minVer < 2 && t.Epoch != nil {
 			return fmt.Errorf("stream %q: epoch is not permitted in a format_version 1 vector", t.StreamID)
 		}
+		// Epoch must be non-negative. tipIdentity zero-pads it into a sort key,
+		// and a leading "-" sorts above the digits in Go while Python's tuple
+		// compare puts -10 below -1: the two implementations would order the
+		// same tips differently, which is precisely what this repo exists to
+		// rule out. A conformant producer never emits one, but a third party
+		// feeding its own data must be told, not silently mis-sorted.
+		if t.Epoch != nil && *t.Epoch < 0 {
+			return fmt.Errorf("stream %q: epoch must be non-negative, got %d", t.StreamID, *t.Epoch)
+		}
 	}
 	return nil
+}
+
+// verifyPrefixes checks a vector's preceding chain context and returns the
+// prefix checkpoints in order, or the reason they are rejected ("" on success).
+//
+// Each prefix is held to the same bar as the vector's own input: the
+// format_version epoch boundary AND a real signature verification. The
+// signature check is the MUST documented on SignedCheckpoint -- a verifier that
+// merely hashed prefixes for linkage would accept a forged history. Shared by
+// the positive and negative paths so the rule cannot drift between them.
+func verifyPrefixes(pub ed25519.PublicKey, chain []SignedCheckpoint, minVer int) ([]Checkpoint, string) {
+	full := make([]Checkpoint, 0, len(chain)+1)
+	for _, sc := range chain {
+		if err := checkEpochPresence(sc.Input, minVer); err != nil {
+			return nil, "schema"
+		}
+		cb, err := canonical(sc.Input)
+		if err != nil {
+			return nil, "canonical"
+		}
+		sig, err := base64.StdEncoding.DecodeString(sc.Signature)
+		if err != nil || !ed25519.Verify(pub, cb, sig) {
+			return nil, "signature"
+		}
+		full = append(full, sc.Input)
+	}
+	return full, ""
 }
 
 // rejectReason returns the check that rejects a negative vector, or "" if the
@@ -458,17 +621,9 @@ func rejectReason(pub ed25519.PublicKey, nv NegativeVector) string {
 		return "signature"
 	}
 	if len(nv.Chain) > 0 {
-		full := make([]Checkpoint, 0, len(nv.Chain)+1)
-		for _, sc := range nv.Chain {
-			cb, err := canonical(sc.Input)
-			if err != nil {
-				return "canonical"
-			}
-			s, err := base64.StdEncoding.DecodeString(sc.Signature)
-			if err != nil || !ed25519.Verify(pub, cb, s) {
-				return "signature"
-			}
-			full = append(full, sc.Input)
+		full, reason := verifyPrefixes(pub, nv.Chain, nv.MinFormatVersion)
+		if reason != "" {
+			return reason
 		}
 		full = append(full, nv.Input)
 		if err, _ := checkTierB(full); err != nil {
@@ -535,16 +690,20 @@ func validate(path string) error {
 			return fmt.Errorf("[%s] signature does not verify", v.Name)
 		}
 		if len(v.Chain) > 0 || len(v.ExpectWarnings) > 0 {
-			full := make([]Checkpoint, 0, len(v.Chain)+1)
-			for _, sc := range v.Chain {
-				full = append(full, sc.Input)
+			// A must-accept vector's prefixes are verified exactly as a
+			// negative's are: same helper, same MUST.
+			full, reason := verifyPrefixes(pub, v.Chain, v.MinFormatVersion)
+			if reason != "" {
+				return fmt.Errorf("[%s] must be accepted, but its chain context was rejected (%s)", v.Name, reason)
 			}
 			full = append(full, v.Input)
 			err, warns := checkTierB(full)
 			if err != nil {
 				return fmt.Errorf("[%s] must be accepted, but Tier B rejected it: %v", v.Name, err)
 			}
-			if strings.Join(warns, ",") != strings.Join(v.ExpectWarnings, ",") {
+			// slices.Equal, not a joined string: joining conflates the single
+			// warning ["A,B"] with the pair ["A","B"].
+			if !slices.Equal(warns, v.ExpectWarnings) {
 				return fmt.Errorf("[%s] warnings %v, want %v", v.Name, warns, v.ExpectWarnings)
 			}
 		}

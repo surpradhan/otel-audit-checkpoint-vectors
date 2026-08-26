@@ -68,7 +68,39 @@ def check_epoch_presence(cp: dict, min_ver: int):
             return f"stream {t['stream_id']!r}: epoch required at format_version >= 2"
         if min_ver < 2 and "epoch" in t:
             return f"stream {t['stream_id']!r}: epoch not permitted in a v1 vector"
+        # Epoch must be non-negative. Go zero-pads it into a string sort key
+        # where a leading "-" sorts above the digits, while this tuple compare
+        # puts -10 below -1: the two implementations would order the same tips
+        # differently, which is precisely what this repo exists to rule out.
+        if t.get("epoch", 0) < 0:
+            return f"stream {t['stream_id']!r}: epoch must be non-negative, got {t['epoch']}"
     return None
+
+
+def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
+    """Check a vector's preceding chain context, returning (prefixes, reason);
+    reason is "" on success.
+
+    Each prefix is held to the same bar as the vector's own input: the
+    format_version epoch boundary AND a real signature verification. The
+    signature check is the MUST documented in the README -- a verifier that
+    merely hashed prefixes for linkage would accept a forged history. Shared by
+    the positive and negative paths so the rule cannot drift between them."""
+    full = []
+    for sc in chain:
+        err = check_epoch_presence(sc["input"], min_ver)
+        if err:
+            return ([], "schema")
+        try:
+            scb = canonical(sc["input"])
+        except ValueError:
+            return ([], "canonical")
+        try:
+            pub.verify(base64.b64decode(sc["signature"]), scb)
+        except InvalidSignature:
+            return ([], "signature")
+        full.append(sc["input"])
+    return (full, "")
 
 
 def check_tier_b(chain: list) -> tuple:
@@ -82,7 +114,11 @@ def check_tier_b(chain: list) -> tuple:
     for i, cp in enumerate(chain):
         if i > 0 and cp["seq"] != chain[i - 1]["seq"] + 1:
             return (f"B1: checkpoint seq {cp['seq']} follows {chain[i-1]['seq']}", warns)
-        for t in cp.get("tips", []):
+        # Iterate tips in identity order, not input order. Two tips for one
+        # stream at different epochs are legal in a single checkpoint (R4), so
+        # input order would otherwise decide which epoch last_epoch retains and
+        # thus whether the NEXT checkpoint raises B4.
+        for t in sorted(cp.get("tips", []), key=tip_identity):
             ident = tip_identity(t)
             if ident in seen_identity:
                 return (f"B3: stream {t['stream_id']!r} epoch {tip_epoch(t)} "
@@ -132,7 +168,15 @@ def main() -> int:
             print(f"FAIL [{v['name']}] {err}")
             return 1
         if v.get("chain") or v.get("expect_warnings"):
-            full = [sc["input"] for sc in v.get("chain", [])] + [v["input"]]
+            # A must-accept vector's prefixes are verified exactly as a
+            # negative's are: same helper, same MUST.
+            prefixes, reason = verify_prefixes(
+                pub, v.get("chain", []), v.get("min_format_version", 0))
+            if reason:
+                print(f"FAIL [{v['name']}] must be accepted, but its chain "
+                      f"context was rejected ({reason})")
+                return 1
+            full = prefixes + [v["input"]]
             tb_err, warns = check_tier_b(full)
             if tb_err:
                 print(f"FAIL [{v['name']}] must be accepted, but Tier B rejected it: {tb_err}")
@@ -166,19 +210,11 @@ def main() -> int:
         except InvalidSignature:
             return "signature"
         if nv.get("chain"):
-            full = []
-            for sc in nv["chain"]:
-                try:
-                    scb = canonical(sc["input"])
-                except ValueError:
-                    return "canonical"
-                try:
-                    pub.verify(base64.b64decode(sc["signature"]), scb)
-                except InvalidSignature:
-                    return "signature"
-                full.append(sc["input"])
-            full.append(nv["input"])
-            tb_err, _ = check_tier_b(full)
+            prefixes, reason = verify_prefixes(
+                pub, nv["chain"], nv.get("min_format_version", 0))
+            if reason:
+                return reason
+            tb_err, _ = check_tier_b(prefixes + [nv["input"]])
             if tb_err:
                 return "tier_b"
         if nv.get("prev_sha256") and nv["input"]["prev_hash"] != nv["prev_sha256"]:

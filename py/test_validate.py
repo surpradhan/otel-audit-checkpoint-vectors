@@ -306,6 +306,103 @@ def test_version1_tip_omits_epoch():
     assert b"epoch" not in cb, f"version-1 canonical bytes must not contain an epoch key: {cb!r}"
 
 
+# --- Round-1 review fixes -------------------------------------------------
+
+def _pub():
+    import json as _json
+    with open(VECTORS_PATH) as f:
+        suite = _json.load(f)
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    return Ed25519PublicKey.from_public_bytes(bytes.fromhex(suite["public_key_hex"]))
+
+
+def _signed_from_vectors(name):
+    """Pull a real signed chain prefix out of the committed suite, so these
+    tests use genuine key material rather than re-deriving signatures."""
+    with open(VECTORS_PATH) as f:
+        suite = json.load(f)
+    for e in suite["vectors"] + suite["negatives"]:
+        if e["name"] == name:
+            return e["chain"][0]
+    raise AssertionError(f"{name!r} not found in vectors.json")
+
+
+def test_prefix_signature_is_verified():
+    """The MUST on chain prefixes: the signature is verified, not merely hashed
+    for linkage. A verifier that skipped this would accept a forged history."""
+    import base64 as _b64
+    pub = _pub()
+    good = _signed_from_vectors("advisory_stream_recommitted_new_epoch")
+    prefixes, reason = validate.verify_prefixes(pub, [good], 2)
+    assert reason == "", f"a correctly signed prefix was rejected ({reason})"
+    assert len(prefixes) == 1
+
+    raw = bytearray(_b64.b64decode(good["signature"]))
+    raw[0] ^= 0x01
+    bad = {"input": good["input"], "signature": _b64.b64encode(bytes(raw)).decode()}
+    _, reason = validate.verify_prefixes(pub, [bad], 2)
+    assert reason == "signature", f"tampered prefix signature: reason={reason!r}, want 'signature'"
+
+
+def test_prefix_epoch_presence_is_checked():
+    """The format_version boundary applies to chain prefixes too. Unchecked,
+    tip_epoch reads a missing epoch as 0 and it silently feeds B3 identity and
+    B4 comparisons."""
+    pub = _pub()
+    good = _signed_from_vectors("advisory_stream_recommitted_new_epoch")
+    stripped = copy.deepcopy(good)
+    for t in stripped["input"]["tips"]:
+        t.pop("epoch", None)
+    _, reason = validate.verify_prefixes(pub, [stripped], 2)
+    assert reason == "schema", f"v2 prefix with no epoch: reason={reason!r}, want 'schema'"
+
+
+def test_epoch_presence_scans_all_tips():
+    """check_epoch_presence must scan every tip, not just the first."""
+    missing_on_second = _cp(1, "2026-01-01T00:00:00Z", [
+        _tip("s1", 0, 1, 1, "aa"),
+        {"entry_count": 2, "sequence_number": 2, "stream_id": "s2", "tip_hash": "bb"},
+    ])
+    assert validate.check_epoch_presence(missing_on_second, 2) is not None, (
+        "epoch missing on the SECOND tip must be rejected; a tips[0]-only check would miss it")
+    negative_on_second = _cp(1, "2026-01-01T00:00:00Z", [
+        _tip("s1", 0, 1, 1, "aa"), _tip("s2", -1, 2, 2, "bb")])
+    assert validate.check_epoch_presence(negative_on_second, 2) is not None, (
+        "a negative epoch on the SECOND tip must be rejected")
+
+
+def test_negative_epoch_rejected():
+    """A negative epoch orders differently in the two implementations, so it is
+    rejected rather than ordered arbitrarily."""
+    cp = _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", -1, 1, 1, "aa")])
+    assert validate.check_epoch_presence(cp, 2) is not None, "a negative epoch must be rejected"
+
+
+def test_composite_sort_key_is_numeric_for_multi_digit_epochs():
+    """The sort key must order epochs NUMERICALLY. test_r4_composite_sort_key
+    cannot catch a padding regression: it uses single-digit epochs."""
+    lo = _tip("s1", 2, 3, 3, "aa")
+    hi = _tip("s1", 10, 11, 11, "bb")
+    assert validate.tip_identity(lo) < validate.tip_identity(hi), (
+        f"epoch 2 must sort below epoch 10, got {validate.tip_identity(lo)} "
+        f">= {validate.tip_identity(hi)}")
+    cb = validate.canonical(_cp(1, "2026-01-01T00:00:00Z", [hi, lo])).decode()
+    assert cb.index('"epoch":2') < cb.index('"epoch":10'), (
+        f"epoch 10 was sorted before epoch 2 -- the sort key is not numeric:\n {cb}")
+
+
+def test_b4_and_b5_both_raised_in_order():
+    """B4 and B5 raised by the same checkpoint, in a pinned order. Without a
+    case where both fire, their interleaving is verified by nothing."""
+    chain = [
+        _cp(1, "2026-01-01T00:00:10Z", [_tip("s1", 0, 1, 1, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 1, 2, 2, "bb")]),
+    ]
+    err, warns = validate.check_tier_b(chain)
+    assert err is None, f"both advisory rules must warn, not reject: {err}"
+    assert warns == ["B4:s1", "B5:2"], f"warnings = {warns}, want ['B4:s1', 'B5:2']"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -319,6 +416,12 @@ def main():
         test_r4_composite_sort_key,
         test_epoch_presence_boundary,
         test_version1_tip_omits_epoch,
+        test_prefix_signature_is_verified,
+        test_prefix_epoch_presence_is_checked,
+        test_epoch_presence_scans_all_tips,
+        test_negative_epoch_rejected,
+        test_composite_sort_key_is_numeric_for_multi_digit_epochs,
+        test_b4_and_b5_both_raised_in_order,
     ]
     failed = []
     for t in tests:

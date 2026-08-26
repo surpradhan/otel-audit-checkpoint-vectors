@@ -43,7 +43,10 @@ optional fields appear on vectors that exercise them:
 
 - `chain` — the preceding, already-signed checkpoints this vector's
   cross-checkpoint rules are evaluated against. A validator MUST verify each
-  prefix signature, not merely hash it for linkage.
+  prefix signature and each prefix's `epoch` boundary, not merely hash the
+  prefix for linkage — a verifier that skipped this would accept a forged
+  history. The `tampered_prefix_signature` and `chain_prefix_missing_epoch`
+  negatives exist so that skipping it is detectable from outside.
 - `expect_warnings` — on a **positive** vector, the advisory conditions a
   verifier must surface while still accepting the checkpoint. Warning tokens
   are stable, machine-comparable strings (`B4:<stream_id>`, `B5:<seq>`) so the
@@ -67,7 +70,7 @@ Each `tips` entry:
 | Field | Type | Notes |
 |-------|------|-------|
 | `stream_id` | string | The stream (per-trace chain, in `otel-agent-audit`). |
-| `epoch` | integer | Producer *generation* counter, not a per-stream commit count. Incremented whenever the producer's dedup window resets. `(stream_id, epoch)` is the tip's unique identity. Required at `format_version` 2 and above; absent in version-1 vectors. |
+| `epoch` | integer | Producer *generation* counter, not a per-stream commit count. Incremented whenever the producer's dedup window resets. `(stream_id, epoch)` is the tip's unique identity. **Non-negative.** Required at `format_version` 2 and above; absent in version-1 vectors. |
 | `sequence_number` | integer | The stream's highest committed sequence number. |
 | `tip_hash` | string | Hex hash of the stream's tip (the `IntegrityHash` of its highest record). |
 | `entry_count` | integer | Number of records in the stream so far (truncation shows up here too). |
@@ -101,6 +104,16 @@ defaulted — see the `missing_epoch_in_v2` vector.
    sorting on `stream_id` alone would let input order leak into the signed bytes.
    Two tips sharing a `(stream_id, epoch)` identity are rejected outright rather
    than sorted arbitrarily.
+
+   `epoch` sorts **numerically**, not as text: epoch 2 precedes epoch 10. An
+   implementation that compares the epoch as a string puts 10 before 2 and
+   silently disagrees with a conformant one on the signed bytes. The
+   `multi_epoch_same_stream` vector publishes exactly that pair, in an input
+   order the sort has to fix, so the disagreement cannot go unnoticed.
+
+   A negative `epoch` is **rejected**, not ordered: signed-integer sort keys
+   differ between implementations at the sign boundary, and no conformant
+   producer emits one. See the `negative_epoch` vector.
 2. **Canonicalization.** RFC 8785 (JCS) over the checkpoint object. The schema is
    strings and integers only (no floats), so JCS reduces to sorted keys, compact
    separators, UTF-8, and standard JSON string escaping. Integrity/signature
@@ -135,7 +148,17 @@ its `expect` field:
   under the same epoch: a rollback inside one generation. Rejected: tier_b (B3).
 - `seq_skip` — checkpoint `seq` jumps from 1 to 3. Rejected: tier_b (B1).
 - `missing_epoch_in_v2` — a version-2 tip with no `epoch` key. Rejected: schema,
-  not silently defaulted to epoch 0.
+  not silently defaulted to epoch 0. The offending tip is deliberately not the
+  first, so a check that inspects only the first tip fails this vector.
+- `tampered_prefix_signature` — one byte of a **chain prefix's** signature is
+  flipped. The vector's own input is valid and passes every cross-checkpoint
+  rule, so the only thing that rejects it is actually verifying the prefix
+  signature. Rejected: signature.
+- `chain_prefix_missing_epoch` — a correctly signed version-2 chain prefix whose
+  tip omits `epoch`. Left unchecked it would be read as epoch 0 and feed the B3
+  identity and B4 comparisons. Rejected: schema.
+- `negative_epoch` — a tip with `epoch: -1` (again not the first tip).
+  Rejected: schema.
 
 ## Cross-checkpoint rules
 
@@ -160,6 +183,15 @@ the ordering authority. Both are asserted by must-accept vectors carrying
 
 B5 is a plain string comparison — the pinned `YYYY-MM-DDTHH:MM:SSZ` profile
 sorts chronologically, so no date parsing is needed.
+
+Warnings are compared **element-wise and in order**, so when one checkpoint
+raises both, the interleaving is part of the contract: B4 (raised per tip, in
+tip-identity order) precedes B5 (raised once per checkpoint). The
+`advisory_new_epoch_and_timestamp_regression` vector pins that pair.
+
+Tips are examined in `(stream_id, epoch)` order rather than input order, so a
+checkpoint carrying two epochs for one stream leaves a deterministic epoch
+behind for the next checkpoint's B4 comparison.
 
 Rules R1–R3 of the spec constrain the *producer* (how epochs are allocated and
 recovered) rather than the verifier, and are documented rather than implemented
