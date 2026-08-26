@@ -57,8 +57,10 @@ Each checkpoint commits the tips of streams **sealed since the previous
 checkpoint**, not all active streams. A checkpoint is a delta; the checkpoint
 chain is the accumulation.
 
-The load-bearing consequence: **a `stream_id` appears in exactly one checkpoint
-in a well-formed chain.** A stream is sealed once, committed once, and never
+The load-bearing consequence: **a `stream_id` is committed at most once across
+the whole chain.** ("Exactly once" is the producer's invariant; a verifier
+holding a possibly-partial chain can only check "at most once", so that is the
+rule stated in B3.) A stream is sealed once, committed once, and never
 re-committed. That single invariant makes re-commit, rollback and replay
 detectable from the checkpoint chain alone, with no access to stream records.
 
@@ -72,7 +74,7 @@ detectable from the checkpoint chain alone, with no access to stream records.
 | A2 | Signature verifies | have (`tampered_signature`) |
 | A3 | No duplicate `stream_id` within a checkpoint | **add** |
 | A4 | Ill-formed Unicode rejected | **add** |
-| A5 | Integers within I-JSON range (≤ 2^53−1) | **add** |
+| A5 | Integers within I-JSON range: `2^53−1` accepted, `2^53` rejected | **add** |
 
 ### Tier B — cross-checkpoint, single chain, single verifier
 
@@ -141,7 +143,8 @@ section — before that it is speculative.
 
 Both validators implement Tiers A and B and must agree. New negatives:
 `duplicate_stream_id`, `ill_formed_utf8` (via `input_raw_hex`), `seq_skip`,
-`stream_recommitted` (B3), `tip_rollback` (B3 with a lower `entry_count`).
+`stream_recommitted` (B3), `tip_rollback` (B3 with a lower `entry_count`), and
+`integer_out_of_range` (A5, an `entry_count` of 2^53).
 New positives: non-BMP `stream_id` adjacent to a U+E000–U+FFFF one (the tip sort
 is code-point ascending, while JCS sorts *object keys* by UTF-16 code unit — an
 implementer reusing their JCS comparator for tips gets a different order), and
@@ -154,7 +157,10 @@ bytes. `py/requirements.txt` pins `cryptography`.
 ## 8. Sequencing
 
 1. `format_version`, pinned `cryptography`, pinned timestamp profile
-2. A3 + total-ordered sort + `duplicate_stream_id`
+2. A3 + deterministic sort + `duplicate_stream_id`. A3 rejects duplicates, so
+   ties cannot reach the sort in a valid checkpoint; the generator still uses
+   `sort.SliceStable` so that malformed input fails loudly at A3 rather than
+   silently producing order-dependent bytes.
 3. Tier B in both validators + `seq_skip`, `stream_recommitted`, `tip_rollback`
 4. `input_raw_hex` + `ill_formed_utf8`, README paragraph citing #50079
 5. Boundary positives
