@@ -14,8 +14,12 @@ import (
 
 func TestSuiteCarriesFormatVersion(t *testing.T) {
 	s := gen()
-	if s.FormatVersion != 1 {
-		t.Errorf("format_version = %d, want 1", s.FormatVersion)
+	if s.FormatVersion != 2 {
+		t.Errorf("format_version = %d, want 2", s.FormatVersion)
+	}
+	// The published suite must never claim a format this build cannot check.
+	if s.FormatVersion != supportedFormatVersion {
+		t.Errorf("format_version = %d, but supportedFormatVersion = %d", s.FormatVersion, supportedFormatVersion)
 	}
 }
 

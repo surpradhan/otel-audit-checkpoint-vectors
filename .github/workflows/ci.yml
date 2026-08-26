@@ -14,7 +14,7 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Go unit tests (skip rule, format_version)
+      - name: Go unit tests (skip rule, tip identity, Tier B)
         working-directory: go
         run: go test ./... -v
 
@@ -38,5 +38,5 @@ jobs:
       - name: Independent Python validator
         run: python3 py/validate.py vectors.json
 
-      - name: Python validator unit tests (min_format_version skip rule)
+      - name: Python validator unit tests (skip rule, Tier B)
         run: python3 py/test_validate.py

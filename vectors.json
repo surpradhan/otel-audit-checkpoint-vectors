@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "description": "Conformance vectors for the audit-checkpoint canonical form (RFC 8785 JCS + SHA-256 chain + Ed25519). TEST KEY ONLY.",
   "algorithm": "ed25519",
   "signing_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -60,6 +60,92 @@
       "canonical": "{\"prev_hash\":\"4cc317257a8cfa07ddb11f6edda84800dd9e68bd073125e465241e5a1fbe01f0\",\"seq\":3,\"timestamp\":\"2026-01-01T00:00:10Z\",\"tips\":[{\"entry_count\":7,\"sequence_number\":7,\"stream_id\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"tip_hash\":\"bb00000000000000000000000000000000000000000000000000000000000000\"},{\"entry_count\":2,\"sequence_number\":2,\"stream_id\":\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\",\"tip_hash\":\"cc00000000000000000000000000000000000000000000000000000000000000\"}]}",
       "sha256": "8d0277707e12f87e82264281e30e5a8abb636170c01e0deb0205d07f61f82fbc",
       "signature": "k0uV6VkB3h5wzbQ7I7pKn/aeXCINbRxtnf49KngstDaC1sFLPWiGsWTkhl1+WWRH25cAhrj0u/D4oGy/p++ICA=="
+    },
+    {
+      "name": "advisory_stream_recommitted_new_epoch",
+      "input": {
+        "prev_hash": "ae307a040704afda289269d83b50282b8a4a7d996be9aa440848423f9f1e976b",
+        "seq": 2,
+        "timestamp": "2026-03-01T00:00:05Z",
+        "tips": [
+          {
+            "entry_count": 5,
+            "epoch": 1,
+            "sequence_number": 5,
+            "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tip_hash": "ee00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"ae307a040704afda289269d83b50282b8a4a7d996be9aa440848423f9f1e976b\",\"seq\":2,\"timestamp\":\"2026-03-01T00:00:05Z\",\"tips\":[{\"entry_count\":5,\"epoch\":1,\"sequence_number\":5,\"stream_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"tip_hash\":\"ee00000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "2fc6a2aea8774169667ea18c7e1868430dc1e30b9e4c003382cf3d51a20589b6",
+      "signature": "kE8jGjz2ro71IT+cvi8gdGfb3sX8kFKjun5EweF8v8vlii68DHXDJxZlcRBTlo86WPD67AoTkfZOTPDCQs9zAw==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-03-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 7,
+                "epoch": 0,
+                "sequence_number": 7,
+                "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "5U9e0pO+yvVfceZ8G0Ahbiwz7OSN+MYrLf+c/5JexEj4dvFGFV8mPIZNmE02D4AuAunkCZ8hpTCnfxOJ1wdhCA=="
+        }
+      ],
+      "expect_warnings": [
+        "B4:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "advisory_timestamp_regression",
+      "input": {
+        "prev_hash": "ae307a040704afda289269d83b50282b8a4a7d996be9aa440848423f9f1e976b",
+        "seq": 2,
+        "timestamp": "2026-02-28T23:59:00Z",
+        "tips": [
+          {
+            "entry_count": 1,
+            "epoch": 0,
+            "sequence_number": 1,
+            "stream_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            "tip_hash": "ff00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"ae307a040704afda289269d83b50282b8a4a7d996be9aa440848423f9f1e976b\",\"seq\":2,\"timestamp\":\"2026-02-28T23:59:00Z\",\"tips\":[{\"entry_count\":1,\"epoch\":0,\"sequence_number\":1,\"stream_id\":\"dddddddd-dddd-4ddd-8ddd-dddddddddddd\",\"tip_hash\":\"ff00000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "bae40095c42258e1e2dfa5f0386be42fba2936aaeec076d89e398eef46f0eaf5",
+      "signature": "P5xW+IbOad7l4t5V5X61cR5MqMzuzqiPgkq7+5PHSdvtLWW5QURDKcjz6LGrhequCHH3C28AFYOuc38+q3A0Ag==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-03-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 7,
+                "epoch": 0,
+                "sequence_number": 7,
+                "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "5U9e0pO+yvVfceZ8G0Ahbiwz7OSN+MYrLf+c/5JexEj4dvFGFV8mPIZNmE02D4AuAunkCZ8hpTCnfxOJ1wdhCA=="
+        }
+      ],
+      "expect_warnings": [
+        "B5:2"
+      ],
+      "min_format_version": 2
     }
   ],
   "negatives": [
@@ -151,6 +237,146 @@
         ]
       },
       "signature": ""
+    },
+    {
+      "name": "stream_recommitted_same_epoch",
+      "expect": "tier_b",
+      "reason": "stream committed twice under the same epoch; within one producer generation the dedup map is intact, so no second commit is legitimate",
+      "input": {
+        "prev_hash": "ae307a040704afda289269d83b50282b8a4a7d996be9aa440848423f9f1e976b",
+        "seq": 2,
+        "timestamp": "2026-03-01T00:00:05Z",
+        "tips": [
+          {
+            "entry_count": 9,
+            "epoch": 0,
+            "sequence_number": 9,
+            "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tip_hash": "cc00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "EnTKmz+y7HL0jsxm5tIISUfM05oDq7/wVZRkvPkNLSeresLzh2zjBcGqGNDzBqcCYzlgl42YY7KQCMhdxxS4Dg==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-03-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 7,
+                "epoch": 0,
+                "sequence_number": 7,
+                "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "5U9e0pO+yvVfceZ8G0Ahbiwz7OSN+MYrLf+c/5JexEj4dvFGFV8mPIZNmE02D4AuAunkCZ8hpTCnfxOJ1wdhCA=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "tip_rollback_same_epoch",
+      "expect": "tier_b",
+      "reason": "committed tip regresses (entry_count 7 to 5) under the same epoch",
+      "input": {
+        "prev_hash": "ae307a040704afda289269d83b50282b8a4a7d996be9aa440848423f9f1e976b",
+        "seq": 2,
+        "timestamp": "2026-03-01T00:00:05Z",
+        "tips": [
+          {
+            "entry_count": 5,
+            "epoch": 0,
+            "sequence_number": 5,
+            "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tip_hash": "dd00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "zDHPdnyJIDBIgctkbkho6Oy1e20SlshuIHT5h7BecJ/HI65ASG+RdHFwXOI8WhAF+kNN/f128nbecNU9kZRcDA==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-03-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 7,
+                "epoch": 0,
+                "sequence_number": 7,
+                "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "5U9e0pO+yvVfceZ8G0Ahbiwz7OSN+MYrLf+c/5JexEj4dvFGFV8mPIZNmE02D4AuAunkCZ8hpTCnfxOJ1wdhCA=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "seq_skip",
+      "expect": "tier_b",
+      "reason": "checkpoint seq jumps from 1 to 3",
+      "input": {
+        "prev_hash": "ae307a040704afda289269d83b50282b8a4a7d996be9aa440848423f9f1e976b",
+        "seq": 3,
+        "timestamp": "2026-03-01T00:00:05Z",
+        "tips": [
+          {
+            "entry_count": 2,
+            "epoch": 0,
+            "sequence_number": 2,
+            "stream_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "tip_hash": "bb00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "J76eshwFD5S49oMauXkCLY7wc3Z4CUJHmgpLclXWQvGeZ6rzrlzHlca0F9VCN9YT0qAHz1uBdlOpZ1HzRKTNDw==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-03-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 7,
+                "epoch": 0,
+                "sequence_number": 7,
+                "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "5U9e0pO+yvVfceZ8G0Ahbiwz7OSN+MYrLf+c/5JexEj4dvFGFV8mPIZNmE02D4AuAunkCZ8hpTCnfxOJ1wdhCA=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "missing_epoch_in_v2",
+      "expect": "schema",
+      "reason": "epoch is required on every tip at format_version 2 and above",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2026-03-01T00:00:00Z",
+        "tips": [
+          {
+            "entry_count": 1,
+            "sequence_number": 1,
+            "stream_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "tip_hash": "cc00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "TJ+bEpxcoXnPlr6GF9bQUTp+NMTtxe6AyEXFF5vKfwL8I2kusZ57ZcAwNm3wP0xyRpMGlgANdr24WtCyhM6uDQ==",
+      "min_format_version": 2
     }
   ]
 }

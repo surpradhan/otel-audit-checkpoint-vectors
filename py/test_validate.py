@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""End-to-end test for the min_format_version skip rule in validate.py.
+"""Tests for validate.py: the min_format_version skip rule (end to end) and
+the Tier B cross-checkpoint rules (unit, mirroring go/tierb_test.go).
 
 Not a pytest suite -- py/requirements.txt pins only `cryptography`, and this
 repo does not want a test-framework dependency for one behavior. Plain script
@@ -208,25 +209,133 @@ def test_duplicate_tip_identity_rejected_non_adjacent():
         pass
 
 
+def _tip(stream, epoch, seq, count, tip):
+    return {"entry_count": count, "epoch": epoch, "sequence_number": seq,
+            "stream_id": stream, "tip_hash": tip}
+
+
+def _cp(seq, ts, tips, prev="e" * 64):
+    return {"prev_hash": prev, "seq": seq, "timestamp": ts, "tips": tips}
+
+
+# The Tier B tests below mirror go/tierb_test.go one-for-one. Both languages
+# assert the same rejections and the same exact warning tokens, so a pass in
+# both shows the two implementations agree on Tier B -- not merely that each is
+# internally self-consistent.
+
+def test_b3_rejects_same_stream_same_epoch():
+    """B3: the same (stream_id, epoch) committed twice in one chain is a hard
+    reject, whether or not the tips differ. Within one producer generation the
+    dedup map is intact, so no second commit of any kind is legitimate."""
+    chain = [
+        _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 3, 3, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 0, 2, 2, "bb")]),
+    ]
+    err, _ = validate.check_tier_b(chain)
+    assert err is not None, "check_tier_b accepted a same-epoch re-commit; want a rejection"
+
+
+def test_b4_accepts_same_stream_new_epoch_with_warning():
+    """B4: the same stream under a NEW epoch is the declared at-least-once
+    path. It must be accepted even when entry_count goes backwards, because an
+    honest timeout-split produces exactly that shape -- and it must warn."""
+    chain = [
+        _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 7, 7, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 1, 5, 5, "bb")]),
+    ]
+    err, warns = validate.check_tier_b(chain)
+    assert err is None, f"check_tier_b rejected a legitimate cross-epoch re-commit: {err}"
+    assert warns == ["B4:s1"], f"warnings = {warns}, want exactly ['B4:s1']"
+
+
+def test_b5_warns_on_timestamp_regression():
+    """B5: a timestamp regression warns and does not reject."""
+    chain = [
+        _cp(1, "2026-01-01T00:00:10Z", [_tip("s1", 0, 1, 1, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s2", 0, 1, 1, "bb")]),
+    ]
+    err, warns = validate.check_tier_b(chain)
+    assert err is None, f"timestamp regression must warn, not reject: {err}"
+    assert warns == ["B5:2"], f"warnings = {warns}, want exactly ['B5:2']"
+
+
+def test_b1_rejects_seq_skip():
+    """B1: seq must increment by exactly 1 -- not merely increase."""
+    chain = [
+        _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")]),
+        _cp(3, "2026-01-01T00:00:05Z", [_tip("s2", 0, 1, 1, "bb")]),
+    ]
+    err, _ = validate.check_tier_b(chain)
+    assert err is not None, "check_tier_b accepted a seq gap; want a rejection"
+
+
+def test_r4_composite_sort_key():
+    """R4: two tips for one stream at different epochs are legal in ONE
+    checkpoint, so the sort key must be composite or the canonical bytes
+    depend on input order."""
+    x = _tip("s1", 0, 1, 1, "aa")
+    y = _tip("s1", 1, 2, 2, "bb")
+    c1 = validate.canonical(_cp(1, "2026-01-01T00:00:00Z", [x, y]))
+    c2 = validate.canonical(_cp(1, "2026-01-01T00:00:00Z", [y, x]))
+    assert c1 == c2, f"input order changed canonical bytes:\n {c1}\n {c2}"
+
+
+def test_epoch_presence_boundary():
+    """Spec 5a: epoch is required at format_version 2 and above, and must be
+    absent in version-1 vectors. A v2 tip missing epoch must be rejected, not
+    defaulted to 0."""
+    v2_missing = _cp(1, "2026-01-01T00:00:00Z", [
+        {"entry_count": 1, "sequence_number": 1, "stream_id": "s1", "tip_hash": "aa"}])
+    assert validate.check_epoch_presence(v2_missing, 2) is not None, (
+        "a version-2 tip with no epoch must be rejected")
+    assert validate.check_epoch_presence(v2_missing, 0) is None, (
+        "a version-1 tip with no epoch is well-formed")
+    v1_with = _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")])
+    assert validate.check_epoch_presence(v1_with, 0) is not None, (
+        "epoch is not permitted in a version-1 vector")
+    assert validate.check_epoch_presence(v1_with, 2) is None, (
+        "a version-2 tip with an explicit epoch is well-formed")
+
+
+def test_version1_tip_omits_epoch():
+    """A version-1 tip carries no epoch key, and canonicalizing must not add
+    one. This is what keeps the six frozen vectors byte-identical."""
+    cp = _cp(1, "2026-01-01T00:00:00Z", [
+        {"entry_count": 1, "sequence_number": 1, "stream_id": "s1", "tip_hash": "aa"}])
+    cb = validate.canonical(cp)
+    assert b"epoch" not in cb, f"version-1 canonical bytes must not contain an epoch key: {cb!r}"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
         test_skip_is_not_a_failure_and_does_not_poison_the_chain,
         test_duplicate_tip_identity_rejected_adjacent,
         test_duplicate_tip_identity_rejected_non_adjacent,
+        test_b3_rejects_same_stream_same_epoch,
+        test_b4_accepts_same_stream_new_epoch_with_warning,
+        test_b5_warns_on_timestamp_regression,
+        test_b1_rejects_seq_skip,
+        test_r4_composite_sort_key,
+        test_epoch_presence_boundary,
+        test_version1_tip_omits_epoch,
     ]
     failed = []
     for t in tests:
         print(f"--- {t.__name__}")
         try:
             t()
-        except AssertionError as e:
-            print(f"FAIL: {t.__name__}: {e}")
+        except Exception as e:
+            # Catch Exception, not just AssertionError: a broken implementation
+            # can raise (e.g. canonical() rejecting a legal input) rather than
+            # fail an assert, and that must be reported as a named test
+            # failure, not crash the runner with no attribution.
+            print(f"FAIL: {t.__name__}: {type(e).__name__}: {e}")
             failed.append(t.__name__)
     if failed:
         print(f"FAILED: {', '.join(failed)}")
         return 1
-    print("PASS: all end-to-end skip-rule tests passed")
+    print("PASS: all skip-rule and Tier B tests passed")
     return 0
 
 

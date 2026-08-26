@@ -1,5 +1,6 @@
 # Go
 /go/bin/
+/go/checkpoint-vectors
 
 # Python
 __pycache__/
