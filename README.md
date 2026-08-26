@@ -198,6 +198,30 @@ The six below all carry a **four-checkpoint** chain (three prefixes), so that
   clean. A validator that only compares its input against `chain[0]` accepts
   this. Rejected: tier_b (B3).
 
+The six below move the defect off the chain-index axis entirely — onto a tip
+index, onto the vector's own checkpoint, or onto the order of the `chain` array.
+Several carry **three tips supplied in reverse identity order**, so that an
+*interior* tip exists at all.
+
+- `missing_epoch_interior_tip` — the middle tip of three omits `epoch` at
+  version 2. `missing_epoch_in_v2` puts its defect on the last tip of two, so a
+  check reading only the last tip passes it and fails here. Rejected: schema.
+- `negative_epoch_interior_tip` — the middle tip of three carries `epoch: -3`.
+  Same tip index, and a magnitude other than `-1`, so a guard weakened to
+  `< -1` is caught too. Rejected: schema.
+- `interior_tip_recommitted_same_epoch` — the identity-*interior* tip of a
+  three-tip checkpoint re-commits an identity already committed by the interior
+  tip of a three-tip prefix. Every other B3 vector duplicates a checkpoint's
+  only tip. Rejected: tier_b (B3).
+- `chain_carrier_missing_epoch` — the vector's **own** first tip omits `epoch`
+  while the vector carries a `chain`. Every other epoch-boundary negative is
+  chainless, so a validator that checks its own input only when there is no
+  chain passes all of them. Rejected: schema.
+- `prefixes_out_of_order` — the two chain prefixes are supplied newest-first.
+  The `chain` array's order is the producer's claim about history, so it is
+  checked as given; a validator that sorted the prefixes by `seq` would
+  silently repair a reordered chain. Rejected: tier_b (B1).
+
 ## Cross-checkpoint rules
 
 Everything above judges one checkpoint (against its signature, or its immediate
@@ -261,32 +285,56 @@ supplies exactly that pair in non-identity order and pins the result.
 
 ### Rules hold at every position
 
-Every rule above holds at **every** position of the assembled chain. That is a
-separate claim from the rules themselves, and it needs its own coverage: a
-validator that applies a rule at exactly one chain position — only the first
-transition, only the last prefix — still computes correct bytes and still
-rejects everything a short chain can express. With one or two prefixes,
-"first", "middle" and "last" collapse into each other, so such a validator
-passes.
+Every rule above holds at **every** position, and "position" here is a product
+of four independent factors:
 
-Two things pin it:
+```
+(chain index) x (tip index within a checkpoint)
+              x (prefix vs the vector's own checkpoint)
+              x (vector-list index in this file)
+```
 
-- **Four-checkpoint vectors with the defect in the middle.** Listed above; a
-  middle defect is missed by "only the first" and "only the last" alike.
-  `advisory_middle_chain_unsorted_prefix_tips` is the must-accept counterpart:
-  its `timestamp` regresses at the second *and* the final transition but not
-  the first, and both regressed values are still above `chain[0]`'s, so a
-  validator comparing against `chain[0]` rather than the immediate predecessor
-  reports a warning sequence that does not match. Its `B4` tokens likewise fall
-  at the middle and last transitions and not the first. Its second prefix also
-  supplies its tips **out of identity order**: B2 hashes the previous
-  checkpoint's *canonical* bytes, so the link still holds, and a validator that
-  hashed the checkpoint as received would reject a legitimate chain.
-- **Position-generic tests.** `go/positional_test.go` and the matching section
-  of `py/test_validate.py` are table-driven over position: for each rule they
-  inject the defect at every index of a five-checkpoint chain in turn and
-  require the rule to fire each time. A vector can only pin the positions
+That is a separate claim from the rules themselves, and it needs its own
+coverage. A validator that applies a rule at exactly one position — only the
+first transition, only the last tip, only a vector's prefixes, only the first
+vector in the file — still computes correct bytes and still rejects everything
+a short chain or a two-tip checkpoint can express. Collapse any factor and such
+a validator passes.
+
+Two further orderings are checked the same way, and belong to the *verifier's*
+contract rather than to any single rule: the order of the warning list it
+reports, and the order of the `chain` array it was handed.
+
+Three things pin all of it:
+
+- **Vectors whose defect sits where the collapse would hide it.** Listed above:
+  four-checkpoint chains with the defect in the middle, three-tip checkpoints
+  with the defect on the interior tip, an epoch defect on a chain carrier's own
+  input, and prefixes supplied out of order. `advisory_middle_chain_unsorted_prefix_tips`
+  and `advisory_first_prefix_unsorted_tips` are the must-accept counterparts:
+  between them a prefix at index 1 and a prefix at index 0 each supply their
+  tips **out of identity order**, so B2 must hash *canonical* bytes at every
+  chain index; the second supplies three tips in reverse order, which needs a
+  full sort rather than one adjacent swap; their `B4` and `B5` tokens fall at
+  middle, final and interior-tip positions rather than at first ones; and every
+  regressed timestamp stays above `chain[0]`'s, so comparing against `chain[0]`
+  instead of the immediate predecessor no longer matches.
+- **Position-generic tests.** `go/positional_test.go`, `go/crossproduct_test.go`
+  and the matching sections of `py/test_validate.py` are table-driven over
+  position: for each rule they inject the defect at every chain index, every tip
+  index, every tip-index *pair*, and every index of the warning list in turn,
+  and require the rule to fire each time. A vector can only pin the positions
   someone thought to write down; these fail for any position a validator omits.
+- **A count of what the harness actually reached.** Rules cannot fix a harness
+  that skips entries: a loop truncated to its first element leaves every rule
+  intact and every gate green. Both validators print a line like
+
+  ```
+  checked: 12 positive (9 through Tier B) + 25 negative
+  ```
+
+  and fail if those counts do not match an independent pre-pass over the suite.
+  The tests recount the committed file a third time and compare.
 
 Rules R1–R3 of the spec constrain the *producer* (how epochs are allocated and
 recovered) rather than the verifier, and are documented rather than implemented

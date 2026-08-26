@@ -96,18 +96,28 @@ def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
     the positive and negative paths so the rule cannot drift between them."""
     full = []
     for sc in chain:
-        err = check_epoch_presence(sc["input"], min_ver)
+        # Read with defaults equal to Go's zero values, for the same reason as
+        # check_tier_b: Go decodes a chain entry with no "input" or "signature"
+        # key into a zero Checkpoint and an empty signature and returns
+        # reason="signature", while a direct subscript here raises KeyError.
+        # This is a reason-returning function on third-party input; it must
+        # return a reason, never raise.
+        cp = sc.get("input", {})
+        err = check_epoch_presence(cp, min_ver)
         if err:
             return ([], "schema")
         try:
-            scb = canonical(sc["input"])
+            scb = canonical(cp)
         except ValueError:
             return ([], "canonical")
         try:
-            pub.verify(base64.b64decode(sc["signature"]), scb)
-        except InvalidSignature:
+            # binascii.Error (a ValueError) for non-base64 input, TypeError for
+            # a non-string: Go folds a base64 decode failure into "signature"
+            # via `err != nil || !Verify`, so this must too.
+            pub.verify(base64.b64decode(sc.get("signature", ""), validate=False), scb)
+        except (InvalidSignature, ValueError, TypeError):
             return ([], "signature")
-        full.append(sc["input"])
+        full.append(cp)
     return (full, "")
 
 
@@ -180,6 +190,25 @@ def main() -> int:
               f"supported={SUPPORTED_FORMAT_VERSION}; unsupported vectors will be skipped")
     pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(suite["public_key_hex"]))
 
+    # How many entries MUST be checked, computed in a pre-pass that is
+    # textually separate from the loops that do the checking. The rules cannot
+    # fix a harness that silently skips vectors: a loop truncated to its first
+    # entry, or a Tier B block that runs only for the first chain-carrying
+    # vector, leaves every rule intact and every gate green. Counting what was
+    # actually reached and comparing it here is the only instrument that sees
+    # that class.
+    want_positives = want_tier_b = want_negatives = 0
+    for v in suite["vectors"]:
+        if skip_vector(v.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
+            continue
+        want_positives += 1
+        if len(v.get("chain", [])) != 0 or len(v.get("expect_warnings", [])) != 0:
+            want_tier_b += 1
+    for nv in suite.get("negatives", []):
+        if not skip_vector(nv.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
+            want_negatives += 1
+    got_positives = got_tier_b = got_negatives = 0
+
     prev_expected = None
     for i, v in enumerate(suite["vectors"]):
         if skip_vector(v.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
@@ -221,6 +250,7 @@ def main() -> int:
             if warns != v.get("expect_warnings", []):
                 print(f"FAIL [{v['name']}] warnings {warns}, want {v.get('expect_warnings', [])}")
                 return 1
+            got_tier_b += 1
         # A vector carrying its own chain context is not part of the positives'
         # own hash chain, so prev_expected does not apply to it.
         if (i > 0 and prev_expected is not None and not v.get("chain")
@@ -232,29 +262,31 @@ def main() -> int:
             # chain-carrying vector must not become the next one's expected
             # predecessor.
             prev_expected = v["sha256"]
+        got_positives += 1
         print(f"  ok  {v['name']:<34} sha256={v['sha256'][:16]}…")
 
     def reject_reason(nv):
-        err = check_epoch_presence(nv["input"], nv.get("min_format_version", 0))
+        cp = nv.get("input", {})
+        err = check_epoch_presence(cp, nv.get("min_format_version", 0))
         if err:
             return "schema"
         try:
-            cb = canonical(nv["input"])
+            cb = canonical(cp)
         except ValueError:
             return "canonical"
         try:
-            pub.verify(base64.b64decode(nv["signature"]), cb)
-        except InvalidSignature:
+            pub.verify(base64.b64decode(nv.get("signature", ""), validate=False), cb)
+        except (InvalidSignature, ValueError, TypeError):
             return "signature"
         if nv.get("chain"):
             prefixes, reason = verify_prefixes(
                 pub, nv["chain"], nv.get("min_format_version", 0))
             if reason:
                 return reason
-            tb_err, _ = check_tier_b(prefixes + [nv["input"]])
+            tb_err, _ = check_tier_b(prefixes + [cp])
             if tb_err:
                 return "tier_b"
-        if nv.get("prev_sha256") and nv["input"]["prev_hash"] != nv["prev_sha256"]:
+        if nv.get("prev_sha256") and cp.get("prev_hash", "") != nv["prev_sha256"]:
             return "chain"
         return ""
 
@@ -269,8 +301,21 @@ def main() -> int:
         if got != nv["expect"]:
             print(f"FAIL [{nv['name']}] rejected for {got!r}, expected {nv['expect']!r}")
             return 1
+        got_negatives += 1
         print(f"  ok  {nv['name']:<34} rejected ({got})")
 
+    if got_positives != want_positives:
+        print(f"FAIL harness: validated {got_positives} of {want_positives} positive vectors")
+        return 1
+    if got_tier_b != want_tier_b:
+        print(f"FAIL harness: ran the cross-checkpoint block for {got_tier_b} of "
+              f"{want_tier_b} chain-carrying positive vectors")
+        return 1
+    if got_negatives != want_negatives:
+        print(f"FAIL harness: checked {got_negatives} of {want_negatives} negative vectors")
+        return 1
+    print(f"  checked: {got_positives} positive ({got_tier_b} through Tier B) + "
+          f"{got_negatives} negative")
     print(f"PASS: {len(suite['vectors'])} positive + {len(suite.get('negatives', []))} negative "
           f"vectors, all as expected (independent Python impl)")
     return 0

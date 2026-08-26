@@ -177,17 +177,25 @@ reject. That is not a detection regression: forging a cross-epoch checkpoint
 requires the signing key, which is Tier C territory, and an honest timeout-split
 produces exactly that shape.
 
-**Every B rule holds at every position of the chain, and that is a separate
-claim from the rules themselves.** A validator that applies a rule at exactly
-one position — only the first transition, only the last prefix, comparing every
-timestamp against `chain[0]` — computes correct bytes and rejects everything a
-one- or two-prefix chain can express, because with so few checkpoints "first",
-"middle" and "last" coincide. The suite therefore carries four-checkpoint
-vectors whose single defect sits in the **middle**, plus one whose defect is on
-the **final** link of a chain that reaches Tier B (a vector's `prev_sha256`
-field pins only that last link, and only for chainless vectors). Alongside them,
-both test suites are table-driven over position: for each rule the defect is
-injected at every index of a five-checkpoint chain in turn.
+**Every B rule holds at every position, and that is a separate claim from the
+rules themselves.** "Position" is a product of four independent factors — the
+chain index, the tip index within a checkpoint, whether the checkpoint is a
+prefix or the vector's own, and the vector's index in the suite file — plus two
+orderings belonging to the verifier's contract rather than to any rule: the
+order of the warning list it reports and the order of the `chain` array it was
+handed. A validator that applies a rule at exactly one position computes correct
+bytes and rejects everything a one- or two-prefix chain, or a one- or two-tip
+checkpoint, can express; collapse any factor and it passes. The suite therefore
+carries four-checkpoint vectors whose single defect sits in the **middle**, one
+whose defect is on the **final** link of a chain that reaches Tier B (a vector's
+`prev_sha256` field pins only that last link, and only for chainless vectors),
+three-tip checkpoints whose defect sits on the **interior** tip, an epoch defect
+on a chain carrier's **own** input, and prefixes supplied **out of order**.
+Alongside them, both test suites are table-driven over position: for each rule
+the defect is injected at every chain index, every tip index, every tip-index
+pair and every warning-list index in turn. Because rules cannot fix a harness
+that skips entries, both validators additionally count what they actually
+reached and fail if it disagrees with an independent pre-pass over the suite.
 
 B2 hashes the previous checkpoint's **canonical** bytes, not the bytes as
 received. A checkpoint's tips are explicitly allowed to arrive unsorted, so a

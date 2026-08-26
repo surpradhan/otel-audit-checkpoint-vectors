@@ -936,6 +936,150 @@ func gen() Suite {
 		MinFormatVersion: 2,
 	})
 
+	// ------------------------------------------------------------------
+	// The cross-product. Chain index is only one factor of "position":
+	//
+	//   (chain index) x (tip index within a checkpoint)
+	//                 x (prefix vs the vector's own checkpoint)
+	//                 x (vector-list index in this file)
+	//
+	// The vectors below put the defect at a factor the chain-index vectors
+	// above cannot reach. Several carry THREE tips supplied in reverse
+	// identity order, so an "interior tip" exists at all -- before these, no
+	// checkpoint that reached checkTierB had more than two tips, and no
+	// published positive needed more than a single swap to sort.
+	// ------------------------------------------------------------------
+
+	c1, c2, c3 := "c1000000-0000-4000-8000-000000000001", "c2000000-0000-4000-8000-000000000002", "c3000000-0000-4000-8000-000000000003"
+	b0, d9 := "b0000000-0000-4000-8000-000000000000", "d9000000-0000-4000-8000-000000000009"
+
+	// Must-accept. chain[0] itself supplies its tips OUT of identity order:
+	// advisory_middle_chain_unsorted_prefix_tips puts the unsorted prefix at
+	// index 1, so a validator that hashes chain[0] as received and everything
+	// else canonically passes it and fails this. Three tips in REVERSE order
+	// also need a full sort rather than one adjacent swap. The tip whose epoch
+	// changes is the identity-INTERIOR one of three, so a tip walk that
+	// registers only the first and last tip emits no B4 at all.
+	upP1 := Checkpoint{Seq: 1, Timestamp: "2026-11-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: c3, TipHash: "c3" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: c2, TipHash: "c2" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: c1, TipHash: "c1" + repeat("00", 31)},
+	}}
+	upTail := Checkpoint{Seq: 2, Timestamp: "2026-11-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: d9, TipHash: "d9" + repeat("00", 31)},
+		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: c2, TipHash: "cc" + repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: b0, TipHash: "b0" + repeat("00", 31)},
+	}}
+	upAll := linkCheckpoints([]Checkpoint{upP1, upTail})
+	upCanon, err := canonical(upAll[1])
+	if err != nil {
+		panic(fmt.Sprintf("gen: unsorted-first-prefix vector is malformed: %v", err))
+	}
+	upSum := sha256.Sum256(upCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:             "advisory_first_prefix_unsorted_tips",
+		Input:            upAll[1],
+		Canonical:        string(upCanon),
+		SHA256:           hex.EncodeToString(upSum[:]),
+		Signature:        base64.StdEncoding.EncodeToString(ed25519.Sign(priv, upCanon)),
+		Chain:            signAll(priv, upAll[:1]),
+		ExpectWarnings:   []string{"B4:" + c2},
+		MinFormatVersion: 2,
+	})
+
+	// B3 violated by the identity-INTERIOR tip of a three-tip checkpoint,
+	// against the identity-interior tip of a three-tip prefix. Every other B3
+	// vector duplicates a checkpoint's only tip, so a tip walk that registers
+	// just the first and last tip catches all of them and misses this.
+	e1, e2, e3 := "e1000000-0000-4000-8000-000000000001", "e2000000-0000-4000-8000-000000000002", "e3000000-0000-4000-8000-000000000003"
+	itP1 := Checkpoint{Seq: 1, Timestamp: "2026-11-02T00:00:00Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: e3, TipHash: "e3" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: e2, TipHash: "e2" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: e1, TipHash: "e1" + repeat("00", 31)},
+	}}
+	itTail := Checkpoint{Seq: 2, Timestamp: "2026-11-02T00:00:05Z", Tips: []Tip{
+		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: "f9000000-0000-4000-8000-000000000009", TipHash: "f9" + repeat("00", 31)},
+		{EntryCount: 7, Epoch: ptr(0), SequenceNumber: 7, StreamID: e2, TipHash: "ee" + repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "d0000000-0000-4000-8000-000000000000", TipHash: "d0" + repeat("00", 31)},
+	}}
+	itAll := linkCheckpoints([]Checkpoint{itP1, itTail})
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "interior_tip_recommitted_same_epoch", Expect: "tier_b",
+		Reason:           "the identity-INTERIOR tip of a three-tip checkpoint re-commits a (stream_id, epoch) already committed by the interior tip of a three-tip prefix; a validator that inspects only a checkpoint's first and last tip accepts this",
+		Input:            itAll[1],
+		Signature:        signCP(priv, itAll[1]).Signature,
+		Chain:            signAll(priv, itAll[:1]),
+		MinFormatVersion: 2,
+	})
+
+	// The epoch boundary at an INTERIOR tip index. missing_epoch_in_v2 and
+	// negative_epoch both put their defect on the LAST tip of two, so a check
+	// that inspects only the last tip passes the whole suite.
+	aa1, aa2, aa3 := "aa100000-0000-4000-8000-000000000001", "aa200000-0000-4000-8000-000000000002", "aa300000-0000-4000-8000-000000000003"
+	noEpochMid := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-03T00:00:00Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: aa3, TipHash: "a3" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: nil, SequenceNumber: 2, StreamID: aa2, TipHash: "a2" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: aa1, TipHash: "a1" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "missing_epoch_interior_tip", Expect: "schema",
+		Reason:           "the middle tip of three omits epoch at format_version 2; the boundary applies at every tip index, not only the first or the last",
+		Input:            noEpochMid,
+		Signature:        signCP(priv, noEpochMid).Signature,
+		MinFormatVersion: 2,
+	})
+
+	// Same tip index, for the non-negativity guard -- and at magnitude -3
+	// rather than -1, so a guard weakened to `< -1` is also caught.
+	negEpochMid := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-03T00:00:05Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: aa3, TipHash: "b3" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(-3), SequenceNumber: 2, StreamID: aa2, TipHash: "b2" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: aa1, TipHash: "b1" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "negative_epoch_interior_tip", Expect: "schema",
+		Reason:           "the middle tip of three carries epoch -3; the non-negativity guard applies at every tip index and at every magnitude, not only to the last tip at -1",
+		Input:            negEpochMid,
+		Signature:        signCP(priv, negEpochMid).Signature,
+		MinFormatVersion: 2,
+	})
+
+	// The epoch boundary on a vector's OWN input while it carries a chain.
+	// Every other epoch-boundary negative is chainless, and every chain-carrying
+	// epoch negative puts the defect in a prefix, so a validator that checks the
+	// own input only when there is no chain passes all of them. The defect is on
+	// the FIRST tip, which is also the tip index the suite otherwise never uses.
+	ccPrefix := Checkpoint{Seq: 1, Timestamp: "2026-11-04T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "ba000000-0000-4000-8000-000000000001", TipHash: "ba" + repeat("00", 31)},
+	}}
+	ccTail := Checkpoint{Seq: 2, Timestamp: "2026-11-04T00:00:05Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: nil, SequenceNumber: 2, StreamID: "bb000000-0000-4000-8000-000000000002", TipHash: "bb" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "bc000000-0000-4000-8000-000000000003", TipHash: "bc" + repeat("00", 31)},
+	}}
+	ccAll := linkCheckpoints([]Checkpoint{ccPrefix, ccTail})
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "chain_carrier_missing_epoch", Expect: "schema",
+		Reason:           "the vector's OWN first tip omits epoch while the vector carries a chain; the boundary applies to the vector's own input whether or not chain context is present",
+		Input:            ccAll[1],
+		Signature:        signCP(priv, ccAll[1]).Signature,
+		Chain:            signAll(priv, ccAll[:1]),
+		MinFormatVersion: 2,
+	})
+
+	// The chain prefixes are supplied in the WRONG ORDER. The chain array is
+	// input, so its order is the producer's claim about history; a validator
+	// that sorts the prefixes by seq before checking silently repairs a
+	// reordered chain, and every other chain in the suite is already ordered.
+	ooAll := posChain("a7a7a7a7", 3)
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "prefixes_out_of_order", Expect: "tier_b",
+		Reason:           "the two chain prefixes are supplied newest-first; the chain array's order is the claim being verified, so it must be checked as given rather than sorted into shape",
+		Input:            ooAll[2],
+		Signature:        signCP(priv, ooAll[2]).Signature,
+		Chain:            []SignedCheckpoint{signCP(priv, ooAll[1]), signCP(priv, ooAll[0])},
+		MinFormatVersion: 2,
+	})
+
 	return suite
 }
 
@@ -1114,6 +1258,30 @@ func validate(path string) error {
 	if err != nil {
 		return err
 	}
+	// How many entries MUST be checked, computed in a pre-pass that is
+	// textually separate from the loops that do the checking. The rules cannot
+	// fix a harness that silently skips vectors: a loop truncated to its first
+	// entry, or a Tier B block that runs only for the first chain-carrying
+	// vector, leaves every rule intact and every gate green. Counting what was
+	// actually reached and comparing it here is the only instrument that sees
+	// that class.
+	wantPositives, wantTierB, wantNegatives := 0, 0, 0
+	for _, v := range suite.Vectors {
+		if skipVector(v.MinFormatVersion, supportedFormatVersion) {
+			continue
+		}
+		wantPositives++
+		if len(v.Chain) != 0 || len(v.ExpectWarnings) != 0 {
+			wantTierB++
+		}
+	}
+	for _, nv := range suite.Negatives {
+		if !skipVector(nv.MinFormatVersion, supportedFormatVersion) {
+			wantNegatives++
+		}
+	}
+	gotPositives, gotTierB, gotNegatives := 0, 0, 0
+
 	prevExpected := ""
 	for i, v := range suite.Vectors {
 		if skipVector(v.MinFormatVersion, supportedFormatVersion) {
@@ -1159,6 +1327,7 @@ func validate(path string) error {
 			if !slices.Equal(warns, v.ExpectWarnings) {
 				return fmt.Errorf("[%s] warnings %v, want %v", v.Name, warns, v.ExpectWarnings)
 			}
+			gotTierB++
 		}
 		// A vector carrying its own chain context is not part of the
 		// positives' own hash chain, so prevExpected does not apply to it.
@@ -1171,6 +1340,7 @@ func validate(path string) error {
 			// predecessor.
 			prevExpected = v.SHA256
 		}
+		gotPositives++
 		fmt.Printf("  ok  %-34s sha256=%s…\n", v.Name, v.SHA256[:16])
 	}
 
@@ -1187,9 +1357,20 @@ func validate(path string) error {
 		if got != nv.Expect {
 			return fmt.Errorf("[%s] rejected for %q, expected %q", nv.Name, got, nv.Expect)
 		}
+		gotNegatives++
 		fmt.Printf("  ok  %-34s rejected (%s)\n", nv.Name, got)
 	}
 
+	if gotPositives != wantPositives {
+		return fmt.Errorf("harness: validated %d of %d positive vectors", gotPositives, wantPositives)
+	}
+	if gotTierB != wantTierB {
+		return fmt.Errorf("harness: ran the cross-checkpoint block for %d of %d chain-carrying positive vectors", gotTierB, wantTierB)
+	}
+	if gotNegatives != wantNegatives {
+		return fmt.Errorf("harness: checked %d of %d negative vectors", gotNegatives, wantNegatives)
+	}
+	fmt.Printf("  checked: %d positive (%d through Tier B) + %d negative\n", gotPositives, gotTierB, gotNegatives)
 	fmt.Printf("PASS: %d positive + %d negative vectors, all as expected\n", len(suite.Vectors), len(suite.Negatives))
 	return nil
 }

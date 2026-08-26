@@ -777,6 +777,272 @@ def test_malformed_checkpoint_rejects_cleanly():
         f"checkpoint with no prev_hash rejected by {err!r}; want a B2 rejection")
 
 
+
+# --- Cross-product position tests (round 5) -------------------------------
+#
+# The positional tests above close ONE factor of "position": the index of a
+# checkpoint within a chain. Position is a product of at least four:
+#
+#     (chain index) x (tip index within a checkpoint)
+#                   x (prefix vs the vector's own checkpoint)
+#                   x (vector-list index in the suite file)
+#
+# plus two the rules do not own at all: the order of the warning list a
+# verifier reports, and the order of the chain array it was handed. A mutation
+# of the form "apply this check only at position X" escapes on any factor left
+# unswept. Mirrors go/crossproduct_test.go one-for-one.
+
+CHECKED_RE = re.compile(
+    r"checked: (\d+) positive \((\d+) through Tier B\) \+ (\d+) negative")
+
+
+def _xp_tips(i, k):
+    """k tips for checkpoint i, all epoch 0 with distinct streams, supplied in
+    REVERSE identity order so sorting is actually exercised."""
+    return [_tip(_pos_stream(100 * i + j), 0, j, j, f"{j:02x}") for j in range(k, 0, -1)]
+
+
+def _xp_interleaved(k):
+    """Two checkpoints whose tips interleave: cp0 carries the odd-numbered
+    streams and cp1 the even ones, so replacing cp1's tip at index d with cp0's
+    stream 2d+1 keeps it at identity position d."""
+    a = [_tip(_pos_stream(2 * j + 1), 0, j + 1, j + 1, f"a{j}") for j in range(k)]
+    b = [_tip(_pos_stream(2 * j + 2), 0, j + 1, j + 1, f"b{j}") for j in range(k)]
+    return [_cp(1, _pos_ts(100), a), _cp(2, _pos_ts(110), b)]
+
+
+def _synthetic_suite(vectors=(), negatives=()):
+    """A suite carrying the real header (so the published public key verifies)
+    and only the entries given."""
+    real = _load_real_suite()
+    return {"format_version": real["format_version"], "description": real["description"],
+            "algorithm": real["algorithm"], "signing_seed_hex": real["signing_seed_hex"],
+            "public_key_hex": real["public_key_hex"],
+            "vectors": list(vectors), "negatives": list(negatives)}
+
+
+def test_epoch_presence_fires_at_every_tip_index():
+    """The epoch boundary and the non-negativity guard must fire at EVERY tip
+    index and at every magnitude. Both epoch negatives put their defect on the
+    last tip of two, so a check reading only the last tip -- or only the first --
+    passes the whole published suite."""
+    k = 4
+    clean = _cp(1, _pos_ts(100), _xp_tips(1, k))
+    assert validate.check_epoch_presence(clean, 2) is None, \
+        "a clean version-2 checkpoint was rejected"
+    for d in range(k):
+        cp = _cp(1, _pos_ts(100), _xp_tips(1, k))
+        del cp["tips"][d]["epoch"]
+        assert validate.check_epoch_presence(cp, 2) is not None, \
+            f"tip {d} of {k} missing epoch was accepted at version 2"
+        for mag in (-1, -3, -1000):
+            cp = _cp(1, _pos_ts(100), _xp_tips(1, k))
+            cp["tips"][d]["epoch"] = mag
+            assert validate.check_epoch_presence(cp, 2) is not None, \
+                f"tip {d} of {k} with epoch {mag} was accepted"
+
+
+def test_b3_fires_for_every_tip_index_pair():
+    """B3 must fire for a duplicate involving ANY tip index in either
+    checkpoint. Every B3 vector before this round duplicated a checkpoint's
+    only tip."""
+    k = 4
+    for a in range(k):
+        for b in range(k):
+            cps = _xp_interleaved(k)
+            cps[1]["tips"][b]["stream_id"] = cps[0]["tips"][a]["stream_id"]
+            err, _ = validate.check_tier_b(_link(*cps))
+            assert err is not None, \
+                f"identity of cp0 tip {a} repeated at cp1 tip {b} was accepted"
+            assert err.startswith("B3:"), \
+                f"cp0 tip {a} / cp1 tip {b} rejected by {err!r}; want a B3 rejection"
+
+
+def test_b4_fires_at_every_tip_index():
+    """B4 must fire for an epoch change on ANY tip index, interior included."""
+    k = 4
+    for d in range(k):
+        cps = _xp_interleaved(k)
+        cps[1]["tips"][d]["stream_id"] = _pos_stream(2 * d + 1)  # re-commit cp0's stream
+        cps[1]["tips"][d]["epoch"] = 1
+        err, warns = validate.check_tier_b(_link(*cps))
+        assert err is None, f"cross-epoch re-commit on tip {d} is advisory, not a rejection: {err}"
+        assert warns == ["B4:" + _pos_stream(2 * d + 1)], \
+            f"epoch change on tip {d}: warnings {warns}, want ['B4:{_pos_stream(2 * d + 1)}']"
+
+
+def test_duplicate_tip_identity_at_every_tip_index_pair():
+    """canonical() must reject a duplicate identity at ANY pair of tip indices,
+    including one involving tips[0]."""
+    k = 4
+    for a in range(k):
+        for b in range(a + 1, k):
+            cp = _cp(1, _pos_ts(100), _xp_tips(1, k))
+            cp["tips"][b]["stream_id"] = cp["tips"][a]["stream_id"]
+            cp["tips"][b]["epoch"] = cp["tips"][a]["epoch"]
+            try:
+                validate.canonical(cp)
+                raise AssertionError(
+                    f"tips {a} and {b} share an identity but canonical() accepted the checkpoint")
+            except ValueError:
+                pass
+
+
+def test_canonical_fully_sorts_tips():
+    """The tip sort must be a FULL sort, not a single adjacent-swap pass. No
+    published positive needed more than one swap before this round, so a
+    one-pass bubble would have reproduced every canonical field in the suite."""
+    k = 5
+    cp = _cp(1, _pos_ts(100), _xp_tips(1, k))
+    got = json.loads(validate.canonical(cp).decode("utf-8"))
+    assert len(got["tips"]) == k, f"canonical dropped tips: {len(got['tips'])}, want {k}"
+    keys = [validate.tip_identity(t) for t in got["tips"]]
+    assert keys == sorted(keys), f"canonical tips are not fully sorted: {keys}"
+
+
+def test_b2_hashes_canonical_bytes_at_every_chain_index():
+    """B2 hashes canonical bytes at EVERY chain index, chain[0] included.
+    advisory_middle_chain_unsorted_prefix_tips puts its unsorted prefix at index
+    1, so a validator special-casing chain[0] passes it."""
+    n = 4
+    for d in range(n - 1):
+        cps = [_cp(i + 1, _pos_ts(100 + 10 * i), _xp_tips(i + 1, 3 if i == d else 1))
+               for i in range(n)]
+        chain = _link(*cps)
+        as_received = json.dumps(chain[d], sort_keys=True, ensure_ascii=False,
+                                 separators=(",", ":")).encode("utf-8")
+        assert validate.canonical(chain[d]) != as_received, \
+            f"checkpoint {d} is not discriminating: its tips are already in identity order"
+        err, _ = validate.check_tier_b(chain)
+        assert err is None, \
+            f"chain whose checkpoint {d} supplies tips out of identity order was rejected: {err}"
+
+
+def test_own_input_epoch_checked_with_and_without_chain():
+    """The epoch boundary applies to a vector's OWN input whether or not it
+    carries chain context. Every epoch-boundary negative before this round was
+    chainless, so skipping the own-input check for chain carriers passed the
+    whole suite. reject_reason is nested inside main(), so this runs end to
+    end."""
+    import base64 as _b64
+    priv = _priv()
+    genesis = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    bad = _cp(2, _pos_ts(110), [
+        _tip(_pos_stream(1), 0, 1, 1, "aa"),
+        _tip(_pos_stream(2), 0, 2, 2, "bb"),
+    ], prev=genesis)
+    del bad["tips"][0]["epoch"]
+    prefix = _cp(1, _pos_ts(100), [_tip(_pos_stream(9), 0, 9, 9, "99")], prev=genesis)
+    sig = _b64.b64encode(priv.sign(validate.canonical(bad))).decode()
+    for name, chain in (("chainless", None), ("with_chain", [_sign(priv, prefix)])):
+        nv = {"name": "own_input_missing_epoch", "expect": "schema",
+              "reason": "own input missing epoch", "input": bad, "signature": sig,
+              "min_format_version": 2}
+        if chain:
+            nv["chain"] = chain
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+        assert rc == 0, f"own input missing epoch ({name}) was not rejected as schema\n{output}"
+        assert "rejected (schema)" in output, \
+            f"own input missing epoch ({name}) rejected for the wrong reason\n{output}"
+
+
+def test_malformed_chain_entry_rejects_cleanly():
+    """A chain entry with no signature (or no input at all) must produce a
+    reason, never a crash. Go decodes the absent keys into zero values and
+    returns "signature"; this implementation read sc["signature"] directly and
+    raised KeyError, so the two references disagreed on third-party input."""
+    pub = _pub()
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    cases = {
+        "no_signature": {"input": cp},
+        "empty_entry": {},
+        "not_base64": {"input": cp, "signature": "!!!not base64!!!"},
+    }
+    for name, sc in cases.items():
+        _, reason = validate.verify_prefixes(pub, [sc], 2)
+        assert reason == "signature", f"{name}: reason={reason!r}, want 'signature'"
+
+
+def test_chain_prefix_order_is_preserved():
+    """The chain array's order is the producer's claim about history, so it is
+    verified as given. A validator that sorted the prefixes by seq would
+    silently repair a reordered chain, and every other chain in the suite
+    arrives ordered."""
+    pub, priv = _pub(), _priv()
+    cps = _link(
+        _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "11")]),
+        _cp(2, _pos_ts(110), [_tip(_pos_stream(2), 0, 2, 2, "22")]),
+        _cp(3, _pos_ts(120), [_tip(_pos_stream(3), 0, 3, 3, "33")]))
+    reversed_chain = [_sign(priv, cps[1]), _sign(priv, cps[0])]
+    full, reason = validate.verify_prefixes(pub, reversed_chain, 2)
+    assert reason == "", f"both prefixes are correctly signed, but verify_prefixes returned {reason!r}"
+    assert [c["seq"] for c in full] == [2, 1], \
+        f"verify_prefixes reordered the chain: seqs {[c['seq'] for c in full]}, want [2, 1]"
+    err, _ = validate.check_tier_b(full + [cps[2]])
+    assert err is not None, \
+        "a chain supplied newest-first was accepted; the array order is the claim being verified"
+
+
+def test_warning_comparison_is_position_generic():
+    """expect_warnings is compared element-wise over the WHOLE list. Every
+    published expectation is correct, so no vector can catch a comparison
+    weakened to the first element or to the shorter prefix -- only feeding a
+    wrong expectation at each index in turn can."""
+    real = _load_real_suite()
+    v = None
+    for cand in real["vectors"]:
+        if cand["name"] == "advisory_middle_chain_unsorted_prefix_tips":
+            v = cand
+    assert v is not None, "advisory_middle_chain_unsorted_prefix_tips not found in vectors.json"
+    ew = v["expect_warnings"]
+    assert len(ew) >= 4, f"this test needs a vector with at least four warnings, got {ew}"
+
+    mutations = {}
+    for i in range(len(ew)):
+        bad = list(ew)
+        bad[i] = f"B9:wrong-at-index-{i}"
+        mutations[f"corrupt_index_{i}"] = bad
+    mutations["truncated"] = list(ew[:-1])
+    mutations["extra_appended"] = list(ew) + ["B9:extra"]
+    mutations["permuted_tail"] = list(ew[:-2]) + [ew[-1], ew[-2]]
+
+    for name, bad in mutations.items():
+        mv = copy.deepcopy(v)
+        mv["expect_warnings"] = bad
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[mv]))
+        assert rc != 0, f"expect_warnings {bad} ({name}) was accepted; actual is {ew}\n{output}"
+        assert "warnings" in output, f"{name} rejected, but not for the warning mismatch:\n{output}"
+
+
+def test_validate_checks_every_vector_and_negative():
+    """The rules cannot fix a harness that skips entries: a loop truncated to
+    its first element, or a Tier B block that runs only for the first
+    chain-carrying vector, leaves every rule intact and every gate green.
+    main() counts what it actually reached; this recounts the committed file
+    independently and requires the two to agree."""
+    suite = _load_real_suite()
+    want_pos = want_tier_b = want_neg = 0
+    for v in suite["vectors"]:
+        if v.get("min_format_version", 0) > validate.SUPPORTED_FORMAT_VERSION:
+            continue
+        want_pos += 1
+        if v.get("chain") or v.get("expect_warnings"):
+            want_tier_b += 1
+    for nv in suite.get("negatives", []):
+        if nv.get("min_format_version", 0) <= validate.SUPPORTED_FORMAT_VERSION:
+            want_neg += 1
+    assert want_pos >= 2 and want_tier_b >= 2 and want_neg >= 2, \
+        f"the committed suite is too small for this test to mean anything: {want_pos}/{want_tier_b}/{want_neg}"
+
+    rc, output = _run_main_capturing_stdout(suite)
+    assert rc == 0, f"the committed vectors.json no longer validates\n{output}"
+    m = CHECKED_RE.search(output)
+    assert m, f"main() printed no 'checked:' line; the harness cannot show what it reached\n{output}"
+    got = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    assert got == (want_pos, want_tier_b, want_neg), \
+        f"main reached {got}, want {(want_pos, want_tier_b, want_neg)}"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -812,6 +1078,17 @@ def main():
         test_b2_hashes_canonical_bytes_not_as_received,
         test_prefix_rules_fire_at_every_prefix_index,
         test_malformed_checkpoint_rejects_cleanly,
+        test_epoch_presence_fires_at_every_tip_index,
+        test_b3_fires_for_every_tip_index_pair,
+        test_b4_fires_at_every_tip_index,
+        test_duplicate_tip_identity_at_every_tip_index_pair,
+        test_canonical_fully_sorts_tips,
+        test_b2_hashes_canonical_bytes_at_every_chain_index,
+        test_own_input_epoch_checked_with_and_without_chain,
+        test_malformed_chain_entry_rejects_cleanly,
+        test_chain_prefix_order_is_preserved,
+        test_warning_comparison_is_position_generic,
+        test_validate_checks_every_vector_and_negative,
     ]
     failed = []
     for t in tests:
