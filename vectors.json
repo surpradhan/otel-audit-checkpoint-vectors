@@ -120,6 +120,31 @@
       },
       "signature": "BA7//CpJPyyapZ+/3/cMDRm7jsvYVtNzOQ5pI4V5V2T5aq/XkHXtxl8SzxgXfGpdz/yPoIlBb/lSOLgWUGsiBA==",
       "prev_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "duplicate_tip_identity",
+      "expect": "canonical",
+      "reason": "two tips share an identity, so the canonical bytes would depend on input order",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2026-02-01T00:00:00Z",
+        "tips": [
+          {
+            "entry_count": 7,
+            "sequence_number": 7,
+            "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "entry_count": 5,
+            "sequence_number": 5,
+            "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tip_hash": "bb00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": ""
     }
   ]
 }

@@ -58,13 +58,29 @@ type Checkpoint struct {
 	Tips      []Tip  `json:"tips"`
 }
 
+// tipIdentity is the uniqueness and sort key for a tip. Task 3 widens this to
+// include epoch; nothing else needs to change when it does.
+func tipIdentity(t Tip) string {
+	return t.StreamID
+}
+
 // canonical returns the JCS canonical bytes of a checkpoint. Tips are sorted
-// by stream_id first: JCS fixes object-key order but preserves array order, so
-// the producer MUST impose a deterministic tip order for reproducibility.
+// by identity first: JCS fixes object-key order but preserves array order, so
+// the producer MUST impose a deterministic tip order for reproducibility. Two
+// tips sharing an identity would make that order (and thus the canonical
+// bytes) depend on input order, so duplicates are rejected outright.
 func canonical(c Checkpoint) ([]byte, error) {
+	seen := make(map[string]struct{}, len(c.Tips))
+	for _, t := range c.Tips {
+		id := tipIdentity(t)
+		if _, dup := seen[id]; dup {
+			return nil, fmt.Errorf("duplicate tip identity %q: canonical bytes would depend on input order", id)
+		}
+		seen[id] = struct{}{}
+	}
 	tips := make([]Tip, len(c.Tips))
 	copy(tips, c.Tips)
-	sort.Slice(tips, func(i, j int) bool { return tips[i].StreamID < tips[j].StreamID })
+	sort.Slice(tips, func(i, j int) bool { return tipIdentity(tips[i]) < tipIdentity(tips[j]) })
 	c.Tips = tips // sort a copy; leave the caller's input order intact
 	raw, err := json.Marshal(c)
 	if err != nil {
@@ -161,7 +177,10 @@ func gen() Suite {
 	base := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-02-01T00:00:00Z", Tips: []Tip{
 		{EntryCount: 7, SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + repeat("00", 31)},
 	}}
-	baseCanon, _ := canonical(base)
+	baseCanon, err := canonical(base)
+	if err != nil {
+		panic(fmt.Sprintf("gen: negative-vector base is malformed: %v", err))
+	}
 	baseSig := ed25519.Sign(priv, baseCanon)
 
 	// 1. One byte of a valid signature flipped.
@@ -189,13 +208,28 @@ func gen() Suite {
 	// 3. Valid signature, but prev_hash does not chain to the expected previous hash.
 	bc := base
 	bc.PrevHash = "11" + repeat("11", 31)
-	bcCanon, _ := canonical(bc)
+	bcCanon, err := canonical(bc)
+	if err != nil {
+		panic(fmt.Sprintf("gen: broken_chain vector is malformed: %v", err))
+	}
 	bcSig := ed25519.Sign(priv, bcCanon)
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "broken_chain", Expect: "chain",
 		Reason:     "signature is valid, but prev_hash does not equal the previous checkpoint's hash",
 		Input:      bc, Signature: base64.StdEncoding.EncodeToString(bcSig),
 		PrevSHA256: sha256Empty,
+	})
+
+	// 4. Two tips with the same identity: canonical bytes would depend on
+	// input order, so the checkpoint is rejected before any signature check.
+	dup := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-02-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 7, SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + repeat("00", 31)},
+		{EntryCount: 5, SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "bb" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "duplicate_tip_identity", Expect: "canonical",
+		Reason: "two tips share an identity, so the canonical bytes would depend on input order",
+		Input:  dup, Signature: "",
 	})
 
 	return suite

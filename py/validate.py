@@ -17,11 +17,26 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
 
 
+def tip_identity(t: dict) -> tuple:
+    """Uniqueness and sort key for a tip. Task 3 widens this to include epoch."""
+    return (t["stream_id"],)
+
+
 def canonical(cp: dict) -> bytes:
-    # Producer rule: tips are ordered by stream_id before canonicalization
-    # (JCS fixes object-key order but preserves array order).
+    # Producer rule: tips are ordered by identity before canonicalization
+    # (JCS fixes object-key order but preserves array order). Two tips
+    # sharing an identity would make that order -- and thus the canonical
+    # bytes -- depend on input order, so duplicates are rejected outright.
+    tips = cp.get("tips", [])
+    seen = set()
+    for t in tips:
+        ident = tip_identity(t)
+        if ident in seen:
+            raise ValueError(f"duplicate tip identity {ident}: "
+                             "canonical bytes would depend on input order")
+        seen.add(ident)
     cp = dict(cp)
-    cp["tips"] = sorted(cp.get("tips", []), key=lambda t: t["stream_id"])
+    cp["tips"] = sorted(tips, key=tip_identity)
     # For a strings-and-integers schema, RFC 8785 JCS reduces to sorted keys,
     # compact separators, UTF-8, and standard JSON string escaping.
     return json.dumps(cp, sort_keys=True, ensure_ascii=False,
@@ -71,7 +86,10 @@ def main() -> int:
         print(f"  ok  {v['name']:<34} sha256={v['sha256'][:16]}…")
 
     def reject_reason(nv):
-        cb = canonical(nv["input"])
+        try:
+            cb = canonical(nv["input"])
+        except ValueError:
+            return "canonical"
         try:
             pub.verify(base64.b64decode(nv["signature"]), cb)
         except InvalidSignature:
