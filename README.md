@@ -22,6 +22,16 @@ Field names below are **placeholders** aligned to the sketch; they map to
 whatever the OTEP settles on. The point of this repo is to show the shape is
 concrete, deterministic, and independently verifiable, not to fix a vocabulary.
 
+## Suite format
+
+`vectors.json` carries a `format_version` (integer, currently 1). Individual
+vectors may carry `min_format_version`.
+
+**Validators MUST skip, with a warning, any vector whose `min_format_version`
+exceeds the version they support, and MUST NOT treat a skip as a failure.**
+This is what allows new vector shapes to be added without breaking existing
+validators.
+
 ## Canonical form
 
 A checkpoint is a JSON object:
@@ -30,7 +40,7 @@ A checkpoint is a JSON object:
 |-------|------|-------|
 | `prev_hash` | string | Hex SHA-256 of the previous checkpoint's canonical bytes. The first checkpoint uses the SHA-256 of the empty string (`e3b0c442…b855`). |
 | `seq` | integer | Monotonic checkpoint sequence, starting at 1. |
-| `timestamp` | string | RFC 3339 UTC. |
+| `timestamp` | string | Exactly `YYYY-MM-DDTHH:MM:SSZ`: uppercase `T` and `Z`, no fractional seconds, no numeric offset, no leap seconds. This is a producer rule; verifiers treat it as an opaque signed string. Profile strings sort chronologically, so an ordering check needs no date parsing. |
 | `tips` | array | One entry per stream committed by this checkpoint. |
 
 Each `tips` entry:

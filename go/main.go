@@ -25,6 +25,16 @@ import (
 // sha256Empty is the canonical genesis prev_hash (SHA-256 of the empty string).
 const sha256Empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
+// supportedFormatVersion is the highest suite format this build understands.
+// Vectors carrying a higher min_format_version are skipped, not failed.
+const supportedFormatVersion = 1
+
+// skipVector reports whether a vector requiring minVer must be skipped by a
+// validator supporting supportedVer. A minVer of 0 means "no minimum".
+func skipVector(minVer, supportedVer int) bool {
+	return minVer > supportedVer
+}
+
 // Fixed TEST-ONLY signing seed: bytes 0x00..0x1f. Never use for anything real.
 func testSeed() []byte {
 	s := make([]byte, 32)
@@ -64,32 +74,35 @@ func canonical(c Checkpoint) ([]byte, error) {
 }
 
 type Vector struct {
-	Name      string     `json:"name"`
-	Input     Checkpoint `json:"input"`
-	Canonical string     `json:"canonical"`
-	SHA256    string     `json:"sha256"`
-	Signature string     `json:"signature"`
+	Name             string     `json:"name"`
+	Input            Checkpoint `json:"input"`
+	Canonical        string     `json:"canonical"`
+	SHA256           string     `json:"sha256"`
+	Signature        string     `json:"signature"`
+	MinFormatVersion int        `json:"min_format_version,omitempty"`
 }
 
 // NegativeVector is a case a conformant validator MUST reject. Expect names the
 // check that should catch it ("signature" or "chain"). PrevSHA256, when set, is
 // the hash the input's prev_hash is expected to chain to.
 type NegativeVector struct {
-	Name       string     `json:"name"`
-	Expect     string     `json:"expect"`
-	Reason     string     `json:"reason"`
-	Input      Checkpoint `json:"input"`
-	Signature  string     `json:"signature"`
-	PrevSHA256 string     `json:"prev_sha256,omitempty"`
+	Name             string     `json:"name"`
+	Expect           string     `json:"expect"`
+	Reason           string     `json:"reason"`
+	Input            Checkpoint `json:"input"`
+	Signature        string     `json:"signature"`
+	PrevSHA256       string     `json:"prev_sha256,omitempty"`
+	MinFormatVersion int        `json:"min_format_version,omitempty"`
 }
 
 type Suite struct {
-	Description  string           `json:"description"`
-	Algorithm    string           `json:"algorithm"`
-	SeedHex      string           `json:"signing_seed_hex"`
-	PublicKeyHex string           `json:"public_key_hex"`
-	Vectors      []Vector         `json:"vectors"`
-	Negatives    []NegativeVector `json:"negatives"`
+	FormatVersion int              `json:"format_version"`
+	Description   string           `json:"description"`
+	Algorithm     string           `json:"algorithm"`
+	SeedHex       string           `json:"signing_seed_hex"`
+	PublicKeyHex  string           `json:"public_key_hex"`
+	Vectors       []Vector         `json:"vectors"`
+	Negatives     []NegativeVector `json:"negatives"`
 }
 
 func gen() Suite {
@@ -113,6 +126,7 @@ func gen() Suite {
 	}
 
 	var suite Suite
+	suite.FormatVersion = supportedFormatVersion
 	suite.Description = "Conformance vectors for the audit-checkpoint canonical form (RFC 8785 JCS + SHA-256 chain + Ed25519). TEST KEY ONLY."
 	suite.Algorithm = "ed25519"
 	suite.SeedHex = hex.EncodeToString(testSeed())
@@ -221,12 +235,21 @@ func validate(path string) error {
 	if err := json.Unmarshal(data, &suite); err != nil {
 		return err
 	}
+	if suite.FormatVersion > supportedFormatVersion {
+		fmt.Printf("  note: suite format_version=%d exceeds supported=%d; unsupported vectors will be skipped\n",
+			suite.FormatVersion, supportedFormatVersion)
+	}
 	pub, err := hex.DecodeString(suite.PublicKeyHex)
 	if err != nil {
 		return err
 	}
 	prevExpected := ""
 	for i, v := range suite.Vectors {
+		if skipVector(v.MinFormatVersion, supportedFormatVersion) {
+			fmt.Printf("  skip %-34s requires format_version %d\n", v.Name, v.MinFormatVersion)
+			prevExpected = ""
+			continue
+		}
 		cb, err := canonical(v.Input)
 		if err != nil {
 			return err
@@ -245,7 +268,7 @@ func validate(path string) error {
 		if !ed25519.Verify(pub, cb, sig) {
 			return fmt.Errorf("[%s] signature does not verify", v.Name)
 		}
-		if i > 0 && v.Input.PrevHash != prevExpected {
+		if i > 0 && prevExpected != "" && v.Input.PrevHash != prevExpected {
 			return fmt.Errorf("[%s] chain break: prev_hash=%s expected=%s", v.Name, v.Input.PrevHash, prevExpected)
 		}
 		prevExpected = v.SHA256
@@ -254,6 +277,10 @@ func validate(path string) error {
 
 	// Negative vectors: each MUST be rejected, for the stated reason.
 	for _, nv := range suite.Negatives {
+		if skipVector(nv.MinFormatVersion, supportedFormatVersion) {
+			fmt.Printf("  skip %-34s requires format_version %d\n", nv.Name, nv.MinFormatVersion)
+			continue
+		}
 		got := rejectReason(pub, nv)
 		if got == "" {
 			return fmt.Errorf("[%s] accepted, but must be rejected (%s)", nv.Name, nv.Expect)

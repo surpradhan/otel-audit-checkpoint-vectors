@@ -28,13 +28,28 @@ def canonical(cp: dict) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
+SUPPORTED_FORMAT_VERSION = 1
+
+
+def skip_vector(min_ver: int, supported_ver: int) -> bool:
+    """A vector needing a newer format is skipped with a warning, never failed."""
+    return min_ver > supported_ver
+
+
 def main() -> int:
     with open(sys.argv[1], "rb") as f:
         suite = json.load(f)
+    if suite.get("format_version", 1) > SUPPORTED_FORMAT_VERSION:
+        print(f"  note: suite format_version={suite['format_version']} exceeds "
+              f"supported={SUPPORTED_FORMAT_VERSION}; unsupported vectors will be skipped")
     pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(suite["public_key_hex"]))
 
     prev_expected = None
     for i, v in enumerate(suite["vectors"]):
+        if skip_vector(v.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
+            print(f"  skip {v['name']:<34} requires format_version {v['min_format_version']}")
+            prev_expected = None
+            continue
         cb = canonical(v["input"])
         if cb.decode("utf-8") != v["canonical"]:
             print(f"FAIL [{v['name']}] canonical mismatch")
@@ -49,7 +64,7 @@ def main() -> int:
         except InvalidSignature:
             print(f"FAIL [{v['name']}] signature does not verify")
             return 1
-        if i > 0 and v["input"]["prev_hash"] != prev_expected:
+        if i > 0 and prev_expected is not None and v["input"]["prev_hash"] != prev_expected:
             print(f"FAIL [{v['name']}] chain break")
             return 1
         prev_expected = v["sha256"]
@@ -66,6 +81,9 @@ def main() -> int:
         return ""
 
     for nv in suite.get("negatives", []):
+        if skip_vector(nv.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
+            print(f"  skip {nv['name']:<34} requires format_version {nv['min_format_version']}")
+            continue
         got = reject_reason(nv)
         if got == "":
             print(f"FAIL [{nv['name']}] accepted, but must be rejected")
