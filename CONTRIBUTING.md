@@ -19,7 +19,7 @@ Before merge, **all** of the following must hold:
 - Every required status check is green
 - Branch is up to date with `main`
 - All review conversations are resolved
-- At least one approving review
+- Any required approving reviews are in place (see note below)
 
 ## Required status checks
 
@@ -106,7 +106,10 @@ a regeneration you did not intend, stop: you have made a breaking vector change.
 ## Branch-protection settings (apply in GitHub UI)
 
 - **Require a pull request before merging**
-  - Required approvals: 1
+  - Required approvals: **0 while this is a single-maintainer repo.** GitHub does
+    not permit approving your own PR, so requiring 1 with admin enforcement on
+    would make merging impossible. Raise this to 1 as soon as a second
+    maintainer exists.
   - Dismiss stale reviews when new commits are pushed: ✓
 - **Require status checks to pass before merging**
   - Require branches to be up to date: ✓
