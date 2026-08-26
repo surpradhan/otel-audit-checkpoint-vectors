@@ -218,6 +218,21 @@ def _cp(seq, ts, tips, prev="e" * 64):
     return {"prev_hash": prev, "seq": seq, "timestamp": ts, "tips": tips}
 
 
+def _link(*cps):
+    """Fill in each checkpoint's prev_hash from its predecessor's canonical
+    bytes, so a hand-built test chain satisfies B2 and can exercise the other
+    rules. Tests that mean to break the linkage set prev_hash themselves."""
+    import hashlib as _h
+    out = []
+    prev = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    for cp in cps:
+        cp = dict(cp)
+        cp["prev_hash"] = prev
+        out.append(cp)
+        prev = _h.sha256(validate.canonical(cp)).hexdigest()
+    return out
+
+
 # The Tier B tests below mirror go/tierb_test.go one-for-one. Both languages
 # assert the same rejections and the same exact warning tokens, so a pass in
 # both shows the two implementations agree on Tier B -- not merely that each is
@@ -227,10 +242,9 @@ def test_b3_rejects_same_stream_same_epoch():
     """B3: the same (stream_id, epoch) committed twice in one chain is a hard
     reject, whether or not the tips differ. Within one producer generation the
     dedup map is intact, so no second commit of any kind is legitimate."""
-    chain = [
+    chain = _link(
         _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 3, 3, "aa")]),
-        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 0, 2, 2, "bb")]),
-    ]
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 0, 2, 2, "bb")]))
     err, _ = validate.check_tier_b(chain)
     assert err is not None, "check_tier_b accepted a same-epoch re-commit; want a rejection"
 
@@ -239,10 +253,9 @@ def test_b4_accepts_same_stream_new_epoch_with_warning():
     """B4: the same stream under a NEW epoch is the declared at-least-once
     path. It must be accepted even when entry_count goes backwards, because an
     honest timeout-split produces exactly that shape -- and it must warn."""
-    chain = [
+    chain = _link(
         _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 7, 7, "aa")]),
-        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 1, 5, 5, "bb")]),
-    ]
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 1, 5, 5, "bb")]))
     err, warns = validate.check_tier_b(chain)
     assert err is None, f"check_tier_b rejected a legitimate cross-epoch re-commit: {err}"
     assert warns == ["B4:s1"], f"warnings = {warns}, want exactly ['B4:s1']"
@@ -250,10 +263,9 @@ def test_b4_accepts_same_stream_new_epoch_with_warning():
 
 def test_b5_warns_on_timestamp_regression():
     """B5: a timestamp regression warns and does not reject."""
-    chain = [
+    chain = _link(
         _cp(1, "2026-01-01T00:00:10Z", [_tip("s1", 0, 1, 1, "aa")]),
-        _cp(2, "2026-01-01T00:00:05Z", [_tip("s2", 0, 1, 1, "bb")]),
-    ]
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s2", 0, 1, 1, "bb")]))
     err, warns = validate.check_tier_b(chain)
     assert err is None, f"timestamp regression must warn, not reject: {err}"
     assert warns == ["B5:2"], f"warnings = {warns}, want exactly ['B5:2']"
@@ -261,10 +273,9 @@ def test_b5_warns_on_timestamp_regression():
 
 def test_b1_rejects_seq_skip():
     """B1: seq must increment by exactly 1 -- not merely increase."""
-    chain = [
+    chain = _link(
         _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")]),
-        _cp(3, "2026-01-01T00:00:05Z", [_tip("s2", 0, 1, 1, "bb")]),
-    ]
+        _cp(3, "2026-01-01T00:00:05Z", [_tip("s2", 0, 1, 1, "bb")]))
     err, _ = validate.check_tier_b(chain)
     assert err is not None, "check_tier_b accepted a seq gap; want a rejection"
 
@@ -355,6 +366,10 @@ def test_prefix_epoch_presence_is_checked():
         t.pop("epoch", None)
     _, reason = validate.verify_prefixes(pub, [stripped], 2)
     assert reason == "schema", f"v2 prefix with no epoch: reason={reason!r}, want 'schema'"
+    # ...and at index >= 1: a chain[0]-only epoch check misses this.
+    _, reason = validate.verify_prefixes(pub, [good, stripped], 2)
+    assert reason == "schema", (
+        f"SECOND v2 prefix with no epoch: reason={reason!r}, want 'schema'")
 
 
 def test_epoch_presence_scans_all_tips():
@@ -394,10 +409,9 @@ def test_composite_sort_key_is_numeric_for_multi_digit_epochs():
 def test_b4_and_b5_both_raised_in_order():
     """B4 and B5 raised by the same checkpoint, in a pinned order. Without a
     case where both fire, their interleaving is verified by nothing."""
-    chain = [
+    chain = _link(
         _cp(1, "2026-01-01T00:00:10Z", [_tip("s1", 0, 1, 1, "aa")]),
-        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 1, 2, 2, "bb")]),
-    ]
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 1, 2, 2, "bb")]))
     err, warns = validate.check_tier_b(chain)
     assert err is None, f"both advisory rules must warn, not reject: {err}"
     assert warns == ["B4:s1", "B5:2"], f"warnings = {warns}, want ['B4:s1', 'B5:2']"
@@ -413,8 +427,12 @@ def test_b4_token_order_is_independent_of_tip_input_order():
     prefix = _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa"), _tip("s2", 0, 2, 2, "bb")])
     lo, hi = _tip("s1", 1, 3, 3, "cc"), _tip("s2", 1, 4, 4, "dd")
 
-    err_a, warns_a = validate.check_tier_b([prefix, _cp(2, "2026-01-01T00:00:05Z", [lo, hi])])
-    err_b, warns_b = validate.check_tier_b([prefix, _cp(2, "2026-01-01T00:00:05Z", [hi, lo])])
+    # Same signed bytes either way: canonical() sorts the tips, so both
+    # checkpoints hash identically and both chains satisfy B2.
+    err_a, warns_a = validate.check_tier_b(
+        _link(prefix, _cp(2, "2026-01-01T00:00:05Z", [lo, hi])))
+    err_b, warns_b = validate.check_tier_b(
+        _link(prefix, _cp(2, "2026-01-01T00:00:05Z", [hi, lo])))
     assert err_a is None and err_b is None, f"neither ordering may reject: {err_a} / {err_b}"
     want = ["B4:s1", "B4:s2"]
     assert warns_a == want, f"identity-order input: warnings = {warns_a}, want {want}"
@@ -426,10 +444,9 @@ def test_b4_token_order_is_independent_of_tip_input_order():
 def test_b4_emitted_once_per_transition():
     """B4 is emitted once per epoch TRANSITION, not once per checkpoint: one
     stream at three epochs in a single checkpoint yields two identical tokens."""
-    chain = [
+    chain = _link(
         _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")]),
-        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 2, 3, 3, "bb"), _tip("s1", 1, 2, 2, "cc")]),
-    ]
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 2, 3, 3, "bb"), _tip("s1", 1, 2, 2, "cc")]))
     err, warns = validate.check_tier_b(chain)
     assert err is None, f"three epochs for one stream is legal (R4), got: {err}"
     assert warns == ["B4:s1", "B4:s1"], (
@@ -475,6 +492,76 @@ def test_chainless_expect_warnings_are_still_checked():
     assert "warnings" in output, f"rejected, but not for the warning mismatch:\n{output}"
 
 
+# --- Round-3 review fixes -------------------------------------------------
+
+def test_b4_fires_on_epoch_regression():
+    """B4 fires when a stream's epoch DIFFERS from its previous committed
+    epoch, in either direction. A stream re-committed under an OLDER generation
+    is the most rollback-shaped case B4 exists to surface, and B3 does not cover
+    it: (s,5) and (s,3) are distinct identities."""
+    chain = _link(
+        _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 5, 9, 9, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s1", 3, 4, 4, "bb")]))
+    err, warns = validate.check_tier_b(chain)
+    assert err is None, f"an epoch regression is advisory, not a rejection: {err}"
+    assert warns == ["B4:s1"], (
+        f"warnings = {warns}, want ['B4:s1'] -- B4 must fire on epoch DIFFERENCE, not increase")
+
+
+def test_chain_prev_hash_linkage_is_checked():
+    """B2 must hold across the whole assembled chain, not only at the vector's
+    own link: a chain whose prefixes do not hash-link is a forged history."""
+    good = _link(
+        _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s2", 0, 2, 2, "bb")]),
+        _cp(3, "2026-01-01T00:00:10Z", [_tip("s3", 0, 3, 3, "cc")]))
+    err, _ = validate.check_tier_b(good)
+    assert err is None, f"a correctly linked chain was rejected: {err}"
+    # Break the link between the two PREFIXES, leaving the last link intact --
+    # exactly what a vector-level prev_sha256 field cannot see.
+    broken = copy.deepcopy(good)
+    broken[1]["prev_hash"] = "22" * 32
+    err, _ = validate.check_tier_b(broken)
+    assert err is not None, (
+        "check_tier_b accepted a chain whose second checkpoint does not link to the first")
+
+
+def test_b1_checked_on_every_transition():
+    """B1 must hold at every transition, not only between chain[0] and chain[1]."""
+    chain = _link(
+        _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", [_tip("s2", 0, 2, 2, "bb")]),
+        _cp(4, "2026-01-01T00:00:10Z", [_tip("s3", 0, 3, 3, "cc")]))
+    err, _ = validate.check_tier_b(chain)
+    assert err is not None, (
+        "check_tier_b accepted a seq gap at the SECOND transition; "
+        "B1 must hold at every transition")
+
+
+def test_warning_order_is_part_of_the_contract():
+    """expect_warnings is an ORDERED contract. No published vector can catch a
+    comparison weakened to a multiset, because every vector's expectation is
+    correct and a looser comparison never fails on correct data -- only feeding
+    a PERMUTED expectation can distinguish the two."""
+    suite = _load_real_suite()
+    v = None
+    for cand in suite["vectors"]:
+        if cand["name"] == "advisory_chain_b5_then_b4":
+            v = copy.deepcopy(cand)
+    assert v is not None, "advisory_chain_b5_then_b4 not found in vectors.json"
+    assert len(v["expect_warnings"]) == 2, (
+        f"this test needs a two-warning vector, got {v['expect_warnings']}")
+    v["expect_warnings"] = [v["expect_warnings"][1], v["expect_warnings"][0]]
+    suite["vectors"] = [v]
+    suite["negatives"] = []
+
+    rc, output = _run_main_capturing_stdout(suite)
+    assert rc != 0, (
+        "permuted expect_warnings was accepted; the comparison must be ordered, "
+        f"not a multiset\n{output}")
+    assert "warnings" in output, f"rejected, but not for the warning mismatch:\n{output}"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -498,6 +585,10 @@ def main():
         test_b4_emitted_once_per_transition,
         test_verify_prefixes_checks_every_prefix,
         test_chainless_expect_warnings_are_still_checked,
+        test_b4_fires_on_epoch_regression,
+        test_chain_prev_hash_linkage_is_checked,
+        test_b1_checked_on_every_transition,
+        test_warning_order_is_part_of_the_contract,
     ]
     failed = []
     for t in tests:

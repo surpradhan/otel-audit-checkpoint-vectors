@@ -149,10 +149,14 @@ not JCS, if challenged.
 | # | Rule | Detects | Strength |
 |---|---|---|---|
 | B1 | `seq` increments by exactly 1 | dropped or replayed checkpoint | hard |
-| B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes | reordering, forking | hard (have) |
+| B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes, at **every** transition of the assembled chain including between prefixes | reordering, forking | hard |
 | B3 | `(stream_id, epoch)` appears at most once in the chain | re-commit within a generation; **same-epoch** rollback | hard |
-| B4 | A stream's `epoch` differs from its previous committed `epoch` (same checkpoint or an earlier one) | at-least-once re-delivery; **cross-epoch** rollback | **advisory** |
+| B4 | A stream's `epoch` differs from its previous committed `epoch` (same checkpoint or an earlier one), in **either direction** | at-least-once re-delivery; **cross-epoch** rollback | **advisory** |
 | B5 | `timestamp` non-decreasing across the chain | clock regression | **advisory** — the operator controls the clock |
+
+B4 fires on an epoch **difference**, not an increase: a stream re-committed
+under an older generation is the most rollback-shaped case B4 exists to surface,
+and B3 does not cover it, since `(s, 5)` and `(s, 3)` are distinct identities.
 
 B4 is defined **per transition**, not per checkpoint pair. Two commits of one
 stream at different epochs raise it whether they land in the same checkpoint or

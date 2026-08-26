@@ -112,8 +112,21 @@ def check_tier_b(chain: list) -> tuple:
     seen_identity = {}
     last_epoch = {}
     for i, cp in enumerate(chain):
-        if i > 0 and cp["seq"] != chain[i - 1]["seq"] + 1:
-            return (f"B1: checkpoint seq {cp['seq']} follows {chain[i-1]['seq']}", warns)
+        if i > 0:
+            if cp["seq"] != chain[i - 1]["seq"] + 1:
+                return (f"B1: checkpoint seq {cp['seq']} follows {chain[i-1]['seq']}", warns)
+            # B2 across the assembled chain. The vector-level prev_sha256 field
+            # only pins the LAST link, so without this a chain whose prefixes do
+            # not hash-link is accepted -- the linkage rule would be enforced
+            # exactly where it does not matter.
+            try:
+                prev_canon = canonical(chain[i - 1])
+            except ValueError as e:
+                return (f"B2: checkpoint {cp['seq']}: previous checkpoint is malformed: {e}", warns)
+            want = hashlib.sha256(prev_canon).hexdigest()
+            if cp["prev_hash"] != want:
+                return (f"B2: checkpoint {cp['seq']} prev_hash={cp['prev_hash']} does not "
+                        f"link to checkpoint {chain[i-1]['seq']} ({want})", warns)
         # Iterate tips in identity order, not input order. Warnings are
         # compared as ORDERED lists and a checkpoint's tips are explicitly
         # allowed to arrive unsorted, so when two streams each change epoch in

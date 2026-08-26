@@ -154,13 +154,21 @@ its `expect` field:
   flipped. The vector's own input is valid and passes every cross-checkpoint
   rule, so the only thing that rejects it is actually verifying the prefix
   signature. Rejected: signature.
-- `chain_prefix_missing_epoch` — a correctly signed version-2 chain prefix whose
-  tip omits `epoch`. Left unchecked it would be read as epoch 0 and feed the B3
-  identity and B4 comparisons. Rejected: schema.
+- `chain_prefix_missing_epoch` — the *second* prefix of a two-prefix chain omits
+  `epoch` at version 2. Left unchecked it would be read as epoch 0 and feed the
+  B3 identity and B4 comparisons; putting the defect at index 1 also catches a
+  validator that epoch-checks only `chain[0]`. Rejected: schema.
 - `tampered_second_prefix_signature` — a **two-prefix** chain whose *second*
   prefix has a flipped signature byte. Every other chain in the suite has one
   prefix, so this is what catches a validator that verifies only `chain[0]`.
   Rejected: signature.
+- `chain_prefix_broken_link` — a two-prefix chain whose *second prefix* does not
+  hash-link to the first. Every checkpoint is correctly signed and the vector's
+  own `prev_hash` is right, so only a B2 check across the assembled chain
+  rejects it. Rejected: tier_b.
+- `seq_skip_after_first_transition` — `seq` jumps from 2 to 4 at the chain's
+  *second* transition, catching a validator that checks B1 only between
+  `chain[0]` and `chain[1]`. Rejected: tier_b.
 - `negative_epoch` — a tip with `epoch: -1` (again not the first tip).
   Rejected: schema.
 
@@ -174,9 +182,21 @@ carry a `chain` field.
 | Rule | Condition | Outcome |
 |------|-----------|---------|
 | B1 | `seq` must increment by exactly 1 | reject (`tier_b`) |
+| B2 | `prev_hash` must equal the previous checkpoint's hash | reject (`tier_b`) |
 | B3 | the same `(stream_id, epoch)` must not be committed twice | reject (`tier_b`) |
-| B4 | a stream's `epoch` differs from its previous committed `epoch` | accept, warn `B4:<stream_id>` |
+| B4 | a stream's `epoch` differs from its previous committed `epoch`, **in either direction** | accept, warn `B4:<stream_id>` |
 | B5 | `timestamp` regresses against the previous checkpoint | accept, warn `B5:<seq>` |
+
+B1 and B2 are checked at **every** transition of the assembled chain, not just
+the last one. B2 in particular is easy to under-apply: a vector's `prev_sha256`
+field pins only the vector's own link, so a chain whose *prefixes* do not
+hash-link would otherwise be accepted — a forged history behind a correct final
+link. See `chain_prefix_broken_link` and `seq_skip_after_first_transition`.
+
+B4 fires on an epoch **difference**, not an increase. A stream re-committed
+under an *older* generation is the most rollback-shaped case B4 exists to
+surface, and B3 does not cover it: `(s, 5)` and `(s, 3)` are distinct identities
+and pass. See `advisory_epoch_regression`.
 
 B4 is defined **per transition**, not per checkpoint pair: it fires whenever a
 stream's `epoch` differs from its previous committed `epoch`, whether that

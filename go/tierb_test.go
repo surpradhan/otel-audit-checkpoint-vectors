@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +13,26 @@ import (
 	"strings"
 	"testing"
 )
+
+// linkChain fills in each checkpoint's prev_hash from its predecessor's
+// canonical bytes, so a hand-built test chain satisfies B2 and can exercise the
+// other rules. Tests that mean to break the linkage set prev_hash themselves.
+func linkChain(t *testing.T, cps ...Checkpoint) []Checkpoint {
+	t.Helper()
+	out := make([]Checkpoint, 0, len(cps))
+	prev := sha256Empty
+	for _, cp := range cps {
+		cp.PrevHash = prev
+		out = append(out, cp)
+		cb, err := canonical(cp)
+		if err != nil {
+			t.Fatalf("linkChain: %v", err)
+		}
+		sum := sha256.Sum256(cb)
+		prev = hex.EncodeToString(sum[:])
+	}
+	return out
+}
 
 func mkTip(stream string, epoch, seq, count int, tip string) Tip {
 	return Tip{EntryCount: count, Epoch: ptr(epoch), SequenceNumber: seq, StreamID: stream, TipHash: tip}
@@ -20,10 +42,9 @@ func mkTip(stream string, epoch, seq, count int, tip string) Tip {
 // reject, whether or not the tips differ. Within one generation the producer's
 // dedup map is intact, so no second commit of any kind is legitimate.
 func TestB3RejectsSameStreamSameEpoch(t *testing.T) {
-	chain := []Checkpoint{
-		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 3, 3, "aa")}},
-		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 0, 2, 2, "bb")}},
-	}
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 3, 3, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 0, 2, 2, "bb")}})
 	if err, _ := checkTierB(chain); err == nil {
 		t.Fatal("checkTierB accepted a same-epoch re-commit; want a rejection")
 	}
@@ -33,10 +54,9 @@ func TestB3RejectsSameStreamSameEpoch(t *testing.T) {
 // It must be accepted even when entry_count goes backwards, because an honest
 // timeout-split produces exactly that shape -- and it must warn.
 func TestB4AcceptsSameStreamNewEpochWithWarning(t *testing.T) {
-	chain := []Checkpoint{
-		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 7, 7, "aa")}},
-		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 1, 5, 5, "bb")}},
-	}
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 7, 7, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 1, 5, 5, "bb")}})
 	err, warns := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("checkTierB rejected a legitimate cross-epoch re-commit: %v", err)
@@ -48,10 +68,9 @@ func TestB4AcceptsSameStreamNewEpochWithWarning(t *testing.T) {
 
 // B5: a timestamp regression warns and does not reject.
 func TestB5WarnsOnTimestampRegression(t *testing.T) {
-	chain := []Checkpoint{
-		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
-		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 1, 1, "bb")}},
-	}
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 1, 1, "bb")}})
 	err, warns := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("timestamp regression must warn, not reject: %v", err)
@@ -63,10 +82,9 @@ func TestB5WarnsOnTimestampRegression(t *testing.T) {
 
 // B1: seq must increment by exactly 1.
 func TestB1RejectsSeqSkip(t *testing.T) {
-	chain := []Checkpoint{
-		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
-		{Seq: 3, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 1, 1, "bb")}},
-	}
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		Checkpoint{Seq: 3, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 1, 1, "bb")}})
 	if err, _ := checkTierB(chain); err == nil {
 		t.Fatal("checkTierB accepted a seq gap; want a rejection")
 	}
@@ -178,6 +196,12 @@ func TestPrefixEpochPresenceIsChecked(t *testing.T) {
 	if _, reason := verifyPrefixes(pub, []SignedCheckpoint{signed(t, cp)}, 0); reason != "" {
 		t.Fatalf("version-1 prefix with no epoch was rejected (%s)", reason)
 	}
+	// ...and at index >= 1: a chain[0]-only epoch check misses this.
+	ok := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s0", 0, 1, 1, "00")}}
+	twoPrefix := []SignedCheckpoint{signed(t, ok), signed(t, cp)}
+	if _, reason := verifyPrefixes(pub, twoPrefix, 2); reason != "schema" {
+		t.Fatalf("SECOND version-2 prefix with no epoch: reason = %q, want \"schema\"", reason)
+	}
 }
 
 // checkEpochPresence must scan every tip, not just the first.
@@ -236,10 +260,9 @@ func TestCompositeSortKeyIsNumericForMultiDigitEpochs(t *testing.T) {
 // where both fire, their interleaving is mirrored between the two languages
 // but verified by nothing.
 func TestB4AndB5BothRaisedInOrder(t *testing.T) {
-	chain := []Checkpoint{
-		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
-		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 1, 2, 2, "bb")}},
-	}
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 1, 2, 2, "bb")}})
 	err, warns := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("both advisory rules must warn, not reject: %v", err)
@@ -269,13 +292,15 @@ func TestCommittedVectorsStillValidate(t *testing.T) {
 // tips were supplied -- warnings are compared as ordered lists, and a
 // checkpoint's tips are explicitly allowed to arrive unsorted.
 func TestB4TokenOrderIsIndependentOfTipInputOrder(t *testing.T) {
-	prefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{
+	prefix := Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{
 		mkTip("s1", 0, 1, 1, "aa"), mkTip("s2", 0, 2, 2, "bb"),
 	}}
 	lo, hi := mkTip("s1", 1, 3, 3, "cc"), mkTip("s2", 1, 4, 4, "dd")
 
-	sorted := []Checkpoint{prefix, {Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{lo, hi}}}
-	reversed := []Checkpoint{prefix, {Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{hi, lo}}}
+	// Same signed bytes either way: canonical() sorts the tips, so both
+	// checkpoints hash identically and both chains satisfy B2.
+	sorted := linkChain(t, prefix, Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{lo, hi}})
+	reversed := linkChain(t, prefix, Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{hi, lo}})
 
 	errA, warnsA := checkTierB(sorted)
 	errB, warnsB := checkTierB(reversed)
@@ -294,10 +319,9 @@ func TestB4TokenOrderIsIndependentOfTipInputOrder(t *testing.T) {
 // B4 is emitted once per epoch TRANSITION, not once per checkpoint: one stream
 // at three epochs in a single checkpoint yields two identical tokens.
 func TestB4EmittedOncePerTransition(t *testing.T) {
-	chain := []Checkpoint{
-		{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
-		{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 2, 3, 3, "bb"), mkTip("s1", 1, 2, 2, "cc")}},
-	}
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 2, 3, 3, "bb"), mkTip("s1", 1, 2, 2, "cc")}})
 	err, warns := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("three epochs for one stream is legal (R4), got: %v", err)
@@ -364,6 +388,99 @@ func TestChainlessExpectWarningsAreStillChecked(t *testing.T) {
 	captured := captureStdout(t, func() { verr = validate(path) })
 	if verr == nil {
 		t.Fatalf("a chainless vector with wrong expect_warnings was accepted; the Tier B guard must fire on ExpectWarnings alone\noutput:\n%s", captured)
+	}
+	if !strings.Contains(verr.Error(), "warnings") {
+		t.Fatalf("rejected, but not for the warning mismatch: %v", verr)
+	}
+}
+
+// --- Round-3 review fixes -------------------------------------------------
+
+// B4 fires when a stream's epoch DIFFERS from its previous committed epoch, in
+// either direction. A stream re-committed under an OLDER generation is the most
+// rollback-shaped case B4 exists to surface, and B3 does not cover it: (s,5) and
+// (s,3) are distinct identities. Every other transition in the suite increases,
+// so a validator warning only on an increase would otherwise pass everything.
+func TestB4FiresOnEpochRegression(t *testing.T) {
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 5, 9, 9, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 3, 4, 4, "bb")}})
+	err, warns := checkTierB(chain)
+	if err != nil {
+		t.Fatalf("an epoch regression is advisory, not a rejection: %v", err)
+	}
+	if !slices.Equal(warns, []string{"B4:s1"}) {
+		t.Fatalf("warnings = %v, want [B4:s1] -- B4 must fire on epoch DIFFERENCE, not increase", warns)
+	}
+}
+
+// B2 must hold across the whole assembled chain, not only at the vector's own
+// link: a chain whose prefixes do not hash-link is a forged history.
+func TestChainPrevHashLinkageIsChecked(t *testing.T) {
+	good := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 2, 2, "bb")}},
+		Checkpoint{Seq: 3, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s3", 0, 3, 3, "cc")}})
+	if err, _ := checkTierB(good); err != nil {
+		t.Fatalf("a correctly linked chain was rejected: %v", err)
+	}
+	// Break the link between the two PREFIXES, leaving the last link intact --
+	// exactly what a vector-level prev_sha256 field cannot see.
+	broken := append([]Checkpoint(nil), good...)
+	broken[1].PrevHash = "22" + repeat("22", 31)
+	if err, _ := checkTierB(broken); err == nil {
+		t.Fatal("checkTierB accepted a chain whose second checkpoint does not link to the first")
+	}
+}
+
+// B1 must hold at every transition, not only between chain[0] and chain[1].
+func TestB1CheckedOnEveryTransition(t *testing.T) {
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 2, 2, "bb")}},
+		Checkpoint{Seq: 4, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s3", 0, 3, 3, "cc")}})
+	if err, _ := checkTierB(chain); err == nil {
+		t.Fatal("checkTierB accepted a seq gap at the SECOND transition; B1 must hold at every transition")
+	}
+}
+
+// expect_warnings is an ORDERED contract. No published vector can catch a
+// comparison weakened to a multiset, because every vector's expectation is
+// correct and a looser comparison never fails on correct data -- only feeding a
+// PERMUTED expectation can distinguish the two.
+func TestWarningOrderIsPartOfTheContract(t *testing.T) {
+	full := gen()
+	var v Vector
+	for _, cand := range full.Vectors {
+		if cand.Name == "advisory_chain_b5_then_b4" {
+			v = cand
+		}
+	}
+	if v.Name == "" {
+		t.Fatal("advisory_chain_b5_then_b4 not found in gen() output")
+	}
+	if len(v.ExpectWarnings) != 2 {
+		t.Fatalf("this test needs a two-warning vector, got %v", v.ExpectWarnings)
+	}
+	v.ExpectWarnings = []string{v.ExpectWarnings[1], v.ExpectWarnings[0]} // same multiset, wrong order
+
+	suite := Suite{
+		FormatVersion: full.FormatVersion, Algorithm: full.Algorithm,
+		SeedHex: full.SeedHex, PublicKeyHex: full.PublicKeyHex,
+		Vectors: []Vector{v},
+	}
+	out, err := json.MarshalIndent(suite, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "permuted_warnings.json")
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var verr error
+	captured := captureStdout(t, func() { verr = validate(path) })
+	if verr == nil {
+		t.Fatalf("permuted expect_warnings was accepted; the comparison must be ordered, not a multiset\noutput:\n%s", captured)
 	}
 	if !strings.Contains(verr.Error(), "warnings") {
 		t.Fatalf("rejected, but not for the warning mismatch: %v", verr)

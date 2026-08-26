@@ -170,6 +170,17 @@ func signCP(priv ed25519.PrivateKey, cp Checkpoint) SignedCheckpoint {
 	return SignedCheckpoint{Input: cp, Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(priv, cb))}
 }
 
+// cpHash returns the hex SHA-256 of a checkpoint's canonical bytes -- the value
+// the next checkpoint's prev_hash must carry.
+func cpHash(cp Checkpoint) string {
+	cb, err := canonical(cp)
+	if err != nil {
+		panic(fmt.Sprintf("gen: malformed checkpoint: %v", err))
+	}
+	sum := sha256.Sum256(cb)
+	return hex.EncodeToString(sum[:])
+}
+
 func gen() Suite {
 	priv := ed25519.NewKeyFromSeed(testSeed())
 	pub := priv.Public().(ed25519.PublicKey)
@@ -567,23 +578,126 @@ func gen() Suite {
 	// A correctly signed chain prefix whose tip omits epoch at version 2. Left
 	// unchecked, tipEpoch reads it as 0 and it silently feeds B3 identity and
 	// B4 comparisons -- the Step 7 failure, one level down.
-	badPrefixCP := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
+	//
+	// The offending prefix is the SECOND one: with a single-prefix chain, a
+	// validator that epoch-checks only chain[0] still rejects this and the gap
+	// is invisible.
+	goodPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "44444444-4444-4444-8444-444444444444", TipHash: "4a" + repeat("00", 31)},
+	}}
+	badPrefixCP := Checkpoint{PrevHash: cpHash(goodPrefix), Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
 		{EntryCount: 3, Epoch: nil, SequenceNumber: 3, StreamID: "66666666-6666-4666-8666-666666666666", TipHash: "6a" + repeat("00", 31)},
 	}}
-	badPrefixCanon, err := canonical(badPrefixCP)
-	if err != nil {
-		panic(fmt.Sprintf("gen: bad-prefix vector is malformed: %v", err))
-	}
-	badPrefixSum := sha256.Sum256(badPrefixCanon)
-	afterBadPrefix := Checkpoint{PrevHash: hex.EncodeToString(badPrefixSum[:]), Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
+	afterBadPrefix := Checkpoint{PrevHash: cpHash(badPrefixCP), Seq: 3, Timestamp: "2026-03-01T00:00:10Z", Tips: []Tip{
 		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "55555555-5555-4555-8555-555555555555", TipHash: "5a" + repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "chain_prefix_missing_epoch", Expect: "schema",
-		Reason:           "a version-2 chain prefix omits epoch on its tip; the boundary applies to prefixes, not only to the vector's own input",
+		Reason:           "the SECOND version-2 chain prefix omits epoch on its tip; the boundary applies to every prefix, not only to chain[0] or to the vector's own input",
 		Input:            afterBadPrefix,
 		Signature:        signCP(priv, afterBadPrefix).Signature,
-		Chain:            []SignedCheckpoint{signCP(priv, badPrefixCP)},
+		Chain:            []SignedCheckpoint{signCP(priv, goodPrefix), signCP(priv, badPrefixCP)},
+		MinFormatVersion: 2,
+	})
+
+	// A two-prefix chain in which the SECOND prefix does not hash-link to the
+	// first. Every checkpoint is correctly signed and the vector's own
+	// prev_hash is right, so the vector-level prev_sha256 field cannot see
+	// this: only a linkage check across the assembled chain rejects it.
+	linkP1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-08-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "b1b1b1b1-0000-4000-8000-000000000001", TipHash: "b1" + repeat("00", 31)},
+	}}
+	linkP2 := Checkpoint{PrevHash: "22" + repeat("22", 31), Seq: 2, Timestamp: "2026-08-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "b2b2b2b2-0000-4000-8000-000000000002", TipHash: "b2" + repeat("00", 31)},
+	}}
+	afterLink := Checkpoint{PrevHash: cpHash(linkP2), Seq: 3, Timestamp: "2026-08-01T00:00:10Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "b3b3b3b3-0000-4000-8000-000000000003", TipHash: "b3" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "chain_prefix_broken_link", Expect: "tier_b",
+		Reason:           "the second chain prefix's prev_hash does not equal the first prefix's hash; B2 must hold across the whole assembled chain, not only at the vector's own link",
+		Input:            afterLink,
+		Signature:        signCP(priv, afterLink).Signature,
+		Chain:            []SignedCheckpoint{signCP(priv, linkP1), signCP(priv, linkP2)},
+		MinFormatVersion: 2,
+	})
+
+	// A seq gap at the LAST transition of a three-checkpoint chain. seq_skip
+	// puts its gap at the first transition, so a validator that checks B1 only
+	// between chain[0] and chain[1] still passes the whole suite.
+	lateP1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-09-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "c1c1c1c1-0000-4000-8000-000000000001", TipHash: "c1" + repeat("00", 31)},
+	}}
+	lateP2 := Checkpoint{PrevHash: cpHash(lateP1), Seq: 2, Timestamp: "2026-09-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "c2c2c2c2-0000-4000-8000-000000000002", TipHash: "c2" + repeat("00", 31)},
+	}}
+	lateSkip := Checkpoint{PrevHash: cpHash(lateP2), Seq: 4, Timestamp: "2026-09-01T00:00:10Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "c3c3c3c3-0000-4000-8000-000000000003", TipHash: "c3" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "seq_skip_after_first_transition", Expect: "tier_b",
+		Reason:           "checkpoint seq jumps from 2 to 4 at the chain's SECOND transition; B1 must hold at every transition, not only the first",
+		Input:            lateSkip,
+		Signature:        signCP(priv, lateSkip).Signature,
+		Chain:            []SignedCheckpoint{signCP(priv, lateP1), signCP(priv, lateP2)},
+		MinFormatVersion: 2,
+	})
+
+	// Must-accept, TWO prefixes: cp2 regresses its timestamp (B5:2) and cp3
+	// changes a stream's epoch (B4). The warning sequence is therefore
+	// ["B5:2", "B4:..."] -- NOT in sorted order, which is the only shape that
+	// can distinguish an ordered comparison from a multiset one. It is also the
+	// suite's only vector whose Tier B rules run over a three-checkpoint chain,
+	// so prefix ordering and B1/B2 past the first transition are load-bearing.
+	longP1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-06-01T00:00:10Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "d1d1d1d1-0000-4000-8000-000000000001", TipHash: "d1" + repeat("00", 31)},
+	}}
+	longP2 := Checkpoint{PrevHash: cpHash(longP1), Seq: 2, Timestamp: "2026-06-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "d2d2d2d2-0000-4000-8000-000000000002", TipHash: "d2" + repeat("00", 31)},
+	}}
+	longTail := Checkpoint{PrevHash: cpHash(longP2), Seq: 3, Timestamp: "2026-06-01T00:00:20Z", Tips: []Tip{
+		{EntryCount: 3, Epoch: ptr(1), SequenceNumber: 3, StreamID: "d1d1d1d1-0000-4000-8000-000000000001", TipHash: "d3" + repeat("00", 31)},
+	}}
+	longCanon, err := canonical(longTail)
+	if err != nil {
+		panic(fmt.Sprintf("gen: three-checkpoint vector is malformed: %v", err))
+	}
+	longSum := sha256.Sum256(longCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:             "advisory_chain_b5_then_b4",
+		Input:            longTail,
+		Canonical:        string(longCanon),
+		SHA256:           hex.EncodeToString(longSum[:]),
+		Signature:        base64.StdEncoding.EncodeToString(ed25519.Sign(priv, longCanon)),
+		Chain:            []SignedCheckpoint{signCP(priv, longP1), signCP(priv, longP2)},
+		ExpectWarnings:   []string{"B5:2", "B4:d1d1d1d1-0000-4000-8000-000000000001"},
+		MinFormatVersion: 2,
+	})
+
+	// Must-accept: a stream re-committed under an OLDER generation. This is the
+	// most rollback-shaped case B4 exists to surface, and B3 does not cover it:
+	// (s,5) and (s,3) are distinct identities. Every other epoch transition in
+	// the suite increases, so without this a validator that warns only on an
+	// epoch INCREASE passes everything.
+	regPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-07-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 9, Epoch: ptr(5), SequenceNumber: 9, StreamID: "e5e5e5e5-0000-4000-8000-000000000005", TipHash: "e5" + repeat("00", 31)},
+	}}
+	regTail := Checkpoint{PrevHash: cpHash(regPrefix), Seq: 2, Timestamp: "2026-07-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 4, Epoch: ptr(3), SequenceNumber: 4, StreamID: "e5e5e5e5-0000-4000-8000-000000000005", TipHash: "e3" + repeat("00", 31)},
+	}}
+	regCanon, err := canonical(regTail)
+	if err != nil {
+		panic(fmt.Sprintf("gen: epoch-regression vector is malformed: %v", err))
+	}
+	regSum := sha256.Sum256(regCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:             "advisory_epoch_regression",
+		Input:            regTail,
+		Canonical:        string(regCanon),
+		SHA256:           hex.EncodeToString(regSum[:]),
+		Signature:        base64.StdEncoding.EncodeToString(ed25519.Sign(priv, regCanon)),
+		Chain:            []SignedCheckpoint{signCP(priv, regPrefix)},
+		ExpectWarnings:   []string{"B4:e5e5e5e5-0000-4000-8000-000000000005"},
 		MinFormatVersion: 2,
 	})
 
@@ -612,6 +726,9 @@ func gen() Suite {
 // Warning tokens are stable, machine-comparable strings so the Go and Python
 // validators can be checked for agreement rather than eyeballed.
 //
+// B2 (prev_hash linkage) is applied here rather than only via a vector's
+// prev_sha256 field, because that field pins only the final link.
+//
 // Tier B applies only to chains whose checkpoints are all format_version 2 or
 // above; mixed-version chains are out of scope and are never constructed here.
 func checkTierB(chain []Checkpoint) (error, []string) {
@@ -619,9 +736,24 @@ func checkTierB(chain []Checkpoint) (error, []string) {
 	seenIdentity := make(map[string]int)
 	lastEpoch := make(map[string]int)
 	for i, cp := range chain {
-		if i > 0 && cp.Seq != chain[i-1].Seq+1 {
-			return fmt.Errorf("B1: checkpoint seq %d follows %d; must increment by exactly 1",
-				cp.Seq, chain[i-1].Seq), warns
+		if i > 0 {
+			if cp.Seq != chain[i-1].Seq+1 {
+				return fmt.Errorf("B1: checkpoint seq %d follows %d; must increment by exactly 1",
+					cp.Seq, chain[i-1].Seq), warns
+			}
+			// B2 across the assembled chain. The vector-level prev_sha256 field
+			// only pins the LAST link, so without this a chain whose prefixes do
+			// not hash-link is accepted -- the linkage rule would be enforced
+			// exactly where it does not matter.
+			prevCanon, err := canonical(chain[i-1])
+			if err != nil {
+				return fmt.Errorf("B2: checkpoint %d: previous checkpoint is malformed: %v", cp.Seq, err), warns
+			}
+			sum := sha256.Sum256(prevCanon)
+			if want := hex.EncodeToString(sum[:]); cp.PrevHash != want {
+				return fmt.Errorf("B2: checkpoint %d prev_hash=%s does not link to checkpoint %d (%s)",
+					cp.Seq, cp.PrevHash, chain[i-1].Seq, want), warns
+			}
 		}
 		// Iterate tips in identity order, not input order. Warnings are
 		// compared as ORDERED lists and a checkpoint's tips are explicitly
