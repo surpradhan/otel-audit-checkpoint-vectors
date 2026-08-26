@@ -222,8 +222,13 @@ func gen() Suite {
 
 	// 4. Two tips with the same identity: canonical bytes would depend on
 	// input order, so the checkpoint is rejected before any signature check.
+	// The duplicate pair is separated by a third, non-duplicate tip so the
+	// pair is non-adjacent in input order -- a naive adjacent-scan duplicate
+	// check (comparing element i to i-1 in original order) would miss this;
+	// only a check over the full set of identities catches it.
 	dup := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-02-01T00:00:00Z", Tips: []Tip{
 		{EntryCount: 7, SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + repeat("00", 31)},
+		{EntryCount: 9, SequenceNumber: 9, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "cc" + repeat("00", 31)},
 		{EntryCount: 5, SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "bb" + repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{

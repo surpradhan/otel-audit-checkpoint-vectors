@@ -166,10 +166,54 @@ def test_skip_is_not_a_failure_and_does_not_poison_the_chain():
             )
 
 
+def test_duplicate_tip_identity_rejected_adjacent():
+    """Two tips sharing an identity, adjacent in input order, must make
+    canonical() raise -- the checkpoint's canonical bytes would otherwise
+    depend on input order."""
+    cp = {
+        "prev_hash": "e" * 64,
+        "seq": 1,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "tips": [
+            {"entry_count": 1, "sequence_number": 1, "stream_id": "dup", "tip_hash": "aa"},
+            {"entry_count": 2, "sequence_number": 2, "stream_id": "dup", "tip_hash": "bb"},
+        ],
+    }
+    try:
+        validate.canonical(cp)
+        raise AssertionError("canonical() accepted an adjacent duplicate tip identity; want ValueError")
+    except ValueError:
+        pass
+
+
+def test_duplicate_tip_identity_rejected_non_adjacent():
+    """A naive adjacent-scan duplicate check (comparing tip i to tip i-1 in
+    original, unsorted order) would miss a duplicate pair separated by a
+    non-duplicate tip. Only a check over the full set of identities catches
+    this -- this is the case the Task 2 review flagged as uncovered."""
+    cp = {
+        "prev_hash": "e" * 64,
+        "seq": 1,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "tips": [
+            {"entry_count": 1, "sequence_number": 1, "stream_id": "dup", "tip_hash": "aa"},
+            {"entry_count": 3, "sequence_number": 3, "stream_id": "other", "tip_hash": "cc"},
+            {"entry_count": 2, "sequence_number": 2, "stream_id": "dup", "tip_hash": "bb"},
+        ],
+    }
+    try:
+        validate.canonical(cp)
+        raise AssertionError("canonical() accepted a non-adjacent duplicate tip identity; want ValueError")
+    except ValueError:
+        pass
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
         test_skip_is_not_a_failure_and_does_not_poison_the_chain,
+        test_duplicate_tip_identity_rejected_adjacent,
+        test_duplicate_tip_identity_rejected_non_adjacent,
     ]
     failed = []
     for t in tests:

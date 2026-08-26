@@ -137,6 +137,12 @@
             "tip_hash": "aa00000000000000000000000000000000000000000000000000000000000000"
           },
           {
+            "entry_count": 9,
+            "sequence_number": 9,
+            "stream_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "tip_hash": "cc00000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
             "entry_count": 5,
             "sequence_number": 5,
             "stream_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
