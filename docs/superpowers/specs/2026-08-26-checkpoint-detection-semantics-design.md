@@ -148,11 +148,11 @@ not JCS, if challenged.
 
 | # | Rule | Detects | Strength |
 |---|---|---|---|
-| B1 | `seq` increments by exactly 1 | dropped or replayed checkpoint | hard |
+| B1 | `seq` increments by exactly 1, at **every** transition of the assembled chain | dropped or replayed checkpoint | hard |
 | B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes, at **every** transition of the assembled chain including between prefixes | reordering, forking | hard |
 | B3 | `(stream_id, epoch)` appears at most once in the chain | re-commit within a generation; **same-epoch** rollback | hard |
 | B4 | A stream's `epoch` differs from its previous committed `epoch` (same checkpoint or an earlier one), in **either direction** | at-least-once re-delivery; **cross-epoch** rollback | **advisory** |
-| B5 | `timestamp` non-decreasing across the chain | clock regression | **advisory** — the operator controls the clock |
+| B5 | `timestamp` non-decreasing against the **immediate predecessor**, at every transition | clock regression | **advisory** — the operator controls the clock |
 
 B4 fires on an epoch **difference**, not an increase: a stream re-committed
 under an older generation is the most rollback-shaped case B4 exists to surface,
@@ -176,6 +176,24 @@ A cross-epoch re-commit carrying a lower `entry_count` is advisory, not a hard
 reject. That is not a detection regression: forging a cross-epoch checkpoint
 requires the signing key, which is Tier C territory, and an honest timeout-split
 produces exactly that shape.
+
+**Every B rule holds at every position of the chain, and that is a separate
+claim from the rules themselves.** A validator that applies a rule at exactly
+one position — only the first transition, only the last prefix, comparing every
+timestamp against `chain[0]` — computes correct bytes and rejects everything a
+one- or two-prefix chain can express, because with so few checkpoints "first",
+"middle" and "last" coincide. The suite therefore carries four-checkpoint
+vectors whose single defect sits in the **middle**, plus one whose defect is on
+the **final** link of a chain that reaches Tier B (a vector's `prev_sha256`
+field pins only that last link, and only for chainless vectors). Alongside them,
+both test suites are table-driven over position: for each rule the defect is
+injected at every index of a five-checkpoint chain in turn.
+
+B2 hashes the previous checkpoint's **canonical** bytes, not the bytes as
+received. A checkpoint's tips are explicitly allowed to arrive unsorted, so a
+validator that canonicalized without first imposing the tip order would compute
+a different digest and reject a legitimate chain; the suite carries a chain
+prefix supplying its tips out of identity order to pin this.
 
 B1 is largely subsumed by B2 on a contiguous chain: a dropped or duplicated
 checkpoint breaks `prev_hash` either way. It is retained for precise diagnostics

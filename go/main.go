@@ -181,6 +181,62 @@ func cpHash(cp Checkpoint) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// linkCheckpoints sets each checkpoint's prev_hash from its predecessor's
+// canonical bytes and returns the slice. A vector that means to break one link
+// overwrites that prev_hash afterwards and relinks whatever follows, so the
+// defect it publishes is exactly one and sits at exactly one index.
+func linkCheckpoints(cps []Checkpoint) []Checkpoint {
+	prev := sha256Empty
+	for i := range cps {
+		cps[i].PrevHash = prev
+		prev = cpHash(cps[i])
+	}
+	return cps
+}
+
+// relinkFrom recomputes prev_hash from index `from` onwards, after an earlier
+// checkpoint has been mutated.
+func relinkFrom(cps []Checkpoint, from int) {
+	for i := from; i < len(cps); i++ {
+		cps[i].PrevHash = cpHash(cps[i-1])
+	}
+}
+
+// signAll signs each checkpoint, producing a vector's chain prefix list.
+func signAll(priv ed25519.PrivateKey, cps []Checkpoint) []SignedCheckpoint {
+	out := make([]SignedCheckpoint, 0, len(cps))
+	for _, cp := range cps {
+		out = append(out, signCP(priv, cp))
+	}
+	return out
+}
+
+// posChain builds a clean, correctly linked chain of n checkpoints, each
+// committing one distinct stream at epoch 0 with a strictly increasing
+// timestamp. The positional vectors below start from one of these and inject a
+// single defect at a chosen index.
+//
+// n is 4 for every caller, which is the point: with four checkpoints the chain
+// has three transitions, so "first", "middle" and "last" are three DISTINCT
+// positions. Every chain in the suite before this one was short enough that at
+// least two of those coincided -- which is what let a rule applied at only one
+// position pass the whole suite.
+func posChain(idPrefix string, n int) []Checkpoint {
+	cps := make([]Checkpoint, n)
+	for i := range cps {
+		cps[i] = Checkpoint{
+			Seq:       i + 1,
+			Timestamp: fmt.Sprintf("2026-10-01T00:%02d:00Z", i),
+			Tips: []Tip{{
+				EntryCount: i + 1, Epoch: ptr(0), SequenceNumber: i + 1,
+				StreamID: fmt.Sprintf("%s-0000-4000-8000-%012d", idPrefix, i+1),
+				TipHash:  fmt.Sprintf("%02x", i+1) + repeat("00", 31),
+			}},
+		}
+	}
+	return linkCheckpoints(cps)
+}
+
 func gen() Suite {
 	priv := ed25519.NewKeyFromSeed(testSeed())
 	pub := priv.Public().(ed25519.PublicKey)
@@ -715,6 +771,168 @@ func gen() Suite {
 		Reason:           "epoch must be non-negative; a negative value sorts differently in the two implementations, so it is rejected rather than ordered arbitrarily",
 		Input:            negEpoch,
 		Signature:        signCP(priv, negEpoch).Signature,
+		MinFormatVersion: 2,
+	})
+
+	// ------------------------------------------------------------------
+	// Positional coverage. Every vector above pins its rule at exactly ONE
+	// chain position, so a validator that applies the rule only at that
+	// position passes the whole suite. The vectors below put the defect in
+	// the MIDDLE of a four-checkpoint chain, where "only the first" and
+	// "only the last" both miss it, and one puts it on the FINAL link,
+	// which no chain-carrying vector reached before.
+	// ------------------------------------------------------------------
+
+	// Must-accept over a THREE-prefix chain. It pins two things no other
+	// vector can:
+	//
+	//   * The second prefix supplies its tips OUT of identity order. B2 hashes
+	//     the previous checkpoint's CANONICAL bytes, so the link still holds;
+	//     a validator that hashed the checkpoint as received (JCS with no tip
+	//     sort) computes a different digest and rejects a legitimate chain.
+	//     Every other chain prefix in the suite already has its tips in
+	//     identity order, so nothing else could tell the two apart.
+	//   * The timestamp regresses at the SECOND and the FINAL transition but
+	//     not at the first, and each regressed value is still ABOVE chain[0]'s
+	//     timestamp. A validator comparing against chain[0] instead of the
+	//     immediate predecessor emits a spurious B5 for checkpoint 3, so the
+	//     ordered warning list no longer matches.
+	//
+	// B4 likewise fires at the middle and the last transition and not at the
+	// first, so a B4 pinned to i == 1 produces no tokens at all here.
+	fs1 := "f1f1f1f1-0000-4000-8000-000000000001"
+	fs2 := "f2f2f2f2-0000-4000-8000-000000000002"
+	fs3 := "f3f3f3f3-0000-4000-8000-000000000003"
+	posP1 := Checkpoint{Seq: 1, Timestamp: "2026-10-01T00:00:30Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: fs1, TipHash: "f1" + repeat("00", 31)},
+	}}
+	posP2 := Checkpoint{Seq: 2, Timestamp: "2026-10-01T00:00:10Z", Tips: []Tip{
+		// Deliberately NOT in identity order: fs2 sorts before fs3.
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: fs3, TipHash: "f3" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: fs2, TipHash: "f2" + repeat("00", 31)},
+	}}
+	posP3 := Checkpoint{Seq: 3, Timestamp: "2026-10-01T00:00:25Z", Tips: []Tip{
+		{EntryCount: 4, Epoch: ptr(1), SequenceNumber: 4, StreamID: fs1, TipHash: "f4" + repeat("00", 31)},
+	}}
+	posTail := Checkpoint{Seq: 4, Timestamp: "2026-10-01T00:00:20Z", Tips: []Tip{
+		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: fs2, TipHash: "f5" + repeat("00", 31)},
+	}}
+	posAll := linkCheckpoints([]Checkpoint{posP1, posP2, posP3, posTail})
+	posCanon, err := canonical(posAll[3])
+	if err != nil {
+		panic(fmt.Sprintf("gen: positional advisory vector is malformed: %v", err))
+	}
+	posSum := sha256.Sum256(posCanon)
+	suite.Vectors = append(suite.Vectors, Vector{
+		Name:      "advisory_middle_chain_unsorted_prefix_tips",
+		Input:     posAll[3],
+		Canonical: string(posCanon),
+		SHA256:    hex.EncodeToString(posSum[:]),
+		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(priv, posCanon)),
+		Chain:     signAll(priv, posAll[:3]),
+		// B5 at transition 1, B4 at transitions 2 and 3, B5 again at 3.
+		ExpectWarnings:   []string{"B5:2", "B4:" + fs1, "B4:" + fs2, "B5:4"},
+		MinFormatVersion: 2,
+	})
+
+	// The MIDDLE prefix's signature is tampered. tampered_prefix_signature
+	// puts the defect on a chain's only prefix and
+	// tampered_second_prefix_signature on its last, so a validator that
+	// verifies only the last prefix passes both; this one it cannot.
+	midSig := posChain("a1a1a1a1", 4)
+	midSigChain := signAll(priv, midSig[:3])
+	midSigRaw, err := base64.StdEncoding.DecodeString(midSigChain[1].Signature)
+	if err != nil {
+		panic(fmt.Sprintf("gen: middle prefix signature is not base64: %v", err))
+	}
+	midSigBad := append([]byte(nil), midSigRaw...)
+	midSigBad[0] ^= 0x01
+	midSigChain[1].Signature = base64.StdEncoding.EncodeToString(midSigBad)
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "tampered_middle_prefix_signature", Expect: "signature",
+		Reason:           "one byte of the MIDDLE chain prefix's signature is flipped; a validator that verifies only the first or only the last prefix accepts this",
+		Input:            midSig[3],
+		Signature:        signCP(priv, midSig[3]).Signature,
+		Chain:            midSigChain,
+		MinFormatVersion: 2,
+	})
+
+	// The MIDDLE prefix omits epoch at version 2. chain_prefix_missing_epoch
+	// puts the same defect on a two-prefix chain, where index 1 is also the
+	// last index -- so a boundary check applied only to the last prefix passes
+	// it. Here the last prefix is clean.
+	midEpoch := posChain("a2a2a2a2", 4)
+	midEpoch[1].Tips[0].Epoch = nil
+	relinkFrom(midEpoch, 2)
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "middle_chain_prefix_missing_epoch", Expect: "schema",
+		Reason:           "the MIDDLE version-2 chain prefix omits epoch on its tip; the boundary applies at every prefix index, not only the first or the last",
+		Input:            midEpoch[3],
+		Signature:        signCP(priv, midEpoch[3]).Signature,
+		Chain:            signAll(priv, midEpoch[:3]),
+		MinFormatVersion: 2,
+	})
+
+	// B2 broken at the MIDDLE transition. chain_prefix_broken_link breaks the
+	// first transition, so B2 applied only at i == 1 still rejects it; the
+	// first and last links here are both correct.
+	midLink := posChain("a3a3a3a3", 4)
+	midLink[2].PrevHash = "33" + repeat("33", 31)
+	relinkFrom(midLink, 3)
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "middle_chain_link_broken", Expect: "tier_b",
+		Reason:           "the third checkpoint's prev_hash does not equal the second's hash; B2 must hold at every transition, and here the first and last links are both correct",
+		Input:            midLink[3],
+		Signature:        signCP(priv, midLink[3]).Signature,
+		Chain:            signAll(priv, midLink[:3]),
+		MinFormatVersion: 2,
+	})
+
+	// B2 broken at the FINAL transition -- the vector's own link to its last
+	// prefix. broken_chain covers a bad final link through the separate
+	// prev_sha256 field and carries no chain, so nothing before this pinned B2
+	// at the last transition of a chain that actually reaches checkTierB.
+	lastLink := posChain("a4a4a4a4", 4)
+	lastLink[3].PrevHash = "44" + repeat("44", 31)
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "final_chain_link_broken", Expect: "tier_b",
+		Reason:           "the vector's own prev_hash does not equal its last prefix's hash; all three prefixes link correctly, so only a B2 applied at the FINAL transition rejects this",
+		Input:            lastLink[3],
+		Signature:        signCP(priv, lastLink[3]).Signature,
+		Chain:            signAll(priv, lastLink[:3]),
+		MinFormatVersion: 2,
+	})
+
+	// B1 broken at the MIDDLE transition only: 1, 2, 4, 5. seq_skip breaks the
+	// first transition and seq_skip_after_first_transition the last, so this is
+	// the position neither reaches.
+	midSeq := posChain("a5a5a5a5", 4)
+	midSeq[2].Seq = 4
+	midSeq[3].Seq = 5
+	relinkFrom(midSeq, 2)
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "seq_skip_at_middle_transition", Expect: "tier_b",
+		Reason:           "checkpoint seq runs 1, 2, 4, 5: the gap is at the MIDDLE transition, while the first and last transitions are both contiguous",
+		Input:            midSeq[3],
+		Signature:        signCP(priv, midSeq[3]).Signature,
+		Chain:            signAll(priv, midSeq[:3]),
+		MinFormatVersion: 2,
+	})
+
+	// B3 violated BETWEEN two prefixes, with the vector's own input clean.
+	// stream_recommitted_same_epoch duplicates chain[0] against the input, so a
+	// validator that only compares the input against chain[0] rejects it; that
+	// validator accepts this one.
+	dupMid := posChain("a6a6a6a6", 4)
+	dupMid[2].Tips[0].StreamID = dupMid[1].Tips[0].StreamID
+	dupMid[2].Tips[0].TipHash = "d6" + repeat("00", 31)
+	relinkFrom(dupMid, 2)
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "stream_recommitted_between_prefixes", Expect: "tier_b",
+		Reason:           "the same (stream_id, epoch) is committed by the second and third chain prefixes; the vector's own input is clean, so only a B3 that spans the whole chain rejects this",
+		Input:            dupMid[3],
+		Signature:        signCP(priv, dupMid[3]).Signature,
+		Chain:            signAll(priv, dupMid[:3]),
 		MinFormatVersion: 2,
 	})
 

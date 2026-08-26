@@ -403,6 +403,93 @@
         "B4:e5e5e5e5-0000-4000-8000-000000000005"
       ],
       "min_format_version": 2
+    },
+    {
+      "name": "advisory_middle_chain_unsorted_prefix_tips",
+      "input": {
+        "prev_hash": "d417002f633250d806eecb1bfba141629606606de9e9a3158853d7ec4e2cc636",
+        "seq": 4,
+        "timestamp": "2026-10-01T00:00:20Z",
+        "tips": [
+          {
+            "entry_count": 5,
+            "epoch": 1,
+            "sequence_number": 5,
+            "stream_id": "f2f2f2f2-0000-4000-8000-000000000002",
+            "tip_hash": "f500000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"d417002f633250d806eecb1bfba141629606606de9e9a3158853d7ec4e2cc636\",\"seq\":4,\"timestamp\":\"2026-10-01T00:00:20Z\",\"tips\":[{\"entry_count\":5,\"epoch\":1,\"sequence_number\":5,\"stream_id\":\"f2f2f2f2-0000-4000-8000-000000000002\",\"tip_hash\":\"f500000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "36160f55f2d003913f17ac7ed6171ce924f421c654131396f63565f913ac49a1",
+      "signature": "s9h6iJMG3j4SJnv54CoebinYv8NS9YHz+EH2lPPU9jqr1McDun7O86v/mptBeXzOoMY80YgFxXAH21PjOt2jDA==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-10-01T00:00:30Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "f1f1f1f1-0000-4000-8000-000000000001",
+                "tip_hash": "f100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "dK0ThGtC1X9xfyUvcXC/N6NWo1d/kliwW0V9UxaU6ogZXZ7hzMmwc91ZRfPZ/9XAyD4bzGe48+AC643iw50OCw=="
+        },
+        {
+          "input": {
+            "prev_hash": "8508c16fa0eb0b7c3a7173665d0ddd5b841fdad7b803967449df276bd14cd839",
+            "seq": 2,
+            "timestamp": "2026-10-01T00:00:10Z",
+            "tips": [
+              {
+                "entry_count": 3,
+                "epoch": 0,
+                "sequence_number": 3,
+                "stream_id": "f3f3f3f3-0000-4000-8000-000000000003",
+                "tip_hash": "f300000000000000000000000000000000000000000000000000000000000000"
+              },
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "f2f2f2f2-0000-4000-8000-000000000002",
+                "tip_hash": "f200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "SL3hZE3aShm9yiYLXSa1G1Qxa+HXbSYEyG2YDba4nFdZ0qhOUU6WNM/nWzwVuHwCQAPH1o2uRtsaOmYXFyjFAg=="
+        },
+        {
+          "input": {
+            "prev_hash": "4218ff8d39ef0686c9951b21916a6f6c3596639503cb7f025199b20c7dc665d3",
+            "seq": 3,
+            "timestamp": "2026-10-01T00:00:25Z",
+            "tips": [
+              {
+                "entry_count": 4,
+                "epoch": 1,
+                "sequence_number": 4,
+                "stream_id": "f1f1f1f1-0000-4000-8000-000000000001",
+                "tip_hash": "f400000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "ZQtCPTIS/2J89MpsFTYMNE8pwAaaLHCTFzB6d5AYstWLVqOWQq81UJA+Sm/q4SwEVP4NPt3Byo4MupkBEOQsAA=="
+        }
+      ],
+      "expect_warnings": [
+        "B5:2",
+        "B4:f1f1f1f1-0000-4000-8000-000000000001",
+        "B4:f2f2f2f2-0000-4000-8000-000000000002",
+        "B5:4"
+      ],
+      "min_format_version": 2
     }
   ],
   "negatives": [
@@ -935,6 +1022,449 @@
         ]
       },
       "signature": "d6UOV8hd+Bn8qPem0nDFNmxnwQIGFRuhfyq/cplB7DPeqk264KFqAxBlt4vuaKSZ1B+cyobUnfkkcmPTlihkCw==",
+      "min_format_version": 2
+    },
+    {
+      "name": "tampered_middle_prefix_signature",
+      "expect": "signature",
+      "reason": "one byte of the MIDDLE chain prefix's signature is flipped; a validator that verifies only the first or only the last prefix accepts this",
+      "input": {
+        "prev_hash": "f8389ead4431566f497dd93d17c1d067dcf69ad5d726d70f56bbb1a7e7f285c9",
+        "seq": 4,
+        "timestamp": "2026-10-01T00:03:00Z",
+        "tips": [
+          {
+            "entry_count": 4,
+            "epoch": 0,
+            "sequence_number": 4,
+            "stream_id": "a1a1a1a1-0000-4000-8000-000000000004",
+            "tip_hash": "0400000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "qxkIMErHZifv9Wiwvr9BLGgM4ULNO/RWSI8FkDkh21L7OLgHP+rgLhqwwM3hVbOLa+B558koFZigdd8UQaSABw==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-10-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "a1a1a1a1-0000-4000-8000-000000000001",
+                "tip_hash": "0100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "SL9QA/RWoq32Gpn2U980lg9htl/+uxV92IhPEbuBTP7/vRw9NhvmO0QoZGpdBNxfLybrIQ+0qU4cb/hqrbfsCw=="
+        },
+        {
+          "input": {
+            "prev_hash": "99c8fe21972d5ab80cf99eb10b9064ae92116072daa54a70bf29898b23f04800",
+            "seq": 2,
+            "timestamp": "2026-10-01T00:01:00Z",
+            "tips": [
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "a1a1a1a1-0000-4000-8000-000000000002",
+                "tip_hash": "0200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "tq1HmcfOkJdXaxtJkQSUQBrRcZQnjeBpQD34XmX6PgRx9mvTMBtiWe0NrGga6GPN6YJgzyPLrg1PFHqU/ZtaCQ=="
+        },
+        {
+          "input": {
+            "prev_hash": "0106ebb5abb8166cf4d345d74df5ae24c7d158cab4a812a4d8c5571d9334f359",
+            "seq": 3,
+            "timestamp": "2026-10-01T00:02:00Z",
+            "tips": [
+              {
+                "entry_count": 3,
+                "epoch": 0,
+                "sequence_number": 3,
+                "stream_id": "a1a1a1a1-0000-4000-8000-000000000003",
+                "tip_hash": "0300000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "waa2tWSroTlFIhevZ/w6l3QO+1rYFZOeSn4KlVFeQK0K+jWfMx0Y9raluXIxxMG650nptay18WAG9IMRuheuCg=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "middle_chain_prefix_missing_epoch",
+      "expect": "schema",
+      "reason": "the MIDDLE version-2 chain prefix omits epoch on its tip; the boundary applies at every prefix index, not only the first or the last",
+      "input": {
+        "prev_hash": "31aabab4b412495b686c23d464fad0d2f4f70ad88cfaab257816d8a40a0d1f00",
+        "seq": 4,
+        "timestamp": "2026-10-01T00:03:00Z",
+        "tips": [
+          {
+            "entry_count": 4,
+            "epoch": 0,
+            "sequence_number": 4,
+            "stream_id": "a2a2a2a2-0000-4000-8000-000000000004",
+            "tip_hash": "0400000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "VBY0p8Oxu0oKBfAIXrsD2MJjhVAZyh49tCOO75XEyLi4DO88KajRIQSGePhKkLs028La/GLyL2udUU+xVZO9Cg==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-10-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "a2a2a2a2-0000-4000-8000-000000000001",
+                "tip_hash": "0100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "WAOSMJKKrRrDVvKH3qgSvFmrOq0EXhW73RZLwY5boPshSFuMJ0rcbYK1UPjyWUEwjFHLVThq1wQ8wObLVMrJBQ=="
+        },
+        {
+          "input": {
+            "prev_hash": "a95315012a09efbb894a359115fdeffb030246c84629a62b3b906bb7aa420577",
+            "seq": 2,
+            "timestamp": "2026-10-01T00:01:00Z",
+            "tips": [
+              {
+                "entry_count": 2,
+                "sequence_number": 2,
+                "stream_id": "a2a2a2a2-0000-4000-8000-000000000002",
+                "tip_hash": "0200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "0w8mVcEjoXJl3eHZZoWYabpdslcmLFKMIlmw8MYjkAZlkDnuXpgnbh/cCjTYhE2aVwih5nLPkR4U36ALvAEOCw=="
+        },
+        {
+          "input": {
+            "prev_hash": "984932bb82cc804c3c9473573885af03094498892e6662612ca7150f1b0b79b4",
+            "seq": 3,
+            "timestamp": "2026-10-01T00:02:00Z",
+            "tips": [
+              {
+                "entry_count": 3,
+                "epoch": 0,
+                "sequence_number": 3,
+                "stream_id": "a2a2a2a2-0000-4000-8000-000000000003",
+                "tip_hash": "0300000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "J75Qd1nyeStw7eTKuVvewhPPxQIxArCo5Ed+aRotIAe5TxcDoLV9zYhmLFwLQAbz1KFtkHQueZqfa8YC6OPCBg=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "middle_chain_link_broken",
+      "expect": "tier_b",
+      "reason": "the third checkpoint's prev_hash does not equal the second's hash; B2 must hold at every transition, and here the first and last links are both correct",
+      "input": {
+        "prev_hash": "3fab63a9e6ec61512056a94965518534c08beb7d4324e54c4a1d170cfcf89e45",
+        "seq": 4,
+        "timestamp": "2026-10-01T00:03:00Z",
+        "tips": [
+          {
+            "entry_count": 4,
+            "epoch": 0,
+            "sequence_number": 4,
+            "stream_id": "a3a3a3a3-0000-4000-8000-000000000004",
+            "tip_hash": "0400000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "+jJaXNPkiX16xcsOTw7CwfEkLdx65FnOwAFY2uBsc20nZCfnVGnEm0bdfJ2S5aXEXyN8kMeJBUtrD02QxLDzCg==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-10-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "a3a3a3a3-0000-4000-8000-000000000001",
+                "tip_hash": "0100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "xUOxgQdkSmIpn+fZLIHshWtZnmoKkwOzS0WcIVSVu0iit86wUvlsiEZXWHO0RDdwKx3sZgiTXuRfYEYVc4DXCQ=="
+        },
+        {
+          "input": {
+            "prev_hash": "c122a5f1ff65d4e8f6f8868934065765bc856862e9896e539898adf9e4961252",
+            "seq": 2,
+            "timestamp": "2026-10-01T00:01:00Z",
+            "tips": [
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "a3a3a3a3-0000-4000-8000-000000000002",
+                "tip_hash": "0200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "4yNBPTtWSNEwvgvX2JioQoxC8AXKdfD41uCSHT3vKmhDVuGBkZ8AIhizpqQ/JmM9DNiSBdIgJhD32rF1Dy2mDA=="
+        },
+        {
+          "input": {
+            "prev_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "seq": 3,
+            "timestamp": "2026-10-01T00:02:00Z",
+            "tips": [
+              {
+                "entry_count": 3,
+                "epoch": 0,
+                "sequence_number": 3,
+                "stream_id": "a3a3a3a3-0000-4000-8000-000000000003",
+                "tip_hash": "0300000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "U5Q4JT5zH6/H2RkKaXYOjJbMnxONBZrHPS3BgVJPAo8lRKDcEN6oyPETjO8BdnJmqDTbKqtFPzogYbXP9InpCw=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "final_chain_link_broken",
+      "expect": "tier_b",
+      "reason": "the vector's own prev_hash does not equal its last prefix's hash; all three prefixes link correctly, so only a B2 applied at the FINAL transition rejects this",
+      "input": {
+        "prev_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+        "seq": 4,
+        "timestamp": "2026-10-01T00:03:00Z",
+        "tips": [
+          {
+            "entry_count": 4,
+            "epoch": 0,
+            "sequence_number": 4,
+            "stream_id": "a4a4a4a4-0000-4000-8000-000000000004",
+            "tip_hash": "0400000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "5Ts2UqGeyo75BwMUSdSCnfhuMK9tjyGFBjfuGZ96owaFATq/umoxX/yJHORSTECkmnmchRPpAF2q1WfNsVbjBA==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-10-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "a4a4a4a4-0000-4000-8000-000000000001",
+                "tip_hash": "0100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "wkoc9s7EVG0fhEte0FlteBWsxZdNNOwL/B0tNhSfYOixpcqewE62ZTI/pfxTYgss6N+7G6aeCtv7Vg8JxnzrBw=="
+        },
+        {
+          "input": {
+            "prev_hash": "72d2dd8d087697b5013d7b0ee0f1693c9286cdc6d7c51acf33501c3c9ba30f25",
+            "seq": 2,
+            "timestamp": "2026-10-01T00:01:00Z",
+            "tips": [
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "a4a4a4a4-0000-4000-8000-000000000002",
+                "tip_hash": "0200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "ZAKLHSCxzWy9o4Gzfmlr71DtMAcbekrv/hBOCcahDjCzeOV5g73R5ti572SmOkcRNDKNzOoVQOuwPkQ1pe81Cw=="
+        },
+        {
+          "input": {
+            "prev_hash": "99b27d7127627b9feafcb3137226c8138bc84f5a9a2c6b3aedc25376b22fbab4",
+            "seq": 3,
+            "timestamp": "2026-10-01T00:02:00Z",
+            "tips": [
+              {
+                "entry_count": 3,
+                "epoch": 0,
+                "sequence_number": 3,
+                "stream_id": "a4a4a4a4-0000-4000-8000-000000000003",
+                "tip_hash": "0300000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "riYyML+lxvjmliT9XNHfqSiyOZXW4Ob3e2JFGkn2rzMSdGHZKYHjFcFr+ZYUqlahaC++nvH/uDUazKMCzDdqCg=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "seq_skip_at_middle_transition",
+      "expect": "tier_b",
+      "reason": "checkpoint seq runs 1, 2, 4, 5: the gap is at the MIDDLE transition, while the first and last transitions are both contiguous",
+      "input": {
+        "prev_hash": "3379e34ac8186d4e5e1a23c73656dfc864eb29634994b9b66eb73e37660c0bca",
+        "seq": 5,
+        "timestamp": "2026-10-01T00:03:00Z",
+        "tips": [
+          {
+            "entry_count": 4,
+            "epoch": 0,
+            "sequence_number": 4,
+            "stream_id": "a5a5a5a5-0000-4000-8000-000000000004",
+            "tip_hash": "0400000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "uuf1oO+peHyVHj4fstijQhMd0THdKwMr4lW4z7Qb3A/BzalMEBCLjTvV2EkqCMsbCW+vPA6bmixSMyjr3dh0CA==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-10-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "a5a5a5a5-0000-4000-8000-000000000001",
+                "tip_hash": "0100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "8o8a08q0QXTqxL7VAeJnjU+62hFKqQk85sD8p5SEQoKQW69immjkYQVmCJYRB5SI+lg/HRlfcrht+HkhPp8lBw=="
+        },
+        {
+          "input": {
+            "prev_hash": "0a29ebb6aa524b6f23d9b1e46d982c8661d1365ae999dae19bd5e91760b21689",
+            "seq": 2,
+            "timestamp": "2026-10-01T00:01:00Z",
+            "tips": [
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "a5a5a5a5-0000-4000-8000-000000000002",
+                "tip_hash": "0200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "q2kyiL7A3do5ZmWTh8j34YfeTvjLnQ9SdhLQz93WpSvPN38CwAGOANyZBj1Eks5rrwy4Ddgt1jkMIv8ZY/CNBw=="
+        },
+        {
+          "input": {
+            "prev_hash": "4c8cba3cf7731f8cb0eb4807b80a715d37c34514aa2b8c1694a8d4904f7c85c7",
+            "seq": 4,
+            "timestamp": "2026-10-01T00:02:00Z",
+            "tips": [
+              {
+                "entry_count": 3,
+                "epoch": 0,
+                "sequence_number": 3,
+                "stream_id": "a5a5a5a5-0000-4000-8000-000000000003",
+                "tip_hash": "0300000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "gJTR+0UJ3DDsY0aKw3yeSlhAIVKlPMjqzKvPyxMkR4kSh5LK1jwj2XwocMT56LzJOUkqkqpVhM0xUP3q14eXAA=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "stream_recommitted_between_prefixes",
+      "expect": "tier_b",
+      "reason": "the same (stream_id, epoch) is committed by the second and third chain prefixes; the vector's own input is clean, so only a B3 that spans the whole chain rejects this",
+      "input": {
+        "prev_hash": "32ef3943fca624a910da1da78d2fe5219f0afb1689f6998127a1741b03512944",
+        "seq": 4,
+        "timestamp": "2026-10-01T00:03:00Z",
+        "tips": [
+          {
+            "entry_count": 4,
+            "epoch": 0,
+            "sequence_number": 4,
+            "stream_id": "a6a6a6a6-0000-4000-8000-000000000004",
+            "tip_hash": "0400000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "fCiP5wW+VSwXMoG1AxgY9Jfqc0mZ6DiAuAP/3mfrFQCriqOmH+jXi7lrg0ivvwqxcdVbfei7rWSX+db/QCv2BA==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-10-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "a6a6a6a6-0000-4000-8000-000000000001",
+                "tip_hash": "0100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "F1HJ3EAiL/Y4EMb9eodkYNJU3t/10jPQQuRCvUDV00N3vVdYaI0x+VLhFi2dPrJ/LC+sZRFHgfKmmxZ9nx2WBw=="
+        },
+        {
+          "input": {
+            "prev_hash": "ae469b1f818aff49b5f826b4426a463fb4ff5d644332ad4a7b7878498025bc76",
+            "seq": 2,
+            "timestamp": "2026-10-01T00:01:00Z",
+            "tips": [
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "a6a6a6a6-0000-4000-8000-000000000002",
+                "tip_hash": "0200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "8E+cD9cvET1x7Nbwgv7bgHku9Az3ToS7Ez5WcinvrKGU0rPOa/Ltdztj7OLStivfaz1pXBUK+JZKiv4YW91uAg=="
+        },
+        {
+          "input": {
+            "prev_hash": "eece3eaa7395c949d1633e3910600049c7e25717b220c9baa064aea50199c789",
+            "seq": 3,
+            "timestamp": "2026-10-01T00:02:00Z",
+            "tips": [
+              {
+                "entry_count": 3,
+                "epoch": 0,
+                "sequence_number": 3,
+                "stream_id": "a6a6a6a6-0000-4000-8000-000000000002",
+                "tip_hash": "d600000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "dozBsk8si2pNAPKN2rtWtyVnDAdtg8aDlVztwtrsw/WSoLpJSlP8MeeAdzQxeqpbi4vQ6FF8YcRzipezLPPTDg=="
+        }
+      ],
       "min_format_version": 2
     }
   ]

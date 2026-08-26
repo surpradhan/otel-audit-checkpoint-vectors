@@ -172,6 +172,32 @@ its `expect` field:
 - `negative_epoch` — a tip with `epoch: -1` (again not the first tip).
   Rejected: schema.
 
+The six below all carry a **four-checkpoint** chain (three prefixes), so that
+*first*, *middle* and *last* are three distinct positions — see
+[Rules hold at every position](#rules-hold-at-every-position).
+
+- `tampered_middle_prefix_signature` — the *middle* prefix of a three-prefix
+  chain has a flipped signature byte. `tampered_prefix_signature` puts the
+  defect on a chain's only prefix and `tampered_second_prefix_signature` on its
+  last, so a validator that verifies only the last prefix passes both and fails
+  this. Rejected: signature.
+- `middle_chain_prefix_missing_epoch` — the *middle* prefix omits `epoch` at
+  version 2, with the first and last prefixes clean. Rejected: schema.
+- `middle_chain_link_broken` — B2 broken at the *middle* transition, with the
+  first and last links both correct. Rejected: tier_b.
+- `final_chain_link_broken` — the vector's own `prev_hash` does not equal its
+  last prefix's hash, with all three prefixes linking correctly. `broken_chain`
+  reaches a bad final link through the separate `prev_sha256` field and carries
+  no `chain`, so this is the only vector that pins B2 at the last transition of
+  a chain that actually reaches the cross-checkpoint rules. Rejected: tier_b.
+- `seq_skip_at_middle_transition` — `seq` runs 1, 2, 4, 5: the gap is at the
+  *middle* transition and the first and last transitions are both contiguous.
+  Rejected: tier_b (B1).
+- `stream_recommitted_between_prefixes` — the same `(stream_id, epoch)` is
+  committed by the second and third *prefixes*, with the vector's own input
+  clean. A validator that only compares its input against `chain[0]` accepts
+  this. Rejected: tier_b (B3).
+
 ## Cross-checkpoint rules
 
 Everything above judges one checkpoint (against its signature, or its immediate
@@ -232,6 +258,35 @@ input-order walk emits their `B4` tokens in whatever order the tips happened to
 be supplied, so two conformant validators handed identical signed bytes could
 report different warning sequences. The `advisory_two_streams_new_epoch` vector
 supplies exactly that pair in non-identity order and pins the result.
+
+### Rules hold at every position
+
+Every rule above holds at **every** position of the assembled chain. That is a
+separate claim from the rules themselves, and it needs its own coverage: a
+validator that applies a rule at exactly one chain position — only the first
+transition, only the last prefix — still computes correct bytes and still
+rejects everything a short chain can express. With one or two prefixes,
+"first", "middle" and "last" collapse into each other, so such a validator
+passes.
+
+Two things pin it:
+
+- **Four-checkpoint vectors with the defect in the middle.** Listed above; a
+  middle defect is missed by "only the first" and "only the last" alike.
+  `advisory_middle_chain_unsorted_prefix_tips` is the must-accept counterpart:
+  its `timestamp` regresses at the second *and* the final transition but not
+  the first, and both regressed values are still above `chain[0]`'s, so a
+  validator comparing against `chain[0]` rather than the immediate predecessor
+  reports a warning sequence that does not match. Its `B4` tokens likewise fall
+  at the middle and last transitions and not the first. Its second prefix also
+  supplies its tips **out of identity order**: B2 hashes the previous
+  checkpoint's *canonical* bytes, so the link still holds, and a validator that
+  hashed the checkpoint as received would reject a legitimate chain.
+- **Position-generic tests.** `go/positional_test.go` and the matching section
+  of `py/test_validate.py` are table-driven over position: for each rule they
+  inject the defect at every index of a five-checkpoint chain in turn and
+  require the rule to fire each time. A vector can only pin the positions
+  someone thought to write down; these fail for any position a validator omits.
 
 Rules R1–R3 of the spec constrain the *producer* (how epochs are allocated and
 recovered) rather than the verifier, and are documented rather than implemented

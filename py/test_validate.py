@@ -562,6 +562,221 @@ def test_warning_order_is_part_of_the_contract():
     assert "warnings" in output, f"rejected, but not for the warning mismatch:\n{output}"
 
 
+
+# --- Position-generic tests (round 4) -------------------------------------
+#
+# Every VECTOR in this suite pins its rule at exactly one chain position, so
+# any mutation of the form "apply this check only at position X" escapes the
+# vectors unless some vector happens to sit at X. Adding more hand-placed
+# vectors only moves the hole; it never closes it.
+#
+# The tests below are generic over position instead: for a rule and a chain of
+# length N they inject the defect at EVERY index in turn and require the rule
+# to fire each time. A validator that applies the rule at only one position
+# fails N-2 of the cases, whichever position it picked. Mirrors
+# go/positional_test.go one-for-one, so a pass in both shows the two
+# implementations agree rather than each being internally self-consistent.
+
+# Five checkpoints give four transitions: a first, two middles and a last.
+POS_CHAIN_LEN = 5
+
+
+def _pos_ts(sec):
+    return f"2026-01-01T00:{sec // 60:02d}:{sec % 60:02d}Z"
+
+
+def _pos_stream(n):
+    return f"{n:08d}-0000-4000-8000-{n:012d}"
+
+
+def _pos_clean(n):
+    """A Tier-B-clean chain of n checkpoints: seq 1..n, strictly increasing
+    timestamps, one distinct stream each at epoch 0. Callers inject a single
+    defect at a chosen index, then link."""
+    return [_cp(i + 1, _pos_ts(100 + 10 * i),
+                [_tip(_pos_stream(i + 1), 0, i + 1, i + 1, f"{i + 1:02x}")])
+            for i in range(n)]
+
+
+def _pos_relink(cps, start):
+    """Recompute prev_hash from index `start` onwards, so a chain carries
+    exactly the one defect the caller injected."""
+    import hashlib as _h
+    for i in range(start, len(cps)):
+        cps[i]["prev_hash"] = _h.sha256(validate.canonical(cps[i - 1])).hexdigest()
+
+
+def _priv():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    # The TEST-ONLY signing seed is published in the suite header, so these
+    # tests use genuine key material without a second copy of it.
+    return Ed25519PrivateKey.from_private_bytes(
+        bytes.fromhex(_load_real_suite()["signing_seed_hex"]))
+
+
+def _sign(priv, cp):
+    import base64 as _b64
+    return {"input": cp,
+            "signature": _b64.b64encode(priv.sign(validate.canonical(cp))).decode()}
+
+
+def test_b1_fires_at_every_transition():
+    """B1 must hold at EVERY transition, not at the first (which seq_skip pins)
+    nor at the last (which seq_skip_after_first_transition pins)."""
+    for d in range(1, POS_CHAIN_LEN):
+        cps = _pos_clean(POS_CHAIN_LEN)
+        # One gap, at transition d; every later transition stays contiguous.
+        for i in range(d, POS_CHAIN_LEN):
+            cps[i]["seq"] += 1
+        err, _ = validate.check_tier_b(_link(*cps))
+        assert err is not None, (
+            f"seq gap at transition {d} accepted; B1 must hold at every transition")
+        assert err.startswith("B1:"), (
+            f"seq gap at transition {d} rejected by {err!r}; want a B1 rejection")
+
+
+def test_b2_fires_at_every_transition():
+    """B2 must hold at EVERY transition, including the LAST -- a vector's own
+    link to its final prefix. prev_sha256 pins only that last link and only for
+    chainless vectors, so nothing else reaches it through check_tier_b."""
+    for d in range(1, POS_CHAIN_LEN):
+        chain = _link(*_pos_clean(POS_CHAIN_LEN))
+        chain[d]["prev_hash"] = "22" * 32
+        _pos_relink(chain, d + 1)
+        err, _ = validate.check_tier_b(chain)
+        assert err is not None, (
+            f"broken link at transition {d} accepted; B2 must hold at every transition")
+        assert err.startswith("B2:"), (
+            f"broken link at transition {d} rejected by {err!r}; want a B2 rejection")
+
+
+def test_b3_fires_for_every_position_pair():
+    """B3 spans the WHOLE chain: a repeat of a (stream_id, epoch) is a
+    rejection wherever the two commits sit, including between two prefixes
+    with the vector's own input clean."""
+    for a in range(POS_CHAIN_LEN):
+        for b in range(a + 1, POS_CHAIN_LEN):
+            cps = _pos_clean(POS_CHAIN_LEN)
+            cps[b]["tips"][0]["stream_id"] = cps[a]["tips"][0]["stream_id"]
+            cps[b]["tips"][0]["tip_hash"] = "ff"
+            err, _ = validate.check_tier_b(_link(*cps))
+            assert err is not None, (
+                f"identity repeated at {a} and {b} accepted; B3 spans the whole chain")
+            assert err.startswith("B3:"), (
+                f"identity repeated at {a} and {b} rejected by {err!r}; want a B3 rejection")
+
+
+def test_b4_fires_at_every_transition():
+    """B4 fires at EVERY transition. Asserted as an exact ordered list, so a
+    check pinned to one index shows up as a missing token here and a spurious
+    one elsewhere."""
+    for d in range(1, POS_CHAIN_LEN):
+        cps = _pos_clean(POS_CHAIN_LEN)
+        cps[d]["tips"][0]["stream_id"] = _pos_stream(1)  # re-commit checkpoint 1's stream
+        cps[d]["tips"][0]["epoch"] = 1
+        err, warns = validate.check_tier_b(_link(*cps))
+        assert err is None, (
+            f"cross-epoch re-commit at index {d} is advisory, not a rejection: {err}")
+        assert warns == ["B4:" + _pos_stream(1)], (
+            f"epoch change at index {d}: warnings {warns}, want ['B4:{_pos_stream(1)}']")
+
+        # The same transition, but the stream's PREVIOUS commit sits at index
+        # d-1 rather than at chain[0]. A validator that records epochs only
+        # from chain[0] passes the case above and fails this one.
+        cps = _pos_clean(POS_CHAIN_LEN)
+        cps[d]["tips"][0]["stream_id"] = _pos_stream(d)  # committed at index d-1
+        cps[d]["tips"][0]["epoch"] = 1
+        err, warns = validate.check_tier_b(_link(*cps))
+        assert err is None, (
+            f"cross-epoch re-commit at index {d} is advisory, not a rejection: {err}")
+        assert warns == ["B4:" + _pos_stream(d)], (
+            f"epoch change at index {d} (previous commit at {d - 1}): "
+            f"warnings {warns}, want ['B4:{_pos_stream(d)}']")
+
+
+def test_b5_fires_at_every_transition():
+    """B5 compares against the IMMEDIATE predecessor at every transition. Each
+    regressed timestamp below is still above chain[0]'s, so a validator
+    comparing against chain[0] misses the real regression and invents others."""
+    for d in range(1, POS_CHAIN_LEN):
+        cps = _pos_clean(POS_CHAIN_LEN)
+        cps[d]["timestamp"] = _pos_ts(100 + 10 * (d - 1) - 1)  # one second before its predecessor
+        err, warns = validate.check_tier_b(_link(*cps))
+        assert err is None, (
+            f"timestamp regression at index {d} is advisory, not a rejection: {err}")
+        assert warns == [f"B5:{cps[d]['seq']}"], (
+            f"regression at index {d}: warnings {warns}, want ['B5:{cps[d]['seq']}']")
+
+
+def test_b2_hashes_canonical_bytes_not_as_received():
+    """B2 hashes the previous checkpoint's CANONICAL bytes, not the bytes as
+    received. A checkpoint's tips are explicitly allowed to arrive unsorted, so
+    a validator that serialized the checkpoint without first imposing the tip
+    order would compute a different digest and reject a legitimate chain."""
+    unsorted_cp = _cp(2, _pos_ts(110), [
+        _tip(_pos_stream(9), 0, 9, 9, "99"),  # sorts AFTER _pos_stream(3)
+        _tip(_pos_stream(3), 0, 3, 3, "33"),
+    ])
+    chain = _link(
+        _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "11")]),
+        unsorted_cp,
+        _cp(3, _pos_ts(120), [_tip(_pos_stream(2), 0, 2, 2, "22")]))
+
+    # The test only discriminates if the two byte strings actually differ.
+    as_received = json.dumps(chain[1], sort_keys=True, ensure_ascii=False,
+                             separators=(",", ":")).encode("utf-8")
+    assert validate.canonical(chain[1]) != as_received, (
+        "fixture is not discriminating: the prefix's tips are already in identity order")
+
+    err, _ = validate.check_tier_b(chain)
+    assert err is None, (
+        f"a chain whose prefix supplies tips out of identity order was rejected: {err}")
+
+
+def test_prefix_rules_fire_at_every_prefix_index():
+    """verify_prefixes applies BOTH of its rules at every prefix index.
+    Tampering index 0 and index len-1 are the two positions the suite's vectors
+    happen to occupy; a middle index is the one neither reaches."""
+    import base64 as _b64
+    n = 4
+    pub, priv = _pub(), _priv()
+    for d in range(n):
+        cps = _link(*_pos_clean(n))
+        prefixes = [_sign(priv, cp) for cp in cps]
+        raw = bytearray(_b64.b64decode(prefixes[d]["signature"]))
+        raw[0] ^= 0x01
+        prefixes[d] = {"input": prefixes[d]["input"],
+                       "signature": _b64.b64encode(bytes(raw)).decode()}
+        _, reason = validate.verify_prefixes(pub, prefixes, 2)
+        assert reason == "signature", (
+            f"tampered prefix {d}: reason={reason!r}, want 'signature'")
+
+        cps = _pos_clean(n)
+        del cps[d]["tips"][0]["epoch"]
+        cps = _link(*cps)
+        prefixes = [_sign(priv, cp) for cp in cps]
+        _, reason = validate.verify_prefixes(pub, prefixes, 2)
+        assert reason == "schema", (
+            f"prefix {d} missing epoch: reason={reason!r}, want 'schema'")
+
+
+def test_malformed_checkpoint_rejects_cleanly():
+    """A checkpoint with keys missing must produce a clean B-rule rejection,
+    not a crash. Go decodes the absent keys into zero values and rejects at B2;
+    this implementation read cp["prev_hash"] directly and raised KeyError, so
+    the two references disagreed on third-party input -- exactly the defect
+    class this suite publishes vectors against. Mirrors
+    TestMalformedCheckpointRejectsCleanly."""
+    head = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "11")],
+               prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    # No prev_hash and no timestamp key at all.
+    bare = {"seq": 2, "tips": [_tip(_pos_stream(2), 0, 2, 2, "22")]}
+    err, _ = validate.check_tier_b([head, bare])
+    assert err is not None, "a checkpoint with no prev_hash was accepted; want a B2 rejection"
+    assert err.startswith("B2:"), (
+        f"checkpoint with no prev_hash rejected by {err!r}; want a B2 rejection")
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -589,6 +804,14 @@ def main():
         test_chain_prev_hash_linkage_is_checked,
         test_b1_checked_on_every_transition,
         test_warning_order_is_part_of_the_contract,
+        test_b1_fires_at_every_transition,
+        test_b2_fires_at_every_transition,
+        test_b3_fires_for_every_position_pair,
+        test_b4_fires_at_every_transition,
+        test_b5_fires_at_every_transition,
+        test_b2_hashes_canonical_bytes_not_as_received,
+        test_prefix_rules_fire_at_every_prefix_index,
+        test_malformed_checkpoint_rejects_cleanly,
     ]
     failed = []
     for t in tests:

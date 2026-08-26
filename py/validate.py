@@ -26,8 +26,15 @@ def tip_identity(t: dict) -> tuple:
     """Uniqueness and sort key (spec R4). Epoch is part of the identity: two
     tips for one stream at different epochs are legal in a single checkpoint,
     so sorting on stream_id alone would let input order leak into signed
-    bytes."""
-    return (t["stream_id"], tip_epoch(t))
+    bytes.
+
+    Missing keys read as Go's zero value rather than raising. A third party
+    feeding either reference implementation a checkpoint with a key missing
+    must get the same verdict from both: Go's struct decoding yields "" and
+    rejects cleanly, so a KeyError here would be the two references
+    disagreeing on third-party input -- the exact defect class this suite
+    publishes vectors against."""
+    return (t.get("stream_id", ""), tip_epoch(t))
 
 
 def canonical(cp: dict) -> bytes:
@@ -64,16 +71,17 @@ def check_epoch_presence(cp: dict, min_ver: int):
     absent-vs-zero distinction is unenforced spec text, and a v2 tip missing
     epoch would silently validate as 0."""
     for t in cp.get("tips", []):
+        sid = t.get("stream_id", "")
         if min_ver >= 2 and "epoch" not in t:
-            return f"stream {t['stream_id']!r}: epoch required at format_version >= 2"
+            return f"stream {sid!r}: epoch required at format_version >= 2"
         if min_ver < 2 and "epoch" in t:
-            return f"stream {t['stream_id']!r}: epoch not permitted in a v1 vector"
+            return f"stream {sid!r}: epoch not permitted in a v1 vector"
         # Epoch must be non-negative. Go zero-pads it into a string sort key
         # where a leading "-" sorts above the digits, while this tuple compare
         # puts -10 below -1: the two implementations would order the same tips
         # differently, which is precisely what this repo exists to rule out.
         if t.get("epoch", 0) < 0:
-            return f"stream {t['stream_id']!r}: epoch must be non-negative, got {t['epoch']}"
+            return f"stream {sid!r}: epoch must be non-negative, got {t['epoch']}"
     return None
 
 
@@ -111,10 +119,19 @@ def check_tier_b(chain: list) -> tuple:
     warns = []
     seen_identity = {}
     last_epoch = {}
+    # Every key below is read with a default equal to Go's zero value for the
+    # corresponding struct field (prev_hash "", seq 0, timestamp "",
+    # stream_id ""). Go decodes a checkpoint with a key missing into that zero
+    # value and returns a clean B-rule rejection; reading the key directly here
+    # would raise KeyError instead, so the two reference implementations would
+    # disagree on third-party input. Whether a malformed checkpoint is rejected
+    # must not depend on which reference you ran.
     for i, cp in enumerate(chain):
+        seq = cp.get("seq", 0)
         if i > 0:
-            if cp["seq"] != chain[i - 1]["seq"] + 1:
-                return (f"B1: checkpoint seq {cp['seq']} follows {chain[i-1]['seq']}", warns)
+            prev_seq = chain[i - 1].get("seq", 0)
+            if seq != prev_seq + 1:
+                return (f"B1: checkpoint seq {seq} follows {prev_seq}", warns)
             # B2 across the assembled chain. The vector-level prev_sha256 field
             # only pins the LAST link, so without this a chain whose prefixes do
             # not hash-link is accepted -- the linkage rule would be enforced
@@ -122,11 +139,11 @@ def check_tier_b(chain: list) -> tuple:
             try:
                 prev_canon = canonical(chain[i - 1])
             except ValueError as e:
-                return (f"B2: checkpoint {cp['seq']}: previous checkpoint is malformed: {e}", warns)
+                return (f"B2: checkpoint {seq}: previous checkpoint is malformed: {e}", warns)
             want = hashlib.sha256(prev_canon).hexdigest()
-            if cp["prev_hash"] != want:
-                return (f"B2: checkpoint {cp['seq']} prev_hash={cp['prev_hash']} does not "
-                        f"link to checkpoint {chain[i-1]['seq']} ({want})", warns)
+            if cp.get("prev_hash", "") != want:
+                return (f"B2: checkpoint {seq} prev_hash={cp.get('prev_hash', '')} does not "
+                        f"link to checkpoint {prev_seq} ({want})", warns)
         # Iterate tips in identity order, not input order. Warnings are
         # compared as ORDERED lists and a checkpoint's tips are explicitly
         # allowed to arrive unsorted, so when two streams each change epoch in
@@ -139,18 +156,19 @@ def check_tier_b(chain: list) -> tuple:
         # advisory_two_streams_new_epoch is the vector that pins this.
         for t in sorted(cp.get("tips", []), key=tip_identity):
             ident = tip_identity(t)
+            sid = t.get("stream_id", "")
             if ident in seen_identity:
-                return (f"B3: stream {t['stream_id']!r} epoch {tip_epoch(t)} "
-                        f"committed in checkpoint {seen_identity[ident]} and again in {cp['seq']}", warns)
-            seen_identity[ident] = cp["seq"]
-            prev = last_epoch.get(t["stream_id"])
+                return (f"B3: stream {sid!r} epoch {tip_epoch(t)} "
+                        f"committed in checkpoint {seen_identity[ident]} and again in {seq}", warns)
+            seen_identity[ident] = seq
+            prev = last_epoch.get(sid)
             if prev is not None and tip_epoch(t) != prev:
-                warns.append("B4:" + t["stream_id"])
-            last_epoch[t["stream_id"]] = tip_epoch(t)
+                warns.append("B4:" + sid)
+            last_epoch[sid] = tip_epoch(t)
         # B5 is a plain string comparison: the pinned YYYY-MM-DDTHH:MM:SSZ
         # profile sorts chronologically, so no date parsing is needed.
-        if i > 0 and cp["timestamp"] < chain[i - 1]["timestamp"]:
-            warns.append(f"B5:{cp['seq']}")
+        if i > 0 and cp.get("timestamp", "") < chain[i - 1].get("timestamp", ""):
+            warns.append(f"B5:{seq}")
     return (None, warns)
 
 
