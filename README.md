@@ -32,6 +32,15 @@ exceeds the version they support, and MUST NOT treat a skip as a failure.**
 This is what allows new vector shapes to be added without breaking existing
 validators.
 
+`min_format_version` does double duty: besides gating whether a validator
+skips the vector, it is also that vector's own self-declared schema version,
+and it is what a validator checks the `epoch` field's presence against (see
+"Why epoch exists" below). A vector that needs `epoch` but omits
+`min_format_version` is read as version 1, where `epoch` is not permitted —
+so a third party authoring a new vector must set `min_format_version`
+explicitly, or get the confusing "epoch is not permitted in a format_version 1
+vector" rather than the schema error they meant to trigger.
+
 **Version 2 changed no previously published bytes.** Every version-1 vector's
 `input`, `canonical`, `sha256` and `signature` is byte-identical to what was on
 `main` before the bump; the only change to an existing line is the suite-level
@@ -123,6 +132,40 @@ defaulted — see the `missing_epoch_in_v2` vector.
 4. **Signature.** Ed25519 over the canonical bytes. Ed25519 is deterministic, so
    a correct implementation reproduces the exact signature bytes in the vectors.
 
+## Positive vectors (a conformant validator MUST accept these)
+
+The 12 positive vectors, one line each:
+
+- `genesis_empty_tips` — the first checkpoint of the positives' own hash
+  chain, with an empty `tips` array.
+- `single_tip` — the second checkpoint of that chain, one committed stream.
+- `multi_tip_unsorted_input` — the third checkpoint, two tips supplied out of
+  `stream_id` order, exercising the sort rule.
+- `multi_epoch_same_stream` — one stream committed at three epochs in a
+  single checkpoint; two B4 transitions, so the identical token is emitted
+  twice. See "Why epoch exists" above.
+- `advisory_stream_recommitted_new_epoch` — the declared at-least-once path:
+  a stream re-committed under a new epoch, accepted with one `B4` warning.
+- `advisory_timestamp_regression` — a timestamp regression against the
+  previous checkpoint, accepted with one `B5` warning.
+- `advisory_new_epoch_and_timestamp_regression` — B4 and B5 raised by the
+  *same* checkpoint; pins their relative order for a validator that compares
+  warnings in order (see Warning ordering below).
+- `advisory_two_streams_new_epoch` — two different streams each change epoch
+  in one checkpoint, with tips supplied out of identity order; pins the B4
+  token order for a validator that compares warnings in order.
+- `advisory_chain_b5_then_b4` — a three-checkpoint chain whose warning
+  sequence is B5 then B4, not sorted order; the suite's only vector whose
+  Tier B block runs over three chained checkpoints.
+- `advisory_epoch_regression` — a stream re-committed under an *older* epoch,
+  the rollback-shaped case B4 exists to catch and B3 does not.
+- `advisory_middle_chain_unsorted_prefix_tips` — must-accept over a
+  three-prefix chain, with the *middle* prefix's tips supplied out of
+  identity order and warnings landing at middle/final/interior positions.
+- `advisory_first_prefix_unsorted_tips` — the counterpart to the above, with
+  unsorted tips (three, in reverse order) at `chain[0]` instead of the
+  middle, and the changed epoch on the identity-interior tip.
+
 ## Negative vectors (a conformant validator MUST reject these)
 
 Positive vectors prove an implementation computes the same bytes. Negative
@@ -198,7 +241,7 @@ The six below all carry a **four-checkpoint** chain (three prefixes), so that
   clean. A validator that only compares its input against `chain[0]` accepts
   this. Rejected: tier_b (B3).
 
-The six below move the defect off the chain-index axis entirely — onto a tip
+The five below move the defect off the chain-index axis entirely — onto a tip
 index, onto the vector's own checkpoint, or onto the order of the `chain` array.
 Several carry **three tips supplied in reverse identity order**, so that an
 *interior* tip exists at all.
@@ -273,7 +316,8 @@ sorts chronologically, so no date parsing is needed.
 Warnings are compared **element-wise and in order**, so when one checkpoint
 raises both, the interleaving is part of the contract: B4 (raised per tip, in
 tip-identity order) precedes B5 (raised once per checkpoint). The
-`advisory_new_epoch_and_timestamp_regression` vector pins that pair.
+`advisory_new_epoch_and_timestamp_regression` vector pins that pair for a
+validator that compares warnings in order; see Warning ordering below.
 
 Tips are examined in `(stream_id, epoch)` order rather than input order. This
 matters because a checkpoint's `input.tips` are explicitly allowed to be
@@ -281,7 +325,8 @@ unsorted: when two different streams each change epoch in one checkpoint, an
 input-order walk emits their `B4` tokens in whatever order the tips happened to
 be supplied, so two conformant validators handed identical signed bytes could
 report different warning sequences. The `advisory_two_streams_new_epoch` vector
-supplies exactly that pair in non-identity order and pins the result.
+supplies exactly that pair in non-identity order and pins the result for a
+validator that compares warnings in order; see Warning ordering below.
 
 ### Warning ordering is a stated requirement, not a vector-enforced one
 
@@ -320,7 +365,7 @@ contract rather than to any single rule: the order of the warning list it
 reports, and the order of the `chain` array it was handed. (The warning-order
 case has a narrower guarantee at the level of the published vectors themselves
 — see [Warning ordering](#warning-ordering-is-a-stated-requirement-not-a-vector-enforced-one)
-below.)
+above.)
 
 **Not pinned**, stated plainly rather than left to be discovered:
 
@@ -336,8 +381,8 @@ below.)
   relationship with each other. The tip-identity encoding (`stream_id` +
   `\x00` + zero-padded `epoch`, see `go/main.go`) is designed to stay
   prefix-free even when one `stream_id` is a prefix of another, but no vector
-  exercises that case, so the suite cannot distinguish that encoding from a
-  naive concatenation that would collide there.
+  and no test exercises that case, so the suite cannot distinguish that
+  encoding from a naive concatenation that would collide there.
 
 This is an honest account of what the position-axis vectors currently
 constrain, not a claim that every conceivable position is covered.
@@ -393,6 +438,16 @@ cd go && go run . gen ../vectors.json && go run . validate ../vectors.json
 # Python: independent re-derivation, shares no code with the Go side
 python3 py/validate.py vectors.json
 ```
+
+**Scope of what "full RFC 8785" above actually means here.** Every published
+canonical byte is ASCII, drawn from a 40-character alphabet, so the suite
+exercises JCS's key ordering and compact separators and none of its
+string-escaping or Unicode normalization rules. The two implementations are
+also not symmetric in kind: Go canonicalizes through `gowebpki/jcs`, a
+general-purpose RFC 8785 implementation, while Python's
+`json.dumps(sort_keys=True, ensure_ascii=False, separators=(",", ":"))` is
+valid JCS only for this restricted, ASCII/integers-only profile — it is not a
+general RFC 8785 implementation.
 
 Both accept the positive vectors on identical canonical bytes, hashes, and
 signatures, and reject every negative vector for the expected reason.

@@ -351,7 +351,7 @@ a witness section.
 Both validators implement Tiers A and B and must agree, including on which rules
 are advisory and what a warning looks like.
 
-**New negatives:** `duplicate_stream_epoch_in_checkpoint` (A3),
+**New negatives:** `duplicate_tip_identity` (A3),
 `ill_formed_utf8_bytes` (A4, raw invalid UTF-8), `lone_surrogate_escape` (A4,
 well-formed bytes containing `\ud800`), `integer_out_of_range` (A5, `entry_count`
 of `2^53`), `seq_skip` (B1), `stream_recommitted_same_epoch` (B3),
@@ -399,7 +399,7 @@ record format regardless of checkpoints, and nobody in #2409 has raised it.
 
 1. `format_version` + `min_format_version` skip rule, pinned `cryptography`,
    pinned timestamp profile
-2. A3 + `duplicate_stream_epoch_in_checkpoint`. `gen` rejects a duplicate
+2. A3 + `duplicate_tip_identity`. `gen` rejects a duplicate
    `(stream_id, epoch)` **before signing**, so malformed input fails loudly
    rather than silently producing order-dependent bytes. Note that A3 forbids
    duplicate *pairs*, not duplicate `stream_id`s — repeated stream ids are legal
