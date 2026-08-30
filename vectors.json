@@ -1798,6 +1798,47 @@
       },
       "signature": "Abpt9O2aO8!14huJLycbCcdLDcZSSfqDCwoZFudcsTjGq9zGTeN5VxgLm1h2MczVjy1RBoxewtAKoRqMRxWkiCA==",
       "min_format_version": 2
+    },
+    {
+      "name": "null_epoch",
+      "expect": "schema",
+      "reason": "the second tip carries epoch: null. null is neither an epoch nor an absent epoch, and a validator that conflates the two reads these bytes as epoch 0 at format_version 2 and as a legal version-1 tip at version 1",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2026-11-06T00:00:00Z",
+        "tips": [
+          {
+            "entry_count": 1,
+            "epoch": 0,
+            "sequence_number": 1,
+            "stream_id": "5b100000-0000-4000-8000-000000000001",
+            "tip_hash": "5b00000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "entry_count": 2,
+            "epoch": null,
+            "sequence_number": 2,
+            "stream_id": "5b200000-0000-4000-8000-000000000002",
+            "tip_hash": "5c00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "NODRlTBLKhx1gHnZdLpvmHFg7qjJvphLkTYlbcd41WialX3HawjWtU6qY2Cs8ksOUOfgMCcgEQCDxICfEySLBg==",
+      "min_format_version": 2
+    },
+    {
+      "name": "null_tips",
+      "expect": "schema",
+      "reason": "the tips member is present and null. It is not an empty array: canonicalization would normalize it to [] and let one signature cover two distinct documents, and iterating it is a crash rather than a verdict",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2026-11-06T00:00:05Z",
+        "tips": null
+      },
+      "signature": "ns/mbRqRq60t8sG31ucC5rEbuLN7/JFLVxU27xbDadSK1BmEfX2KYpYukBDTaMZ8AEhnQ+whZOWKbTZxtc8yDQ==",
+      "min_format_version": 2
     }
   ]
 }

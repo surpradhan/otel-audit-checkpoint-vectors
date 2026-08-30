@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/ed25519"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +52,113 @@ func TestStrayCharacterPrefixSignatureIsNotRepaired(t *testing.T) {
 	prefix.Signature = spliceStray(prefix.Signature)
 	if _, reason := verifyPrefixes(pub, []SignedCheckpoint{prefix}, 2); reason != "signature" {
 		t.Fatalf("a stray character in a prefix signature: reason = %q, want \"signature\"", reason)
+	}
+}
+
+// A present-but-null epoch is neither an epoch nor an absent one. A *int alone
+// cannot tell the two apart, so it read as "no epoch": rejected at version 2
+// for the right reason by accident, and silently ACCEPTED at version 1, where
+// the same bytes would then feed epoch 0 into every identity comparison.
+// Mirrors py/test_validate.py's test_null_epoch_rejected_at_every_version.
+func TestNullEpochRejectedAtEveryVersion(t *testing.T) {
+	for _, minVer := range []int{1, 2} {
+		cp := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{
+			{EntryCount: 1, Epoch: nil, EpochNull: true, SequenceNumber: 1, StreamID: "s1", TipHash: "aa"},
+		}}
+		if err := checkSchema(cp, minVer); err == nil {
+			t.Fatalf("minVer=%d: an explicit null epoch was accepted; want a schema rejection", minVer)
+		}
+		// The contrast that makes the case: a genuinely ABSENT epoch is legal
+		// at version 1, so the rejection above is about null specifically and
+		// not about the version boundary doing the work.
+		cp.Tips[0].EpochNull = false
+		if err := checkSchema(cp, 1); err != nil {
+			t.Fatalf("an absent epoch must stay legal at version 1: %v", err)
+		}
+	}
+}
+
+// The flag is only useful if decoding sets it: gen() builds structs directly,
+// but a third party hands the validator JSON. Without this, the rule above
+// holds for values no external input can produce.
+func TestNullEpochSurvivesJSONRoundTrip(t *testing.T) {
+	var tip Tip
+	if err := json.Unmarshal([]byte(`{"entry_count":1,"epoch":null,"sequence_number":1,"stream_id":"s1","tip_hash":"aa"}`), &tip); err != nil {
+		t.Fatalf("decoding a tip with a null epoch: %v", err)
+	}
+	if !tip.EpochNull {
+		t.Fatal("a decoded null epoch was not recorded as null; it is indistinguishable from an absent one")
+	}
+	if tip.Epoch != nil {
+		t.Fatal("a null epoch must leave Epoch nil")
+	}
+	var absent Tip
+	if err := json.Unmarshal([]byte(`{"entry_count":1,"sequence_number":1,"stream_id":"s1","tip_hash":"aa"}`), &absent); err != nil {
+		t.Fatalf("decoding a tip with no epoch: %v", err)
+	}
+	if absent.EpochNull {
+		t.Fatal("an ABSENT epoch was recorded as null; the two must stay distinguishable in both directions")
+	}
+	// Re-emitting must reproduce the member it came from, or the published
+	// null_epoch vector cannot exist.
+	out, err := json.Marshal(tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"epoch":null`) {
+		t.Fatalf("re-marshalled tip = %s, want an explicit \"epoch\":null", out)
+	}
+	out, err = json.Marshal(absent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), `"epoch"`) {
+		t.Fatalf("re-marshalled tip = %s, want no epoch member at all", out)
+	}
+}
+
+// A present-but-null tips member is not an empty array. Canonicalization
+// normalizes it to [], so accepting it would let one signature cover two
+// distinct documents -- and in the Python reference, iterating it is a crash
+// rather than a verdict. Mirrors test_null_tips_rejected.
+func TestNullTipsRejected(t *testing.T) {
+	cp := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: nil}
+	if err := checkSchema(cp, 2); err == nil {
+		t.Fatal("a null tips member was accepted; want a schema rejection")
+	}
+	// The collision the rule forecloses: null and [] canonicalize identically,
+	// so the rejection above is the only thing separating the two documents.
+	empty := cp
+	empty.Tips = []Tip{}
+	if err := checkSchema(empty, 2); err != nil {
+		t.Fatalf("an empty tips array must stay legal: %v", err)
+	}
+	nullCanon, err := canonical(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyCanon, err := canonical(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(nullCanon) != string(emptyCanon) {
+		t.Fatalf("this test assumes the collision it guards against:\n null:  %s\n empty: %s", nullCanon, emptyCanon)
+	}
+}
+
+// A chain prefix carrying either null member must produce a reason, not feed a
+// zero value into the Tier B rules. verifyPrefixes is the path a forged history
+// arrives on, so it gets the check too, not just the vector's own input.
+func TestNullMembersRejectedOnChainPrefixes(t *testing.T) {
+	priv := ed25519.NewKeyFromSeed(testSeed())
+	pub := priv.Public().(ed25519.PublicKey)
+	for name, cp := range map[string]Checkpoint{
+		"null_epoch": {PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{
+			{EntryCount: 1, EpochNull: true, SequenceNumber: 1, StreamID: "s1", TipHash: "aa"}}},
+		"null_tips": {PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: nil},
+	} {
+		if _, reason := verifyPrefixes(pub, []SignedCheckpoint{signCP(priv, cp)}, 2); reason != "schema" {
+			t.Fatalf("%s prefix: reason = %q, want \"schema\"", name, reason)
+		}
 	}
 }

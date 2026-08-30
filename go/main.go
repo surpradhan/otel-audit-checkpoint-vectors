@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -51,6 +52,50 @@ type Tip struct {
 	SequenceNumber int    `json:"sequence_number"`
 	StreamID       string `json:"stream_id"`
 	TipHash        string `json:"tip_hash"`
+	// EpochNull records that the decoded JSON carried the member explicitly as
+	// `"epoch": null`. Without it a *int cannot tell null from absent, so an
+	// explicit null would read as "no epoch" -- legal at version 1, and a
+	// silent 0 in every identity and ordering comparison. Never serialized as
+	// a member of its own; MarshalJSON re-emits it as the null it came from.
+	EpochNull bool `json:"-"`
+}
+
+// tipFields is Tip without its JSON methods, so the two below can delegate to
+// encoding/json without recursing.
+type tipFields Tip
+
+// UnmarshalJSON decodes a tip and records whether `epoch` was present-but-null.
+func (t *Tip) UnmarshalJSON(b []byte) error {
+	var tf tipFields
+	if err := json.Unmarshal(b, &tf); err != nil {
+		return err
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(b, &members); err != nil {
+		return err
+	}
+	if raw, present := members["epoch"]; present && string(bytes.TrimSpace(raw)) == "null" {
+		tf.EpochNull = true
+	}
+	*t = Tip(tf)
+	return nil
+}
+
+// MarshalJSON emits an explicit null epoch for a tip that carried one, so a
+// null_epoch vector can be published at all. Every other tip marshals exactly
+// as the struct tags say, in the same key order -- this is byte-neutral for
+// them.
+func (t Tip) MarshalJSON() ([]byte, error) {
+	if !t.EpochNull {
+		return json.Marshal(tipFields(t))
+	}
+	return json.Marshal(struct {
+		EntryCount     int    `json:"entry_count"`
+		Epoch          *int   `json:"epoch"`
+		SequenceNumber int    `json:"sequence_number"`
+		StreamID       string `json:"stream_id"`
+		TipHash        string `json:"tip_hash"`
+	}{t.EntryCount, nil, t.SequenceNumber, t.StreamID, t.TipHash})
 }
 
 // ptr returns a pointer to i, for building tips with an explicit epoch.
@@ -1101,6 +1146,41 @@ func gen() Suite {
 		MinFormatVersion: 2,
 	})
 
+	// A tip whose epoch member is present and NULL. A pointer-typed decoder
+	// reads null and absent as the same nil, so without an explicit record of
+	// which one arrived, these bytes mean "no epoch" -- legal at version 1, and
+	// a silent epoch 0 in every identity, ordering and B3/B4 comparison. Python
+	// has the mirror-image hazard: .get("epoch", 0) returns None for a present
+	// null, and None is not orderable against an int.
+	//
+	// The offending tip is deliberately NOT first.
+	nullEpochCP := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-06T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "5b100000-0000-4000-8000-000000000001", TipHash: "5b" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: nil, EpochNull: true, SequenceNumber: 2, StreamID: "5b200000-0000-4000-8000-000000000002", TipHash: "5c" + repeat("00", 31)},
+	}}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "null_epoch", Expect: "schema",
+		Reason:           "the second tip carries epoch: null. null is neither an epoch nor an absent epoch, and a validator that conflates the two reads these bytes as epoch 0 at format_version 2 and as a legal version-1 tip at version 1",
+		Input:            nullEpochCP,
+		Signature:        signCP(priv, nullEpochCP).Signature,
+		MinFormatVersion: 2,
+	})
+
+	// A checkpoint whose tips member is present and NULL. Canonicalization
+	// normalizes it to [], so null and [] would canonicalize to the same bytes
+	// and one signature would cover two different documents; and a null fed to
+	// a tip loop is a crash rather than a verdict in a dynamically typed
+	// validator. The signature below is valid over those canonical bytes, so
+	// nothing but the schema check rejects this vector.
+	nullTipsCP := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-06T00:00:05Z", Tips: nil}
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "null_tips", Expect: "schema",
+		Reason:           "the tips member is present and null. It is not an empty array: canonicalization would normalize it to [] and let one signature cover two distinct documents, and iterating it is a crash rather than a verdict",
+		Input:            nullTipsCP,
+		Signature:        signCP(priv, nullTipsCP).Signature,
+		MinFormatVersion: 2,
+	})
+
 	return suite
 }
 
@@ -1178,6 +1258,13 @@ func checkTierB(chain []Checkpoint) (error, []string) {
 // spec text, and a version-2 tip missing epoch would silently validate as 0.
 func checkEpochPresence(cp Checkpoint, minVer int) error {
 	for _, t := range cp.Tips {
+		// Present-but-null is neither an epoch nor an absent epoch. Reading it
+		// as absent would make the same bytes mean "epoch 0" at version 2 and
+		// "legal, no epoch" at version 1, and a *int alone cannot tell the two
+		// apart -- which is why Tip records it during decoding.
+		if t.EpochNull {
+			return fmt.Errorf("stream %q: epoch is present but null; null is not an epoch and is not the same as an absent epoch", t.StreamID)
+		}
 		if minVer >= 2 && t.Epoch == nil {
 			return fmt.Errorf("stream %q: epoch is required at format_version >= 2", t.StreamID)
 		}
@@ -1197,6 +1284,23 @@ func checkEpochPresence(cp Checkpoint, minVer int) error {
 	return nil
 }
 
+// checkSchema applies the structural rules a checkpoint must satisfy before any
+// byte-level check: `tips` must be present as an array (a missing or null tips
+// member is not an empty one), and every tip must satisfy the epoch rules for
+// the vector's format_version. Both validators run it first and report a
+// failure as "schema".
+//
+// The tips rule is not pedantry. Canonicalization normalizes a nil slice to
+// `[]`, so `"tips": null` and `"tips": []` would otherwise canonicalize to the
+// same bytes and one signature would cover both documents. Rejecting null here
+// means that collision is unreachable rather than merely unexercised.
+func checkSchema(cp Checkpoint, minVer int) error {
+	if cp.Tips == nil {
+		return fmt.Errorf("tips is required and must be an array; null and absent are not an empty array")
+	}
+	return checkEpochPresence(cp, minVer)
+}
+
 // verifyPrefixes checks a vector's preceding chain context and returns the
 // prefix checkpoints in order, or the reason they are rejected ("" on success).
 //
@@ -1208,7 +1312,7 @@ func checkEpochPresence(cp Checkpoint, minVer int) error {
 func verifyPrefixes(pub ed25519.PublicKey, chain []SignedCheckpoint, minVer int) ([]Checkpoint, string) {
 	full := make([]Checkpoint, 0, len(chain)+1)
 	for _, sc := range chain {
-		if err := checkEpochPresence(sc.Input, minVer); err != nil {
+		if err := checkSchema(sc.Input, minVer); err != nil {
 			return nil, "schema"
 		}
 		cb, err := canonical(sc.Input)
@@ -1227,7 +1331,7 @@ func verifyPrefixes(pub ed25519.PublicKey, chain []SignedCheckpoint, minVer int)
 // rejectReason returns the check that rejects a negative vector, or "" if the
 // vector is (wrongly) accepted.
 func rejectReason(pub ed25519.PublicKey, nv NegativeVector) string {
-	if err := checkEpochPresence(nv.Input, nv.MinFormatVersion); err != nil {
+	if err := checkSchema(nv.Input, nv.MinFormatVersion); err != nil {
 		return "schema"
 	}
 	cb, err := canonical(nv.Input)
@@ -1310,7 +1414,7 @@ func validate(path string) error {
 			prevExpected = ""
 			continue
 		}
-		if err := checkEpochPresence(v.Input, v.MinFormatVersion); err != nil {
+		if err := checkSchema(v.Input, v.MinFormatVersion); err != nil {
 			return fmt.Errorf("[%s] %v", v.Name, err)
 		}
 		cb, err := canonical(v.Input)

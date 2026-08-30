@@ -258,9 +258,15 @@ func TestOwnInputEpochCheckedWithAndWithoutChain(t *testing.T) {
 }
 
 // A chain entry with no signature (or no input at all) must produce a reason,
-// never a crash. Go decodes the absent keys into zero values and returns
-// "signature"; Python read sc["signature"] directly and raised KeyError, so the
-// two references disagreed on third-party input.
+// never a crash. Go decodes the absent keys into zero values; Python read
+// sc["signature"] directly and raised KeyError, so the two references
+// disagreed on third-party input.
+//
+// An entry with no "input" at all decodes to a zero Checkpoint, whose tips are
+// nil rather than empty -- checkSchema names that "schema", ahead of the
+// signature check. Mirrored by py/test_validate.py's
+// test_malformed_chain_entry_rejects_cleanly, which reads a missing "input"
+// the same way.
 func TestMalformedChainEntryRejectsCleanly(t *testing.T) {
 	pub := testPub(t)
 	cp := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: posTS(100), Tips: []Tip{
@@ -269,14 +275,15 @@ func TestMalformedChainEntryRejectsCleanly(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		sc   SignedCheckpoint
+		want string
 	}{
-		{"no_signature", SignedCheckpoint{Input: cp}},
-		{"empty_entry", SignedCheckpoint{}},
-		{"not_base64", SignedCheckpoint{Input: cp, Signature: "!!!not base64!!!"}},
+		{"no_signature", SignedCheckpoint{Input: cp}, "signature"},
+		{"empty_entry", SignedCheckpoint{}, "schema"},
+		{"not_base64", SignedCheckpoint{Input: cp, Signature: "!!!not base64!!!"}, "signature"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, reason := verifyPrefixes(pub, []SignedCheckpoint{tc.sc}, 2); reason != "signature" {
-				t.Fatalf("%s: reason = %q, want \"signature\"", tc.name, reason)
+			if _, reason := verifyPrefixes(pub, []SignedCheckpoint{tc.sc}, 2); reason != tc.want {
+				t.Fatalf("%s: reason = %q, want %q", tc.name, reason, tc.want)
 			}
 		})
 	}

@@ -18,8 +18,13 @@ from cryptography.exceptions import InvalidSignature
 
 
 def tip_epoch(t: dict) -> int:
-    """Epoch, treating absence as 0. Absence is legal only in v1 vectors."""
-    return t.get("epoch", 0)
+    """Epoch, treating absence as 0. Absence is legal only in v1 vectors.
+
+    Read once with .get(), never with `"epoch" in t`: a present-but-null member
+    must read as the same thing a pointer-typed decoder reads it as, and the
+    two differ only where check_schema has already rejected the checkpoint."""
+    ep = t.get("epoch")
+    return 0 if ep is None else ep
 
 
 def tip_identity(t: dict) -> tuple:
@@ -42,7 +47,13 @@ def canonical(cp: dict) -> bytes:
     # (JCS fixes object-key order but preserves array order). Two tips
     # sharing an identity would make that order -- and thus the canonical
     # bytes -- depend on input order, so duplicates are rejected outright.
-    tips = cp.get("tips", [])
+    # `or []` rather than a default: a present-but-null tips member is not an
+    # absent one, and .get("tips", []) hands None straight to the loop below.
+    # check_schema rejects null tips outright, so a caller can only reach this
+    # line with a checkpoint that already has an array -- this is the belt to
+    # that braces, and it matches Go, whose canonical() copies a nil slice into
+    # an empty one.
+    tips = cp.get("tips") or []
     seen = set()
     for t in tips:
         ident = tip_identity(t)
@@ -70,19 +81,55 @@ def check_epoch_presence(cp: dict, min_ver: int):
     """Spec 5a boundary: epoch required at v2+, absent at v1. Without this the
     absent-vs-zero distinction is unenforced spec text, and a v2 tip missing
     epoch would silently validate as 0."""
-    for t in cp.get("tips", []):
+    for t in (cp.get("tips") or []):
         sid = t.get("stream_id", "")
-        if min_ver >= 2 and "epoch" not in t:
+        # Present-but-null is neither an epoch nor an absent epoch. Rejecting
+        # it explicitly is what keeps `"epoch": null` from meaning "epoch 0" at
+        # version 2 and "legal, no epoch" at version 1 -- and it is the reading
+        # Go's decoder records too, so both references say "schema" here.
+        if "epoch" in t and t["epoch"] is None:
+            return (f"stream {sid!r}: epoch is present but null; null is not an "
+                    "epoch and is not the same as an absent epoch")
+        # Read once. Branching on `"epoch" in t` and then subscripting reads the
+        # member twice under two different rules; `ep is None` is exactly what
+        # Go's *int reports once null is out of the way.
+        ep = t.get("epoch")
+        if min_ver >= 2 and ep is None:
             return f"stream {sid!r}: epoch required at format_version >= 2"
-        if min_ver < 2 and "epoch" in t:
+        if min_ver < 2 and ep is not None:
             return f"stream {sid!r}: epoch not permitted in a v1 vector"
         # Epoch must be non-negative. Go zero-pads it into a string sort key
         # where a leading "-" sorts above the digits, while this tuple compare
         # puts -10 below -1: the two implementations would order the same tips
         # differently, which is precisely what this repo exists to rule out.
-        if t.get("epoch", 0) < 0:
-            return f"stream {sid!r}: epoch must be non-negative, got {t['epoch']}"
+        if ep is not None and ep < 0:
+            return f"stream {sid!r}: epoch must be non-negative, got {ep}"
     return None
+
+
+def check_schema(cp, min_ver: int):
+    """Structural rules a checkpoint must satisfy before any byte-level check:
+    it is an object, `tips` is present as an array of objects, and every tip
+    satisfies the epoch rules for the vector's format_version. Mirrors Go's
+    checkSchema; both report a failure as "schema".
+
+    The tips rule is not pedantry. Canonicalization normalizes a missing or
+    null tips member to `[]`, so `"tips": null` and `"tips": []` would
+    otherwise canonicalize to the same bytes and one signature would cover both
+    documents. Rejecting null here makes that collision unreachable rather than
+    merely unexercised.
+
+    Like every reason-returning function on third-party input, it must return a
+    reason, never raise: `.get(k, default)` returns None for a present-but-null
+    member, and a None fed to the loops below is a TypeError, which is a
+    traceback in this reference and a clean verdict in the other."""
+    if not isinstance(cp, dict):
+        return "a checkpoint must be a JSON object"
+    tips = cp.get("tips")
+    if not isinstance(tips, list) or not all(isinstance(t, dict) for t in tips):
+        return ("tips is required and must be an array of objects; null and "
+                "absent are not an empty array")
+    return check_epoch_presence(cp, min_ver)
 
 
 def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
@@ -102,8 +149,16 @@ def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
         # reason="signature", while a direct subscript here raises KeyError.
         # This is a reason-returning function on third-party input; it must
         # return a reason, never raise.
-        cp = sc.get("input", {})
-        err = check_epoch_presence(cp, min_ver)
+        # A chain entry that is not an object at all (a bare scalar) is
+        # third-party input like any other: Go fails to decode it and reports
+        # that, so this must report rather than raise AttributeError.
+        if not isinstance(sc, dict):
+            return ([], "schema")
+        # `or {}`, not .get("input", {}): a present-but-null input is not an
+        # absent one. Go decodes either into a zero Checkpoint, whose nil tips
+        # checkSchema rejects as "schema".
+        cp = sc.get("input") or {}
+        err = check_schema(cp, min_ver)
         if err:
             return ([], "schema")
         try:
@@ -171,7 +226,7 @@ def check_tier_b(chain: list) -> tuple:
         # repeat of a (stream_id, epoch), so the next epoch differs from every
         # value last_epoch could hold and B4 fires either way.)
         # advisory_two_streams_new_epoch is the vector that pins this.
-        for t in sorted(cp.get("tips", []), key=tip_identity):
+        for t in sorted(cp.get("tips") or [], key=tip_identity):
             ident = tip_identity(t)
             sid = t.get("stream_id", "")
             if ident in seen_identity:
@@ -193,8 +248,8 @@ def reject_reason(pub, nv):
     """Return the check that rejects a negative vector, or "" if it is
     (wrongly) accepted. At module scope, mirroring Go's top-level
     rejectReason, so both references can be exercised the same way."""
-    cp = nv.get("input", {})
-    err = check_epoch_presence(cp, nv.get("min_format_version", 0))
+    cp = nv.get("input") or {}
+    err = check_schema(cp, nv.get("min_format_version", 0))
     if err:
         return "schema"
     try:
@@ -260,7 +315,7 @@ def main() -> int:
         # then canonical bytes, hash, signature. Both negative paths already
         # agree on that order; this one lagged, and a check order a third party
         # can observe is part of what the two references must share.
-        err = check_epoch_presence(v["input"], v.get("min_format_version", 0))
+        err = check_schema(v["input"], v.get("min_format_version", 0))
         if err:
             print(f"FAIL [{v['name']}] {err}")
             return 1

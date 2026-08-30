@@ -103,6 +103,14 @@ Version-1 vectors predate the field and carry no `epoch` key; they are retained
 byte-identical. A tip missing `epoch` in a version-2 vector is rejected, not
 defaulted — see the `missing_epoch_in_v2` vector.
 
+**A member that is present and `null` is not an absent member.** `"epoch":
+null` is rejected at every `format_version`, and so is `"tips": null`. Neither
+is a hypothetical: a pointer- or Optional-typed decoder reads a null epoch as
+"no epoch", which is legal at version 1 and a silent epoch `0` in every
+identity and ordering comparison at version 2; and canonicalization normalizes
+a null `tips` to `[]`, so accepting it would let one signature cover two
+distinct documents. The `null_epoch` and `null_tips` negatives pin both.
+
 **Rules an implementation must follow to reproduce the bytes:**
 
 1. **Tip order.** `tips` MUST be sorted before canonicalization by the composite
@@ -267,8 +275,19 @@ Several carry **three tips supplied in reverse identity order**, so that an
   silently repair a reordered chain. Rejected: tier_b (B1).
 
 The last group leaves the position axis behind and pins what a validator reads
-*before* any rule applies: the **encoding** of the signature string.
+*before* any rule applies: the **shape of the members** that arrive, and the
+**encoding** of the signature string.
 
+- `null_epoch` — the second tip of two carries `epoch: null`. `null` is neither
+  an epoch nor an absent epoch: a decoder that conflates the two reads these
+  bytes as epoch `0` at version 2 and as a legal version-1 tip at version 1,
+  and a dynamically typed one that reaches for a default gets `None`, which is
+  not orderable against an integer. Rejected: schema.
+- `null_tips` — the `tips` member is present and `null`. It is not an empty
+  array: canonicalization would normalize it to `[]` and let one signature
+  cover two distinct documents. The signature published with this vector is
+  valid over exactly those bytes, so nothing but the schema check rejects it.
+  Rejected: schema.
 - `signature_with_stray_character` — the signature is not valid base64: a stray
   `!` is spliced into the middle of an otherwise valid 88-character encoding.
   Every other signature negative carries well-formed base64 whose *bytes* are
@@ -429,7 +448,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 12 positive (9 through Tier B) + 26 negative
+checked: 12 positive (9 through Tier B) + 28 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.

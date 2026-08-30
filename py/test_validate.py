@@ -947,20 +947,29 @@ def test_own_input_epoch_checked_with_and_without_chain():
 
 
 def test_malformed_chain_entry_rejects_cleanly():
-    """A chain entry with no signature (or no input at all) must produce a
-    reason, never a crash. Go decodes the absent keys into zero values and
-    returns "signature"; this implementation read sc["signature"] directly and
-    raised KeyError, so the two references disagreed on third-party input."""
+    """A chain entry with a key missing, present-but-null, or not an object at
+    all must produce a reason, never a crash. This implementation read
+    sc["signature"] directly and raised KeyError; .get(k, default) then still
+    returned None for a present-but-null member, which is a TypeError one line
+    later. Go decodes each of these into zero values and returns a verdict, so
+    every case here must too. Mirrors TestMalformedChainEntryRejectsCleanly."""
     pub = _pub()
     cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
     cases = {
-        "no_signature": {"input": cp},
-        "empty_entry": {},
-        "not_base64": {"input": cp, "signature": "!!!not base64!!!"},
+        # No "input" at all, and an explicitly null one, both read as a zero
+        # checkpoint, whose absent tips are a schema failure ahead of the
+        # signature check.
+        "empty_entry": ({}, "schema"),
+        "null_input": ({"input": None, "signature": ""}, "schema"),
+        "null_tips": ({"input": dict(cp, tips=None), "signature": ""}, "schema"),
+        "scalar_entry": (42, "schema"),
+        "no_signature": ({"input": cp}, "signature"),
+        "null_signature": ({"input": cp, "signature": None}, "signature"),
+        "not_base64": ({"input": cp, "signature": "!!!not base64!!!"}, "signature"),
     }
-    for name, sc in cases.items():
+    for name, (sc, want) in cases.items():
         _, reason = validate.verify_prefixes(pub, [sc], 2)
-        assert reason == "signature", f"{name}: reason={reason!r}, want 'signature'"
+        assert reason == want, f"{name}: reason={reason!r}, want {want!r}"
 
 
 def test_chain_prefix_order_is_preserved():
@@ -1094,6 +1103,64 @@ def test_stray_character_prefix_signature_is_not_repaired():
         f"a stray character in a prefix signature: reason={reason!r}, want 'signature'"
 
 
+# --- Present-but-null members (round 6) ------------------------------------
+
+
+def test_null_epoch_rejected_at_every_version():
+    """A present-but-null epoch is neither an epoch nor an absent one.
+    .get("epoch", 0) returns None for it, and None is not orderable against an
+    int -- a TypeError where Go returned a verdict. Reading it as ABSENT
+    instead is no better: the same bytes would then be a legal version-1 tip
+    and a silent epoch 0 at version 2. Both references reject it outright.
+    Mirrors TestNullEpochRejectedAtEveryVersion."""
+    for min_ver in (1, 2):
+        cp = _cp(1, _pos_ts(100), [dict(_tip(_pos_stream(1), 0, 1, 1, "aa"), epoch=None)])
+        assert validate.check_schema(cp, min_ver) is not None, \
+            f"min_ver={min_ver}: an explicit null epoch was accepted; want a schema rejection"
+        # The contrast that makes the case: a genuinely ABSENT epoch is legal
+        # at version 1, so the rejection above is about null specifically.
+        del cp["tips"][0]["epoch"]
+        assert validate.check_schema(cp, 1) is None, \
+            "an absent epoch must stay legal at version 1"
+
+
+def test_null_tips_rejected():
+    """A present-but-null tips member is not an empty array: canonicalization
+    normalizes it to [], so one signature would cover two distinct documents,
+    and iterating it raises. Mirrors TestNullTipsRejected."""
+    cp = _cp(1, _pos_ts(100), None)
+    assert validate.check_schema(cp, 2) is not None, \
+        "a null tips member was accepted; want a schema rejection"
+    empty = _cp(1, _pos_ts(100), [])
+    assert validate.check_schema(empty, 2) is None, "an empty tips array must stay legal"
+    # The collision the rule forecloses.
+    assert validate.canonical(cp) == validate.canonical(empty), \
+        "this test assumes the collision it guards against"
+
+
+def test_null_members_reject_cleanly_on_every_path():
+    """Every reason-returning path must survive a null member: the vector's own
+    input, a chain prefix, and the Tier B walk. Each of these raised
+    TypeError/AttributeError before, which is a traceback in this reference and
+    a clean verdict in the other. Mirrors TestNullMembersRejectedOnChainPrefixes."""
+    pub, priv = _pub(), _priv()
+    cases = {
+        "null_epoch": _cp(1, _pos_ts(100),
+                          [dict(_tip(_pos_stream(1), 0, 1, 1, "aa"), epoch=None)]),
+        "null_tips": _cp(1, _pos_ts(100), None),
+    }
+    for name, cp in cases.items():
+        nv = {"input": cp, "signature": "", "min_format_version": 2}
+        assert validate.reject_reason(pub, nv) == "schema", \
+            f"{name} as a vector's own input: want 'schema'"
+        _, reason = validate.verify_prefixes(pub, [_sign(priv, cp)], 2)
+        assert reason == "schema", f"{name} as a chain prefix: reason={reason!r}, want 'schema'"
+    # check_tier_b runs after check_schema on every path, but it is reached
+    # with third-party data and must not raise on its own.
+    err, _ = validate.check_tier_b([cases["null_tips"]])
+    assert err is None or isinstance(err, str), "check_tier_b raised on a null tips member"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -1142,6 +1209,9 @@ def main():
         test_validate_checks_every_vector_and_negative,
         test_stray_character_signature_is_not_repaired,
         test_stray_character_prefix_signature_is_not_repaired,
+        test_null_epoch_rejected_at_every_version,
+        test_null_tips_rejected,
+        test_null_members_reject_cleanly_on_every_path,
     ]
     failed = []
     for t in tests:
