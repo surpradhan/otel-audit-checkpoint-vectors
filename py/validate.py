@@ -183,6 +183,9 @@ def check_tier_b(chain: list) -> tuple:
 
 
 def main() -> int:
+    if len(sys.argv) < 2:
+        print("usage: python3 validate.py <vectors.json>")
+        return 2
     with open(sys.argv[1], "rb") as f:
         suite = json.load(f)
     if suite.get("format_version", 1) > SUPPORTED_FORMAT_VERSION:
@@ -254,7 +257,7 @@ def main() -> int:
         # A vector carrying its own chain context is not part of the positives'
         # own hash chain, so prev_expected does not apply to it.
         if (i > 0 and prev_expected is not None and not v.get("chain")
-                and v["input"]["prev_hash"] != prev_expected):
+                and v["input"].get("prev_hash", "") != prev_expected):
             print(f"FAIL [{v['name']}] chain break")
             return 1
         if not v.get("chain"):
@@ -316,7 +319,7 @@ def main() -> int:
         return 1
     print(f"  checked: {got_positives} positive ({got_tier_b} through Tier B) + "
           f"{got_negatives} negative")
-    print(f"PASS: {len(suite['vectors'])} positive + {len(suite.get('negatives', []))} negative "
+    print(f"PASS: {got_positives} positive + {got_negatives} negative "
           f"vectors, all as expected (independent Python impl)")
     return 0
 

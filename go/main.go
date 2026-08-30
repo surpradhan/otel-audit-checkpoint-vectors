@@ -258,7 +258,7 @@ func gen() Suite {
 	}
 
 	var suite Suite
-	suite.FormatVersion = 2
+	suite.FormatVersion = supportedFormatVersion
 	suite.Description = "Conformance vectors for the audit-checkpoint canonical form (RFC 8785 JCS + SHA-256 chain + Ed25519). TEST KEY ONLY."
 	suite.Algorithm = "ed25519"
 	suite.SeedHex = hex.EncodeToString(testSeed())
@@ -1371,7 +1371,7 @@ func validate(path string) error {
 		return fmt.Errorf("harness: checked %d of %d negative vectors", gotNegatives, wantNegatives)
 	}
 	fmt.Printf("  checked: %d positive (%d through Tier B) + %d negative\n", gotPositives, gotTierB, gotNegatives)
-	fmt.Printf("PASS: %d positive + %d negative vectors, all as expected\n", len(suite.Vectors), len(suite.Negatives))
+	fmt.Printf("PASS: %d positive + %d negative vectors, all as expected\n", gotPositives, gotNegatives)
 	return nil
 }
 
