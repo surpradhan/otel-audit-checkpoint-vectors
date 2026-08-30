@@ -313,7 +313,7 @@ func posChain(idPrefix string, n int) []Checkpoint {
 			Tips: []Tip{{
 				EntryCount: i + 1, Epoch: ptr(0), SequenceNumber: i + 1,
 				StreamID: fmt.Sprintf("%s-0000-4000-8000-%012d", idPrefix, i+1),
-				TipHash:  fmt.Sprintf("%02x", i+1) + repeat("00", 31),
+				TipHash:  fmt.Sprintf("%02x", i+1) + strings.Repeat("00", 31),
 			}},
 		}
 	}
@@ -332,11 +332,11 @@ func gen() Suite {
 	}{
 		{"genesis_empty_tips", Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{}}},
 		{"single_tip", Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{
-			{EntryCount: 3, SequenceNumber: 3, StreamID: "11111111-1111-4111-8111-111111111111", TipHash: "aa" + repeat("00", 31)},
+			{EntryCount: 3, SequenceNumber: 3, StreamID: "11111111-1111-4111-8111-111111111111", TipHash: "aa" + strings.Repeat("00", 31)},
 		}}},
 		{"multi_tip_unsorted_input", Checkpoint{Seq: 3, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{
-			{EntryCount: 2, SequenceNumber: 2, StreamID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", TipHash: "cc" + repeat("00", 31)},
-			{EntryCount: 7, SequenceNumber: 7, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "bb" + repeat("00", 31)},
+			{EntryCount: 2, SequenceNumber: 2, StreamID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", TipHash: "cc" + strings.Repeat("00", 31)},
+			{EntryCount: 7, SequenceNumber: 7, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "bb" + strings.Repeat("00", 31)},
 		}}},
 	}
 
@@ -350,10 +350,10 @@ func gen() Suite {
 	prev := ""
 	for i, in := range inputs {
 		cp := in.cp
-		if i == 0 {
-			prev = cp.PrevHash // genesis carries its own prev_hash
-		} else {
-			cp.PrevHash = prev // chain to the previous checkpoint
+		// Genesis carries its own prev_hash; everything after chains to the
+		// checkpoint before it.
+		if i > 0 {
+			cp.PrevHash = prev
 		}
 		cb, err := canonical(cp)
 		if err != nil {
@@ -386,7 +386,7 @@ func gen() Suite {
 	// vector's advisory assertion binding: a positive vector's Tier B block
 	// must run for it, chain or no chain.
 	mePrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "0a" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "0a" + strings.Repeat("00", 31)},
 	}}
 	mePrefixCanon, err := canonical(mePrefix)
 	if err != nil {
@@ -394,8 +394,8 @@ func gen() Suite {
 	}
 	mePrefixSum := sha256.Sum256(mePrefixCanon)
 	multiEpoch := Checkpoint{PrevHash: hex.EncodeToString(mePrefixSum[:]), Seq: 2, Timestamp: "2026-01-01T00:00:15Z", Tips: []Tip{
-		{EntryCount: 11, Epoch: ptr(10), SequenceNumber: 11, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "bb" + repeat("00", 31)},
-		{EntryCount: 3, Epoch: ptr(2), SequenceNumber: 3, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "aa" + repeat("00", 31)},
+		{EntryCount: 11, Epoch: ptr(10), SequenceNumber: 11, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "bb" + strings.Repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(2), SequenceNumber: 3, StreamID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TipHash: "aa" + strings.Repeat("00", 31)},
 	}}
 	meCanon, err := canonical(multiEpoch)
 	if err != nil {
@@ -419,7 +419,7 @@ func gen() Suite {
 
 	// Negative vectors: a conformant validator MUST reject each of these.
 	base := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-02-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 7, SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + repeat("00", 31)},
+		{EntryCount: 7, SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + strings.Repeat("00", 31)},
 	}}
 	baseCanon, err := canonical(base)
 	if err != nil {
@@ -440,7 +440,7 @@ func gen() Suite {
 	mutTips := make([]Tip, len(base.Tips))
 	copy(mutTips, base.Tips)
 	mutTips[0].EntryCount = 5
-	mutTips[0].TipHash = "ee" + repeat("00", 31)
+	mutTips[0].TipHash = "ee" + strings.Repeat("00", 31)
 	mut := base
 	mut.Tips = mutTips
 	suite.Negatives = append(suite.Negatives, NegativeVector{
@@ -451,7 +451,7 @@ func gen() Suite {
 
 	// 3. Valid signature, but prev_hash does not chain to the expected previous hash.
 	bc := base
-	bc.PrevHash = "11" + repeat("11", 31)
+	bc.PrevHash = "11" + strings.Repeat("11", 31)
 	bcCanon, err := canonical(bc)
 	if err != nil {
 		panic(fmt.Sprintf("gen: broken_chain vector is malformed: %v", err))
@@ -471,9 +471,9 @@ func gen() Suite {
 	// check (comparing element i to i-1 in original order) would miss this;
 	// only a check over the full set of identities catches it.
 	dup := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-02-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 7, SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + repeat("00", 31)},
-		{EntryCount: 9, SequenceNumber: 9, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "cc" + repeat("00", 31)},
-		{EntryCount: 5, SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "bb" + repeat("00", 31)},
+		{EntryCount: 7, SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + strings.Repeat("00", 31)},
+		{EntryCount: 9, SequenceNumber: 9, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "cc" + strings.Repeat("00", 31)},
+		{EntryCount: 5, SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "bb" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "duplicate_tip_identity", Expect: "canonical",
@@ -483,7 +483,7 @@ func gen() Suite {
 
 	// Tier B, all at format_version 2. Each carries one preceding checkpoint.
 	tbBase := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 7, Epoch: ptr(0), SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + repeat("00", 31)},
+		{EntryCount: 7, Epoch: ptr(0), SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + strings.Repeat("00", 31)},
 	}}
 	tbSigned := signCP(priv, tbBase)
 	tbBaseCanon, err := canonical(tbBase)
@@ -495,7 +495,7 @@ func gen() Suite {
 
 	// B3: same stream and epoch committed a second time.
 	reco := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "cc" + repeat("00", 31)},
+		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "cc" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "stream_recommitted_same_epoch", Expect: "tier_b",
@@ -508,7 +508,7 @@ func gen() Suite {
 
 	// B3: same identity, lower entry_count -- a rollback inside one generation.
 	roll := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 5, Epoch: ptr(0), SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "dd" + repeat("00", 31)},
+		{EntryCount: 5, Epoch: ptr(0), SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "dd" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "tip_rollback_same_epoch", Expect: "tier_b",
@@ -521,7 +521,7 @@ func gen() Suite {
 
 	// B1: a checkpoint that skips a sequence number.
 	skip := Checkpoint{PrevHash: tbPrev, Seq: 3, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "bb" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", TipHash: "bb" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "seq_skip", Expect: "tier_b",
@@ -537,8 +537,8 @@ func gen() Suite {
 	// The offending tip is deliberately NOT first: a check that inspects only
 	// Tips[0] would pass this vector.
 	noEpoch := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", TipHash: "ca" + repeat("00", 31)},
-		{EntryCount: 1, Epoch: nil, SequenceNumber: 1, StreamID: "dddddddd-dddd-4ddd-8ddd-ddddddddddd1", TipHash: "cc" + repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", TipHash: "ca" + strings.Repeat("00", 31)},
+		{EntryCount: 1, Epoch: nil, SequenceNumber: 1, StreamID: "dddddddd-dddd-4ddd-8ddd-ddddddddddd1", TipHash: "cc" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "missing_epoch_in_v2", Expect: "schema",
@@ -550,7 +550,7 @@ func gen() Suite {
 
 	// Must-accept: the declared at-least-once path. Accepted, with a B4 warning.
 	adv := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "ee" + repeat("00", 31)},
+		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "ee" + strings.Repeat("00", 31)},
 	}}
 	advCanon, err := canonical(adv)
 	if err != nil {
@@ -570,7 +570,7 @@ func gen() Suite {
 
 	// Must-accept: a timestamp regression warns and is not rejected.
 	back := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-02-28T23:59:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", TipHash: "ff" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", TipHash: "ff" + strings.Repeat("00", 31)},
 	}}
 	backCanon, err := canonical(back)
 	if err != nil {
@@ -592,7 +592,7 @@ func gen() Suite {
 	// two warnings never co-occur, so their relative order is mirrored between
 	// the implementations but verified by nothing.
 	both := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-02-28T23:59:00Z", Tips: []Tip{
-		{EntryCount: 6, Epoch: ptr(1), SequenceNumber: 6, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "1a" + repeat("00", 31)},
+		{EntryCount: 6, Epoch: ptr(1), SequenceNumber: 6, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "1a" + strings.Repeat("00", 31)},
 	}}
 	bothCanon, err := canonical(both)
 	if err != nil {
@@ -619,8 +619,8 @@ func gen() Suite {
 	// unsorted, so without a fixed walk order the two implementations can
 	// disagree on the warning sequence for identical signed bytes.
 	twoStreamsPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-04-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "10000000-0000-4000-8000-000000000001", TipHash: "1a" + repeat("00", 31)},
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "20000000-0000-4000-8000-000000000002", TipHash: "2a" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "10000000-0000-4000-8000-000000000001", TipHash: "1a" + strings.Repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "20000000-0000-4000-8000-000000000002", TipHash: "2a" + strings.Repeat("00", 31)},
 	}}
 	tsPrefixCanon, err := canonical(twoStreamsPrefix)
 	if err != nil {
@@ -629,8 +629,8 @@ func gen() Suite {
 	tsPrefixSum := sha256.Sum256(tsPrefixCanon)
 	twoStreams := Checkpoint{PrevHash: hex.EncodeToString(tsPrefixSum[:]), Seq: 2, Timestamp: "2026-04-01T00:00:05Z", Tips: []Tip{
 		// Deliberately NOT in identity order.
-		{EntryCount: 4, Epoch: ptr(1), SequenceNumber: 4, StreamID: "20000000-0000-4000-8000-000000000002", TipHash: "2b" + repeat("00", 31)},
-		{EntryCount: 3, Epoch: ptr(1), SequenceNumber: 3, StreamID: "10000000-0000-4000-8000-000000000001", TipHash: "1b" + repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(1), SequenceNumber: 4, StreamID: "20000000-0000-4000-8000-000000000002", TipHash: "2b" + strings.Repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(1), SequenceNumber: 3, StreamID: "10000000-0000-4000-8000-000000000001", TipHash: "1b" + strings.Repeat("00", 31)},
 	}}
 	tsCanon, err := canonical(twoStreams)
 	if err != nil {
@@ -654,7 +654,7 @@ func gen() Suite {
 	// prefixes are otherwise clean and the whole chain passes Tier B, so only
 	// a validator that verifies every prefix rejects this.
 	p1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-05-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "aaaa1111-1111-4111-8111-111111111111", TipHash: "a1" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "aaaa1111-1111-4111-8111-111111111111", TipHash: "a1" + strings.Repeat("00", 31)},
 	}}
 	p1Canon, err := canonical(p1)
 	if err != nil {
@@ -662,7 +662,7 @@ func gen() Suite {
 	}
 	p1Sum := sha256.Sum256(p1Canon)
 	p2 := Checkpoint{PrevHash: hex.EncodeToString(p1Sum[:]), Seq: 2, Timestamp: "2026-05-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "bbbb2222-2222-4222-8222-222222222222", TipHash: "b2" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "bbbb2222-2222-4222-8222-222222222222", TipHash: "b2" + strings.Repeat("00", 31)},
 	}}
 	p2Signed := signCP(priv, p2)
 	p2Raw, err := base64.StdEncoding.DecodeString(p2Signed.Signature)
@@ -677,7 +677,7 @@ func gen() Suite {
 	}
 	p2Sum := sha256.Sum256(p2Canon)
 	afterP2 := Checkpoint{PrevHash: hex.EncodeToString(p2Sum[:]), Seq: 3, Timestamp: "2026-05-01T00:00:10Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "cccc3333-3333-4333-8333-333333333333", TipHash: "c3" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "cccc3333-3333-4333-8333-333333333333", TipHash: "c3" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "tampered_second_prefix_signature", Expect: "signature",
@@ -703,7 +703,7 @@ func gen() Suite {
 	badSig[0] ^= 0x01
 	tamperedPrefix := SignedCheckpoint{Input: tbBase, Signature: base64.StdEncoding.EncodeToString(badSig)}
 	cleanNext := Checkpoint{PrevHash: tbPrev, Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "99999999-9999-4999-8999-999999999999", TipHash: "9a" + repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "99999999-9999-4999-8999-999999999999", TipHash: "9a" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "tampered_prefix_signature", Expect: "signature",
@@ -722,13 +722,13 @@ func gen() Suite {
 	// validator that epoch-checks only chain[0] still rejects this and the gap
 	// is invisible.
 	goodPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "44444444-4444-4444-8444-444444444444", TipHash: "4a" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "44444444-4444-4444-8444-444444444444", TipHash: "4a" + strings.Repeat("00", 31)},
 	}}
 	badPrefixCP := Checkpoint{PrevHash: cpHash(goodPrefix), Seq: 2, Timestamp: "2026-03-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: nil, SequenceNumber: 3, StreamID: "66666666-6666-4666-8666-666666666666", TipHash: "6a" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: nil, SequenceNumber: 3, StreamID: "66666666-6666-4666-8666-666666666666", TipHash: "6a" + strings.Repeat("00", 31)},
 	}}
 	afterBadPrefix := Checkpoint{PrevHash: cpHash(badPrefixCP), Seq: 3, Timestamp: "2026-03-01T00:00:10Z", Tips: []Tip{
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "55555555-5555-4555-8555-555555555555", TipHash: "5a" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "55555555-5555-4555-8555-555555555555", TipHash: "5a" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "chain_prefix_missing_epoch", Expect: "schema",
@@ -744,13 +744,13 @@ func gen() Suite {
 	// prev_hash is right, so the vector-level prev_sha256 field cannot see
 	// this: only a linkage check across the assembled chain rejects it.
 	linkP1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-08-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "b1b1b1b1-0000-4000-8000-000000000001", TipHash: "b1" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "b1b1b1b1-0000-4000-8000-000000000001", TipHash: "b1" + strings.Repeat("00", 31)},
 	}}
-	linkP2 := Checkpoint{PrevHash: "22" + repeat("22", 31), Seq: 2, Timestamp: "2026-08-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "b2b2b2b2-0000-4000-8000-000000000002", TipHash: "b2" + repeat("00", 31)},
+	linkP2 := Checkpoint{PrevHash: "22" + strings.Repeat("22", 31), Seq: 2, Timestamp: "2026-08-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "b2b2b2b2-0000-4000-8000-000000000002", TipHash: "b2" + strings.Repeat("00", 31)},
 	}}
 	afterLink := Checkpoint{PrevHash: cpHash(linkP2), Seq: 3, Timestamp: "2026-08-01T00:00:10Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "b3b3b3b3-0000-4000-8000-000000000003", TipHash: "b3" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "b3b3b3b3-0000-4000-8000-000000000003", TipHash: "b3" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "chain_prefix_broken_link", Expect: "tier_b",
@@ -765,13 +765,13 @@ func gen() Suite {
 	// puts its gap at the first transition, so a validator that checks B1 only
 	// between chain[0] and chain[1] still passes the whole suite.
 	lateP1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-09-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "c1c1c1c1-0000-4000-8000-000000000001", TipHash: "c1" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "c1c1c1c1-0000-4000-8000-000000000001", TipHash: "c1" + strings.Repeat("00", 31)},
 	}}
 	lateP2 := Checkpoint{PrevHash: cpHash(lateP1), Seq: 2, Timestamp: "2026-09-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "c2c2c2c2-0000-4000-8000-000000000002", TipHash: "c2" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "c2c2c2c2-0000-4000-8000-000000000002", TipHash: "c2" + strings.Repeat("00", 31)},
 	}}
 	lateSkip := Checkpoint{PrevHash: cpHash(lateP2), Seq: 4, Timestamp: "2026-09-01T00:00:10Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "c3c3c3c3-0000-4000-8000-000000000003", TipHash: "c3" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "c3c3c3c3-0000-4000-8000-000000000003", TipHash: "c3" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "seq_skip_after_first_transition", Expect: "tier_b",
@@ -789,13 +789,13 @@ func gen() Suite {
 	// suite's only vector whose Tier B rules run over a three-checkpoint chain,
 	// so prefix ordering and B1/B2 past the first transition are load-bearing.
 	longP1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-06-01T00:00:10Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "d1d1d1d1-0000-4000-8000-000000000001", TipHash: "d1" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "d1d1d1d1-0000-4000-8000-000000000001", TipHash: "d1" + strings.Repeat("00", 31)},
 	}}
 	longP2 := Checkpoint{PrevHash: cpHash(longP1), Seq: 2, Timestamp: "2026-06-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "d2d2d2d2-0000-4000-8000-000000000002", TipHash: "d2" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "d2d2d2d2-0000-4000-8000-000000000002", TipHash: "d2" + strings.Repeat("00", 31)},
 	}}
 	longTail := Checkpoint{PrevHash: cpHash(longP2), Seq: 3, Timestamp: "2026-06-01T00:00:20Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: ptr(1), SequenceNumber: 3, StreamID: "d1d1d1d1-0000-4000-8000-000000000001", TipHash: "d3" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(1), SequenceNumber: 3, StreamID: "d1d1d1d1-0000-4000-8000-000000000001", TipHash: "d3" + strings.Repeat("00", 31)},
 	}}
 	longCanon, err := canonical(longTail)
 	if err != nil {
@@ -819,10 +819,10 @@ func gen() Suite {
 	// the suite increases, so without this a validator that warns only on an
 	// epoch INCREASE passes everything.
 	regPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-07-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 9, Epoch: ptr(5), SequenceNumber: 9, StreamID: "e5e5e5e5-0000-4000-8000-000000000005", TipHash: "e5" + repeat("00", 31)},
+		{EntryCount: 9, Epoch: ptr(5), SequenceNumber: 9, StreamID: "e5e5e5e5-0000-4000-8000-000000000005", TipHash: "e5" + strings.Repeat("00", 31)},
 	}}
 	regTail := Checkpoint{PrevHash: cpHash(regPrefix), Seq: 2, Timestamp: "2026-07-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 4, Epoch: ptr(3), SequenceNumber: 4, StreamID: "e5e5e5e5-0000-4000-8000-000000000005", TipHash: "e3" + repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(3), SequenceNumber: 4, StreamID: "e5e5e5e5-0000-4000-8000-000000000005", TipHash: "e3" + strings.Repeat("00", 31)},
 	}}
 	regCanon, err := canonical(regTail)
 	if err != nil {
@@ -846,8 +846,8 @@ func gen() Suite {
 	// same tips differently, so the value is rejected outright. The offending
 	// tip is again NOT first.
 	negEpoch := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "77777777-7777-4777-8777-777777777777", TipHash: "7a" + repeat("00", 31)},
-		{EntryCount: 2, Epoch: ptr(-1), SequenceNumber: 2, StreamID: "88888888-8888-4888-8888-888888888888", TipHash: "8a" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "77777777-7777-4777-8777-777777777777", TipHash: "7a" + strings.Repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(-1), SequenceNumber: 2, StreamID: "88888888-8888-4888-8888-888888888888", TipHash: "8a" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "negative_epoch", Expect: "schema",
@@ -887,18 +887,18 @@ func gen() Suite {
 	fs2 := "f2f2f2f2-0000-4000-8000-000000000002"
 	fs3 := "f3f3f3f3-0000-4000-8000-000000000003"
 	posP1 := Checkpoint{Seq: 1, Timestamp: "2026-10-01T00:00:30Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: fs1, TipHash: "f1" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: fs1, TipHash: "f1" + strings.Repeat("00", 31)},
 	}}
 	posP2 := Checkpoint{Seq: 2, Timestamp: "2026-10-01T00:00:10Z", Tips: []Tip{
 		// Deliberately NOT in identity order: fs2 sorts before fs3.
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: fs3, TipHash: "f3" + repeat("00", 31)},
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: fs2, TipHash: "f2" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: fs3, TipHash: "f3" + strings.Repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: fs2, TipHash: "f2" + strings.Repeat("00", 31)},
 	}}
 	posP3 := Checkpoint{Seq: 3, Timestamp: "2026-10-01T00:00:25Z", Tips: []Tip{
-		{EntryCount: 4, Epoch: ptr(1), SequenceNumber: 4, StreamID: fs1, TipHash: "f4" + repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(1), SequenceNumber: 4, StreamID: fs1, TipHash: "f4" + strings.Repeat("00", 31)},
 	}}
 	posTail := Checkpoint{Seq: 4, Timestamp: "2026-10-01T00:00:20Z", Tips: []Tip{
-		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: fs2, TipHash: "f5" + repeat("00", 31)},
+		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: fs2, TipHash: "f5" + strings.Repeat("00", 31)},
 	}}
 	posAll := linkCheckpoints([]Checkpoint{posP1, posP2, posP3, posTail})
 	posCanon, err := canonical(posAll[3])
@@ -960,7 +960,7 @@ func gen() Suite {
 	// first transition, so B2 applied only at i == 1 still rejects it; the
 	// first and last links here are both correct.
 	midLink := posChain("a3a3a3a3", 4)
-	midLink[2].PrevHash = "33" + repeat("33", 31)
+	midLink[2].PrevHash = "33" + strings.Repeat("33", 31)
 	relinkFrom(midLink, 3)
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "middle_chain_link_broken", Expect: "tier_b",
@@ -976,7 +976,7 @@ func gen() Suite {
 	// prev_sha256 field and carries no chain, so nothing before this pinned B2
 	// at the last transition of a chain that actually reaches checkTierB.
 	lastLink := posChain("a4a4a4a4", 4)
-	lastLink[3].PrevHash = "44" + repeat("44", 31)
+	lastLink[3].PrevHash = "44" + strings.Repeat("44", 31)
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "final_chain_link_broken", Expect: "tier_b",
 		Reason:           "the vector's own prev_hash does not equal its last prefix's hash; all three prefixes link correctly, so only a B2 applied at the FINAL transition rejects this",
@@ -1008,7 +1008,7 @@ func gen() Suite {
 	// validator accepts this one.
 	dupMid := posChain("a6a6a6a6", 4)
 	dupMid[2].Tips[0].StreamID = dupMid[1].Tips[0].StreamID
-	dupMid[2].Tips[0].TipHash = "d6" + repeat("00", 31)
+	dupMid[2].Tips[0].TipHash = "d6" + strings.Repeat("00", 31)
 	relinkFrom(dupMid, 2)
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "stream_recommitted_between_prefixes", Expect: "tier_b",
@@ -1044,14 +1044,14 @@ func gen() Suite {
 	// changes is the identity-INTERIOR one of three, so a tip walk that
 	// registers only the first and last tip emits no B4 at all.
 	upP1 := Checkpoint{Seq: 1, Timestamp: "2026-11-01T00:00:00Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: c3, TipHash: "c3" + repeat("00", 31)},
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: c2, TipHash: "c2" + repeat("00", 31)},
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: c1, TipHash: "c1" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: c3, TipHash: "c3" + strings.Repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: c2, TipHash: "c2" + strings.Repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: c1, TipHash: "c1" + strings.Repeat("00", 31)},
 	}}
 	upTail := Checkpoint{Seq: 2, Timestamp: "2026-11-01T00:00:05Z", Tips: []Tip{
-		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: d9, TipHash: "d9" + repeat("00", 31)},
-		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: c2, TipHash: "cc" + repeat("00", 31)},
-		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: b0, TipHash: "b0" + repeat("00", 31)},
+		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: d9, TipHash: "d9" + strings.Repeat("00", 31)},
+		{EntryCount: 5, Epoch: ptr(1), SequenceNumber: 5, StreamID: c2, TipHash: "cc" + strings.Repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: b0, TipHash: "b0" + strings.Repeat("00", 31)},
 	}}
 	upAll := linkCheckpoints([]Checkpoint{upP1, upTail})
 	upCanon, err := canonical(upAll[1])
@@ -1076,14 +1076,14 @@ func gen() Suite {
 	// just the first and last tip catches all of them and misses this.
 	e1, e2, e3 := "e1000000-0000-4000-8000-000000000001", "e2000000-0000-4000-8000-000000000002", "e3000000-0000-4000-8000-000000000003"
 	itP1 := Checkpoint{Seq: 1, Timestamp: "2026-11-02T00:00:00Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: e3, TipHash: "e3" + repeat("00", 31)},
-		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: e2, TipHash: "e2" + repeat("00", 31)},
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: e1, TipHash: "e1" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: e3, TipHash: "e3" + strings.Repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: e2, TipHash: "e2" + strings.Repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: e1, TipHash: "e1" + strings.Repeat("00", 31)},
 	}}
 	itTail := Checkpoint{Seq: 2, Timestamp: "2026-11-02T00:00:05Z", Tips: []Tip{
-		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: "f9000000-0000-4000-8000-000000000009", TipHash: "f9" + repeat("00", 31)},
-		{EntryCount: 7, Epoch: ptr(0), SequenceNumber: 7, StreamID: e2, TipHash: "ee" + repeat("00", 31)},
-		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "d0000000-0000-4000-8000-000000000000", TipHash: "d0" + repeat("00", 31)},
+		{EntryCount: 9, Epoch: ptr(0), SequenceNumber: 9, StreamID: "f9000000-0000-4000-8000-000000000009", TipHash: "f9" + strings.Repeat("00", 31)},
+		{EntryCount: 7, Epoch: ptr(0), SequenceNumber: 7, StreamID: e2, TipHash: "ee" + strings.Repeat("00", 31)},
+		{EntryCount: 4, Epoch: ptr(0), SequenceNumber: 4, StreamID: "d0000000-0000-4000-8000-000000000000", TipHash: "d0" + strings.Repeat("00", 31)},
 	}}
 	itAll := linkCheckpoints([]Checkpoint{itP1, itTail})
 	suite.Negatives = append(suite.Negatives, NegativeVector{
@@ -1100,9 +1100,9 @@ func gen() Suite {
 	// that inspects only the last tip passes the whole suite.
 	aa1, aa2, aa3 := "aa100000-0000-4000-8000-000000000001", "aa200000-0000-4000-8000-000000000002", "aa300000-0000-4000-8000-000000000003"
 	noEpochMid := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-03T00:00:00Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: aa3, TipHash: "a3" + repeat("00", 31)},
-		{EntryCount: 2, Epoch: nil, SequenceNumber: 2, StreamID: aa2, TipHash: "a2" + repeat("00", 31)},
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: aa1, TipHash: "a1" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: aa3, TipHash: "a3" + strings.Repeat("00", 31)},
+		{EntryCount: 2, Epoch: nil, SequenceNumber: 2, StreamID: aa2, TipHash: "a2" + strings.Repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: aa1, TipHash: "a1" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "missing_epoch_interior_tip", Expect: "schema",
@@ -1115,9 +1115,9 @@ func gen() Suite {
 	// Same tip index, for the non-negativity guard -- and at magnitude -3
 	// rather than -1, so a guard weakened to `< -1` is also caught.
 	negEpochMid := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-03T00:00:05Z", Tips: []Tip{
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: aa3, TipHash: "b3" + repeat("00", 31)},
-		{EntryCount: 2, Epoch: ptr(-3), SequenceNumber: 2, StreamID: aa2, TipHash: "b2" + repeat("00", 31)},
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: aa1, TipHash: "b1" + repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: aa3, TipHash: "b3" + strings.Repeat("00", 31)},
+		{EntryCount: 2, Epoch: ptr(-3), SequenceNumber: 2, StreamID: aa2, TipHash: "b2" + strings.Repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: aa1, TipHash: "b1" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "negative_epoch_interior_tip", Expect: "schema",
@@ -1133,11 +1133,11 @@ func gen() Suite {
 	// own input only when there is no chain passes all of them. The defect is on
 	// the FIRST tip, which is also the tip index the suite otherwise never uses.
 	ccPrefix := Checkpoint{Seq: 1, Timestamp: "2026-11-04T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "ba000000-0000-4000-8000-000000000001", TipHash: "ba" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "ba000000-0000-4000-8000-000000000001", TipHash: "ba" + strings.Repeat("00", 31)},
 	}}
 	ccTail := Checkpoint{Seq: 2, Timestamp: "2026-11-04T00:00:05Z", Tips: []Tip{
-		{EntryCount: 2, Epoch: nil, SequenceNumber: 2, StreamID: "bb000000-0000-4000-8000-000000000002", TipHash: "bb" + repeat("00", 31)},
-		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "bc000000-0000-4000-8000-000000000003", TipHash: "bc" + repeat("00", 31)},
+		{EntryCount: 2, Epoch: nil, SequenceNumber: 2, StreamID: "bb000000-0000-4000-8000-000000000002", TipHash: "bb" + strings.Repeat("00", 31)},
+		{EntryCount: 3, Epoch: ptr(0), SequenceNumber: 3, StreamID: "bc000000-0000-4000-8000-000000000003", TipHash: "bc" + strings.Repeat("00", 31)},
 	}}
 	ccAll := linkCheckpoints([]Checkpoint{ccPrefix, ccTail})
 	suite.Negatives = append(suite.Negatives, NegativeVector{
@@ -1175,7 +1175,7 @@ func gen() Suite {
 	// clean checkpoints in between.
 	dupFar := posChain("a8a8a8a8", 4)
 	dupFar[3].Tips[0].StreamID = dupFar[0].Tips[0].StreamID
-	dupFar[3].Tips[0].TipHash = "d8" + repeat("00", 31)
+	dupFar[3].Tips[0].TipHash = "d8" + strings.Repeat("00", 31)
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "stream_recommitted_at_chain_distance_3", Expect: "tier_b",
 		Reason:           "the same (stream_id, epoch) is committed by the FIRST chain prefix and by the vector's own input, three checkpoints apart, with two clean checkpoints between them; a validator that compares each checkpoint's identities only against its immediate predecessor accepts this and every other B3 negative in the suite",
@@ -1195,7 +1195,7 @@ func gen() Suite {
 	// deliberately placed mid-string rather than at either end, where a
 	// trailing-garbage check would find it.
 	strayCP := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-05T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "5a000000-0000-4000-8000-000000000001", TipHash: "5a" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "5a000000-0000-4000-8000-000000000001", TipHash: "5a" + strings.Repeat("00", 31)},
 	}}
 	strayGood := signCP(priv, strayCP).Signature
 	suite.Negatives = append(suite.Negatives, NegativeVector{
@@ -1215,8 +1215,8 @@ func gen() Suite {
 	//
 	// The offending tip is deliberately NOT first.
 	nullEpochCP := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-06T00:00:00Z", Tips: []Tip{
-		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "5b100000-0000-4000-8000-000000000001", TipHash: "5b" + repeat("00", 31)},
-		{EntryCount: 2, Epoch: nil, EpochNull: true, SequenceNumber: 2, StreamID: "5b200000-0000-4000-8000-000000000002", TipHash: "5c" + repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "5b100000-0000-4000-8000-000000000001", TipHash: "5b" + strings.Repeat("00", 31)},
+		{EntryCount: 2, Epoch: nil, EpochNull: true, SequenceNumber: 2, StreamID: "5b200000-0000-4000-8000-000000000002", TipHash: "5c" + strings.Repeat("00", 31)},
 	}}
 	suite.Negatives = append(suite.Negatives, NegativeVector{
 		Name: "null_epoch", Expect: "schema",
@@ -1270,7 +1270,7 @@ func checkNegativeExpectations(pub ed25519.PublicKey, negs []NegativeVector) err
 }
 
 // checkTierB applies the cross-checkpoint rules to an ordered chain, returning
-// a rejection error (B1, B3) and the advisory warnings raised (B4, B5).
+// the advisory warnings raised (B4, B5) and a rejection error (B1, B2, B3).
 // Warning tokens are stable, machine-comparable strings so the Go and Python
 // validators can be checked for agreement rather than eyeballed.
 //
@@ -1279,15 +1279,15 @@ func checkNegativeExpectations(pub ed25519.PublicKey, negs []NegativeVector) err
 //
 // Tier B applies only to chains whose checkpoints are all format_version 2 or
 // above; mixed-version chains are out of scope and are never constructed here.
-func checkTierB(chain []Checkpoint) (error, []string) {
+func checkTierB(chain []Checkpoint) ([]string, error) {
 	var warns []string
 	seenIdentity := make(map[tipKey]int)
 	lastEpoch := make(map[string]int)
 	for i, cp := range chain {
 		if i > 0 {
 			if cp.Seq != chain[i-1].Seq+1 {
-				return fmt.Errorf("B1: checkpoint seq %d follows %d; must increment by exactly 1",
-					cp.Seq, chain[i-1].Seq), warns
+				return warns, fmt.Errorf("B1: checkpoint seq %d follows %d; must increment by exactly 1",
+					cp.Seq, chain[i-1].Seq)
 			}
 			// B2 across the assembled chain. The vector-level prev_sha256 field
 			// only pins the LAST link, so without this a chain whose prefixes do
@@ -1295,12 +1295,12 @@ func checkTierB(chain []Checkpoint) (error, []string) {
 			// exactly where it does not matter.
 			prevCanon, err := canonical(chain[i-1])
 			if err != nil {
-				return fmt.Errorf("B2: checkpoint %d: previous checkpoint is malformed: %v", cp.Seq, err), warns
+				return warns, fmt.Errorf("B2: checkpoint %d: previous checkpoint is malformed: %v", cp.Seq, err)
 			}
 			sum := sha256.Sum256(prevCanon)
 			if want := hex.EncodeToString(sum[:]); cp.PrevHash != want {
-				return fmt.Errorf("B2: checkpoint %d prev_hash=%s does not link to checkpoint %d (%s)",
-					cp.Seq, cp.PrevHash, chain[i-1].Seq, want), warns
+				return warns, fmt.Errorf("B2: checkpoint %d prev_hash=%s does not link to checkpoint %d (%s)",
+					cp.Seq, cp.PrevHash, chain[i-1].Seq, want)
 			}
 		}
 		// Iterate tips in identity order, not input order. Warnings are
@@ -1316,8 +1316,8 @@ func checkTierB(chain []Checkpoint) (error, []string) {
 		for _, t := range sortedTips(cp) {
 			id := tipIdentity(t)
 			if prevSeq, dup := seenIdentity[id]; dup {
-				return fmt.Errorf("B3: stream %q epoch %d committed in checkpoint %d and again in %d",
-					t.StreamID, tipEpoch(t), prevSeq, cp.Seq), warns
+				return warns, fmt.Errorf("B3: stream %q epoch %d committed in checkpoint %d and again in %d",
+					t.StreamID, tipEpoch(t), prevSeq, cp.Seq)
 			}
 			seenIdentity[id] = cp.Seq
 			if prev, seen := lastEpoch[t.StreamID]; seen && tipEpoch(t) != prev {
@@ -1331,7 +1331,7 @@ func checkTierB(chain []Checkpoint) (error, []string) {
 			warns = append(warns, fmt.Sprintf("B5:%d", cp.Seq))
 		}
 	}
-	return nil, warns
+	return warns, nil
 }
 
 // checkEpochPresence enforces the format_version boundary from spec 5a:
@@ -1431,7 +1431,7 @@ func rejectReason(pub ed25519.PublicKey, nv NegativeVector) string {
 			return reason
 		}
 		full = append(full, nv.Input)
-		if err, _ := checkTierB(full); err != nil {
+		if _, err := checkTierB(full); err != nil {
 			return "tier_b"
 		}
 	}
@@ -1439,14 +1439,6 @@ func rejectReason(pub ed25519.PublicKey, nv NegativeVector) string {
 		return "chain"
 	}
 	return ""
-}
-
-func repeat(s string, n int) string {
-	out := ""
-	for i := 0; i < n; i++ {
-		out += s
-	}
-	return out
 }
 
 func validate(path string) error {
@@ -1487,8 +1479,9 @@ func validate(path string) error {
 	// fix a harness that silently skips vectors: a loop truncated to its first
 	// entry, or a Tier B block that runs only for the first chain-carrying
 	// vector, leaves every rule intact and every gate green. Counting what was
-	// actually reached and comparing it here is the only instrument that sees
-	// that class.
+	// actually reached and comparing it here is the instrument closest to that
+	// class; TestValidateChecksEveryVectorAndNegative and its Python mirror
+	// recount the committed file independently and catch it too.
 	wantPositives, wantTierB, wantNegatives := 0, 0, 0
 	for _, v := range suite.Vectors {
 		if skipVector(v.MinFormatVersion, supportedFormatVersion) {
@@ -1542,7 +1535,7 @@ func validate(path string) error {
 				return fmt.Errorf("[%s] must be accepted, but its chain context was rejected (%s)", v.Name, reason)
 			}
 			full = append(full, v.Input)
-			err, warns := checkTierB(full)
+			warns, err := checkTierB(full)
 			if err != nil {
 				return fmt.Errorf("[%s] must be accepted, but Tier B rejected it: %v", v.Name, err)
 			}

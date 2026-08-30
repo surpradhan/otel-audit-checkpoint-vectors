@@ -45,7 +45,7 @@ func TestB3RejectsSameStreamSameEpoch(t *testing.T) {
 	chain := linkChain(t,
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 3, 3, "aa")}},
 		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 0, 2, 2, "bb")}})
-	if err, _ := checkTierB(chain); err == nil {
+	if _, err := checkTierB(chain); err == nil {
 		t.Fatal("checkTierB accepted a same-epoch re-commit; want a rejection")
 	}
 }
@@ -57,7 +57,7 @@ func TestB4AcceptsSameStreamNewEpochWithWarning(t *testing.T) {
 	chain := linkChain(t,
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 7, 7, "aa")}},
 		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 1, 5, 5, "bb")}})
-	err, warns := checkTierB(chain)
+	warns, err := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("checkTierB rejected a legitimate cross-epoch re-commit: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestB5WarnsOnTimestampRegression(t *testing.T) {
 	chain := linkChain(t,
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
 		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 1, 1, "bb")}})
-	err, warns := checkTierB(chain)
+	warns, err := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("timestamp regression must warn, not reject: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestB1RejectsSeqSkip(t *testing.T) {
 	chain := linkChain(t,
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
 		Checkpoint{Seq: 3, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 1, 1, "bb")}})
-	if err, _ := checkTierB(chain); err == nil {
+	if _, err := checkTierB(chain); err == nil {
 		t.Fatal("checkTierB accepted a seq gap; want a rejection")
 	}
 }
@@ -263,7 +263,7 @@ func TestB4AndB5BothRaisedInOrder(t *testing.T) {
 	chain := linkChain(t,
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
 		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 1, 2, 2, "bb")}})
-	err, warns := checkTierB(chain)
+	warns, err := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("both advisory rules must warn, not reject: %v", err)
 	}
@@ -302,8 +302,8 @@ func TestB4TokenOrderIsIndependentOfTipInputOrder(t *testing.T) {
 	sorted := linkChain(t, prefix, Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{lo, hi}})
 	reversed := linkChain(t, prefix, Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{hi, lo}})
 
-	errA, warnsA := checkTierB(sorted)
-	errB, warnsB := checkTierB(reversed)
+	warnsA, errA := checkTierB(sorted)
+	warnsB, errB := checkTierB(reversed)
 	if errA != nil || errB != nil {
 		t.Fatalf("neither ordering may reject: %v / %v", errA, errB)
 	}
@@ -322,7 +322,7 @@ func TestB4EmittedOncePerTransition(t *testing.T) {
 	chain := linkChain(t,
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
 		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 2, 3, 3, "bb"), mkTip("s1", 1, 2, 2, "cc")}})
-	err, warns := checkTierB(chain)
+	warns, err := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("three epochs for one stream is legal (R4), got: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestB4FiresOnEpochRegression(t *testing.T) {
 	chain := linkChain(t,
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 5, 9, 9, "aa")}},
 		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s1", 3, 4, 4, "bb")}})
-	err, warns := checkTierB(chain)
+	warns, err := checkTierB(chain)
 	if err != nil {
 		t.Fatalf("an epoch regression is advisory, not a rejection: %v", err)
 	}
@@ -421,14 +421,14 @@ func TestChainPrevHashLinkageIsChecked(t *testing.T) {
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
 		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 2, 2, "bb")}},
 		Checkpoint{Seq: 3, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s3", 0, 3, 3, "cc")}})
-	if err, _ := checkTierB(good); err != nil {
+	if _, err := checkTierB(good); err != nil {
 		t.Fatalf("a correctly linked chain was rejected: %v", err)
 	}
 	// Break the link between the two PREFIXES, leaving the last link intact --
 	// exactly what a vector-level prev_sha256 field cannot see.
 	broken := append([]Checkpoint(nil), good...)
-	broken[1].PrevHash = "22" + repeat("22", 31)
-	if err, _ := checkTierB(broken); err == nil {
+	broken[1].PrevHash = "22" + strings.Repeat("22", 31)
+	if _, err := checkTierB(broken); err == nil {
 		t.Fatal("checkTierB accepted a chain whose second checkpoint does not link to the first")
 	}
 }
@@ -439,7 +439,7 @@ func TestB1CheckedOnEveryTransition(t *testing.T) {
 		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
 		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 2, 2, "bb")}},
 		Checkpoint{Seq: 4, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s3", 0, 3, 3, "cc")}})
-	if err, _ := checkTierB(chain); err == nil {
+	if _, err := checkTierB(chain); err == nil {
 		t.Fatal("checkTierB accepted a seq gap at the SECOND transition; B1 must hold at every transition")
 	}
 }

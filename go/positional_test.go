@@ -76,7 +76,7 @@ func TestB1FiresAtEveryTransition(t *testing.T) {
 			for i := d; i < posChainLen; i++ {
 				cps[i].Seq++
 			}
-			err, _ := checkTierB(linkChain(t, cps...))
+			_, err := checkTierB(linkChain(t, cps...))
 			if err == nil {
 				t.Fatalf("seq gap at transition %d accepted; B1 must hold at every transition", d)
 			}
@@ -94,9 +94,9 @@ func TestB2FiresAtEveryTransition(t *testing.T) {
 	for d := 1; d < posChainLen; d++ {
 		t.Run(fmt.Sprintf("transition_%d", d), func(t *testing.T) {
 			chain := linkChain(t, posClean(posChainLen)...)
-			chain[d].PrevHash = "22" + repeat("22", 31)
+			chain[d].PrevHash = "22" + strings.Repeat("22", 31)
 			posRelink(t, chain, d+1)
-			err, _ := checkTierB(chain)
+			_, err := checkTierB(chain)
 			if err == nil {
 				t.Fatalf("broken link at transition %d accepted; B2 must hold at every transition", d)
 			}
@@ -117,7 +117,7 @@ func TestB3FiresForEveryPositionPair(t *testing.T) {
 				cps := posClean(posChainLen)
 				cps[b].Tips[0].StreamID = cps[a].Tips[0].StreamID
 				cps[b].Tips[0].TipHash = "ff"
-				err, _ := checkTierB(linkChain(t, cps...))
+				_, err := checkTierB(linkChain(t, cps...))
 				if err == nil {
 					t.Fatalf("identity repeated at %d and %d accepted; B3 spans the whole chain", a, b)
 				}
@@ -138,7 +138,7 @@ func TestB4FiresAtEveryTransition(t *testing.T) {
 			cps := posClean(posChainLen)
 			cps[d].Tips[0].StreamID = posStream(1) // re-commit checkpoint 1's stream
 			cps[d].Tips[0].Epoch = ptr(1)
-			err, warns := checkTierB(linkChain(t, cps...))
+			warns, err := checkTierB(linkChain(t, cps...))
 			if err != nil {
 				t.Fatalf("cross-epoch re-commit at index %d is advisory, not a rejection: %v", d, err)
 			}
@@ -154,7 +154,7 @@ func TestB4FiresAtEveryTransition(t *testing.T) {
 			cps := posClean(posChainLen)
 			cps[d].Tips[0].StreamID = posStream(d) // the stream committed at index d-1
 			cps[d].Tips[0].Epoch = ptr(1)
-			err, warns := checkTierB(linkChain(t, cps...))
+			warns, err := checkTierB(linkChain(t, cps...))
 			if err != nil {
 				t.Fatalf("cross-epoch re-commit at index %d is advisory, not a rejection: %v", d, err)
 			}
@@ -175,7 +175,7 @@ func TestB5FiresAtEveryTransition(t *testing.T) {
 		t.Run(fmt.Sprintf("transition_%d", d), func(t *testing.T) {
 			cps := posClean(posChainLen)
 			cps[d].Timestamp = posTS(100 + 10*(d-1) - 1) // one second before its predecessor
-			err, warns := checkTierB(linkChain(t, cps...))
+			warns, err := checkTierB(linkChain(t, cps...))
 			if err != nil {
 				t.Fatalf("timestamp regression at index %d is advisory, not a rejection: %v", d, err)
 			}
@@ -220,7 +220,7 @@ func TestB2HashesCanonicalBytesNotAsReceived(t *testing.T) {
 		t.Fatal("fixture is not discriminating: the prefix's tips are already in identity order")
 	}
 
-	if err, _ := checkTierB(chain); err != nil {
+	if _, err := checkTierB(chain); err != nil {
 		t.Fatalf("a chain whose prefix supplies tips out of identity order was rejected: %v", err)
 	}
 }
@@ -274,7 +274,7 @@ func TestMalformedCheckpointRejectsCleanly(t *testing.T) {
 	}}
 	// Seq, Timestamp and PrevHash all left at their zero values.
 	bare := Checkpoint{Seq: 2, Tips: []Tip{mkTip(posStream(2), 0, 2, 2, "22")}}
-	err, _ := checkTierB([]Checkpoint{head, bare})
+	_, err := checkTierB([]Checkpoint{head, bare})
 	if err == nil {
 		t.Fatal("a checkpoint with no prev_hash was accepted; want a B2 rejection")
 	}

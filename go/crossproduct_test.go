@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -111,7 +112,7 @@ func TestB3FiresForEveryTipIndexPair(t *testing.T) {
 			t.Run(fmt.Sprintf("cp0_tip_%d_cp1_tip_%d", a, b), func(t *testing.T) {
 				cps := xpInterleaved(t, k)
 				cps[1].Tips[b].StreamID = cps[0].Tips[a].StreamID
-				err, _ := checkTierB(linkChain(t, cps...))
+				_, err := checkTierB(linkChain(t, cps...))
 				if err == nil {
 					t.Fatalf("identity of cp0 tip %d repeated at cp1 tip %d was accepted", a, b)
 				}
@@ -131,7 +132,7 @@ func TestB4FiresAtEveryTipIndex(t *testing.T) {
 			cps := xpInterleaved(t, k)
 			cps[1].Tips[d].StreamID = posStream(2*d + 1) // re-commit cp0's stream
 			cps[1].Tips[d].Epoch = ptr(1)
-			err, warns := checkTierB(linkChain(t, cps...))
+			warns, err := checkTierB(linkChain(t, cps...))
 			if err != nil {
 				t.Fatalf("cross-epoch re-commit on tip %d is advisory, not a rejection: %v", d, err)
 			}
@@ -217,7 +218,7 @@ func TestB2HashesCanonicalBytesAtEveryChainIndex(t *testing.T) {
 			if string(canonBytes) == string(raw) {
 				t.Fatalf("checkpoint %d is not discriminating: its tips are already in identity order", d)
 			}
-			if err, _ := checkTierB(chain); err != nil {
+			if _, err := checkTierB(chain); err != nil {
 				t.Fatalf("chain whose checkpoint %d supplies tips out of identity order was rejected: %v", d, err)
 			}
 		})
@@ -308,7 +309,7 @@ func TestChainPrefixOrderIsPreserved(t *testing.T) {
 	if len(full) != 2 || full[0].Seq != 2 || full[1].Seq != 1 {
 		t.Fatalf("verifyPrefixes reordered the chain: seqs %v, want [2 1]", []int{full[0].Seq, full[1].Seq})
 	}
-	if err, _ := checkTierB(append(full, cps[2])); err == nil {
+	if _, err := checkTierB(append(full, cps[2])); err == nil {
 		t.Fatal("a chain supplied newest-first was accepted; the array order is the claim being verified")
 	}
 }
@@ -415,9 +416,13 @@ func TestValidateChecksEveryVectorAndNegative(t *testing.T) {
 		t.Fatalf("validate() printed no \"checked:\" line; the harness cannot show what it reached\n%s", out)
 	}
 	var gotPos, gotTierB, gotNeg int
-	fmt.Sscanf(m[1], "%d", &gotPos)
-	fmt.Sscanf(m[2], "%d", &gotTierB)
-	fmt.Sscanf(m[3], "%d", &gotNeg)
+	for i, into := range []*int{&gotPos, &gotTierB, &gotNeg} {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			t.Fatalf("the \"checked:\" line's field %d is not a number (%q): %v", i+1, m[i+1], err)
+		}
+		*into = n
+	}
 	if gotPos != wantPos || gotTierB != wantTierB || gotNeg != wantNeg {
 		t.Fatalf("validate reached %d positive / %d Tier B / %d negative, want %d / %d / %d",
 			gotPos, gotTierB, gotNeg, wantPos, wantTierB, wantNeg)

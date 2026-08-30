@@ -293,8 +293,9 @@ def main() -> int:
     # fix a harness that silently skips vectors: a loop truncated to its first
     # entry, or a Tier B block that runs only for the first chain-carrying
     # vector, leaves every rule intact and every gate green. Counting what was
-    # actually reached and comparing it here is the only instrument that sees
-    # that class.
+    # actually reached and comparing it here is the instrument closest to that
+    # class; test_validate_checks_every_vector_and_negative and its Go mirror
+    # recount the committed file independently and catch it too.
     want_positives = want_tier_b = want_negatives = 0
     for v in suite["vectors"]:
         if skip_vector(v.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):

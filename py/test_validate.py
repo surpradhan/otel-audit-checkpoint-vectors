@@ -1236,59 +1236,15 @@ def test_nul_in_stream_id_sorts_by_the_published_rule():
 
 
 def main():
-    tests = [
-        test_baseline_suite_still_passes,
-        test_skip_is_not_a_failure_and_does_not_poison_the_chain,
-        test_duplicate_tip_identity_rejected_adjacent,
-        test_duplicate_tip_identity_rejected_non_adjacent,
-        test_b3_rejects_same_stream_same_epoch,
-        test_b4_accepts_same_stream_new_epoch_with_warning,
-        test_b5_warns_on_timestamp_regression,
-        test_b1_rejects_seq_skip,
-        test_r4_composite_sort_key,
-        test_epoch_presence_boundary,
-        test_version1_tip_omits_epoch,
-        test_prefix_signature_is_verified,
-        test_prefix_epoch_presence_is_checked,
-        test_epoch_presence_scans_all_tips,
-        test_negative_epoch_rejected,
-        test_composite_sort_key_is_numeric_for_multi_digit_epochs,
-        test_b4_and_b5_both_raised_in_order,
-        test_b4_token_order_is_independent_of_tip_input_order,
-        test_b4_emitted_once_per_transition,
-        test_verify_prefixes_checks_every_prefix,
-        test_chainless_expect_warnings_are_still_checked,
-        test_b4_fires_on_epoch_regression,
-        test_chain_prev_hash_linkage_is_checked,
-        test_b1_checked_on_every_transition,
-        test_warning_order_is_part_of_the_contract,
-        test_b1_fires_at_every_transition,
-        test_b2_fires_at_every_transition,
-        test_b3_fires_for_every_position_pair,
-        test_b4_fires_at_every_transition,
-        test_b5_fires_at_every_transition,
-        test_b2_hashes_canonical_bytes_not_as_received,
-        test_prefix_rules_fire_at_every_prefix_index,
-        test_malformed_checkpoint_rejects_cleanly,
-        test_epoch_presence_fires_at_every_tip_index,
-        test_b3_fires_for_every_tip_index_pair,
-        test_b4_fires_at_every_tip_index,
-        test_duplicate_tip_identity_at_every_tip_index_pair,
-        test_canonical_fully_sorts_tips,
-        test_b2_hashes_canonical_bytes_at_every_chain_index,
-        test_own_input_epoch_checked_with_and_without_chain,
-        test_malformed_chain_entry_rejects_cleanly,
-        test_chain_prefix_order_is_preserved,
-        test_warning_comparison_is_position_generic,
-        test_validate_checks_every_vector_and_negative,
-        test_stray_character_signature_is_not_repaired,
-        test_stray_character_prefix_signature_is_not_repaired,
-        test_null_epoch_rejected_at_every_version,
-        test_null_tips_rejected,
-        test_null_members_reject_cleanly_on_every_path,
-        test_unknown_member_is_rejected,
-        test_nul_in_stream_id_sorts_by_the_published_rule,
-    ]
+    # Derived from the module, not hand-maintained. A list written out by hand
+    # silently stops running any test nobody remembers to add to it -- a test
+    # that never runs is indistinguishable from one that passes, which is the
+    # same failure class this file's reached-count tests exist to catch.
+    # Definition order is preserved (globals() is insertion-ordered), so the
+    # run order still reads top to bottom.
+    tests = [fn for name, fn in globals().items()
+             if name.startswith("test_") and callable(fn)]
+    assert tests, "no test functions found; the discovery above is broken"
     failed = []
     for t in tests:
         print(f"--- {t.__name__}")
