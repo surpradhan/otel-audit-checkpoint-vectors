@@ -1161,6 +1161,47 @@ def test_null_members_reject_cleanly_on_every_path():
     assert err is None or isinstance(err, str), "check_tier_b raised on a null tips member"
 
 
+def test_unknown_member_is_rejected():
+    """An unknown member is bytes the signature does not cover. This reference
+    canonicalizes the object as it ARRIVES, so an injected key changes the
+    bytes and the vector fails; Go's struct decoding dropped it and verified
+    over bytes that were not the ones on the wire, which on a chain prefix is a
+    forged history the linkage cannot see. Go now decodes strictly.
+
+    The two references reject the same documents and describe them differently
+    -- Go fails the whole file at load, this one reports per vector -- which is
+    why no published vector can pin this and these tests do instead. Mirrors
+    TestUnknownMemberIsRejected."""
+    def on_checkpoint(suite):
+        suite["vectors"][0]["input"]["injected"] = "not covered by the signature"
+
+    def on_tip(suite):
+        for v in suite["vectors"]:
+            if v["input"]["tips"]:
+                v["input"]["tips"][0]["injected"] = "not covered by the signature"
+                return
+        raise AssertionError("no vector with a tip to inject into")
+
+    def on_prefix(suite):
+        for v in suite["vectors"]:
+            if v.get("chain"):
+                v["chain"][0]["input"]["injected"] = "forged history"
+                return
+        raise AssertionError("no vector with a chain prefix to inject into")
+
+    for name, inject in (("on a checkpoint", on_checkpoint),
+                         ("on a tip", on_tip),
+                         ("on a signed chain prefix", on_prefix)):
+        suite = _load_real_suite()
+        inject(suite)
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc != 0, f"an unknown member {name} was accepted\n{output}"
+    # The premise: the same suite untouched still passes, so the rejections
+    # above are about the injected member.
+    rc, output = _run_main_capturing_stdout(_load_real_suite())
+    assert rc == 0, f"the committed suite no longer validates\n{output}"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -1212,6 +1253,7 @@ def main():
         test_null_epoch_rejected_at_every_version,
         test_null_tips_rejected,
         test_null_members_reject_cleanly_on_every_path,
+        test_unknown_member_is_rejected,
     ]
     failed = []
     for t in tests:

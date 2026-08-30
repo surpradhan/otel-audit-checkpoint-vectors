@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -160,5 +162,99 @@ func TestNullMembersRejectedOnChainPrefixes(t *testing.T) {
 		if _, reason := verifyPrefixes(pub, []SignedCheckpoint{signCP(priv, cp)}, 2); reason != "schema" {
 			t.Fatalf("%s prefix: reason = %q, want \"schema\"", name, reason)
 		}
+	}
+}
+
+// An unknown member is bytes the signature does not cover. Struct decoding
+// drops it, so the checkpoint was re-canonicalized WITHOUT it and the
+// signature verified over bytes that are not the ones on the wire -- on a
+// chain prefix, that is a forged history the linkage cannot see. The Python
+// reference canonicalizes the object as it arrives and so never had the hole.
+//
+// The injection is done on the generated suite's JSON rather than through the
+// structs, because the structs are exactly what cannot express it. Mirrored by
+// py/test_validate.py's test_unknown_member_is_rejected, which pins the same
+// three positions in the other reference.
+func TestUnknownMemberIsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   func(suite map[string]any)
+	}{
+		{"on a checkpoint", func(s map[string]any) {
+			v := s["vectors"].([]any)[0].(map[string]any)
+			v["input"].(map[string]any)["injected"] = "not covered by the signature"
+		}},
+		{"on a tip", func(s map[string]any) {
+			for _, raw := range s["vectors"].([]any) {
+				v := raw.(map[string]any)
+				tips := v["input"].(map[string]any)["tips"].([]any)
+				if len(tips) > 0 {
+					tips[0].(map[string]any)["injected"] = "not covered by the signature"
+					return
+				}
+			}
+			t.Fatal("no vector with a tip to inject into")
+		}},
+		{"on a signed chain prefix", func(s map[string]any) {
+			for _, raw := range s["vectors"].([]any) {
+				v := raw.(map[string]any)
+				chain, ok := v["chain"].([]any)
+				if !ok || len(chain) == 0 {
+					continue
+				}
+				cp := chain[0].(map[string]any)["input"].(map[string]any)
+				cp["injected"] = "forged history"
+				return
+			}
+			t.Fatal("no vector with a chain prefix to inject into")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(gen())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var suite map[string]any
+			if err := json.Unmarshal(raw, &suite); err != nil {
+				t.Fatal(err)
+			}
+			tc.at(suite)
+			out, err := json.Marshal(suite)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "injected.json")
+			if err := os.WriteFile(path, out, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := validate(path); err == nil {
+				t.Fatal("a suite carrying an unknown member was accepted; the signature does not cover it")
+			}
+		})
+	}
+}
+
+// The premise of the test above: without the injection the same round trip
+// through a generic map still validates, so the rejections there are about the
+// injected member and not about the round trip mangling something.
+func TestRoundTrippedSuiteStillValidates(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suite map[string]any
+	if err := json.Unmarshal(raw, &suite); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(suite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "roundtrip.json")
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(path); err != nil {
+		t.Fatalf("the unmodified suite must survive a round trip through a generic map: %v", err)
 	}
 }

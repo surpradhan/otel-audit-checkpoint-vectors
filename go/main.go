@@ -65,9 +65,16 @@ type Tip struct {
 type tipFields Tip
 
 // UnmarshalJSON decodes a tip and records whether `epoch` was present-but-null.
+//
+// It decodes strictly. A custom UnmarshalJSON is opaque to the enclosing
+// decoder's DisallowUnknownFields, so without this a member injected on a TIP
+// would be the one place the suite-level strictness does not reach -- and an
+// unknown member is bytes the signature does not cover.
 func (t *Tip) UnmarshalJSON(b []byte) error {
 	var tf tipFields
-	if err := json.Unmarshal(b, &tf); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&tf); err != nil {
 		return err
 	}
 	var members map[string]json.RawMessage
@@ -1371,8 +1378,24 @@ func validate(path string) error {
 	if err != nil {
 		return err
 	}
+	// Strict decoding. Struct decoding DROPS unknown members by default, so a
+	// key injected on a checkpoint, a tip or a signed chain prefix was decoded
+	// away, re-canonicalized without it, and accepted -- bytes the signature
+	// does not cover, and on the prefix path a forged history. The Python
+	// reference never had the hole: it canonicalizes the object as it arrives,
+	// so an injected key changes the bytes and fails the signature.
+	//
+	// The two references reject the same documents but describe them
+	// differently: this one fails the whole file at load, while Python reports
+	// per vector. That is the same divergence class as a wrong-typed scalar,
+	// and it is why no VECTOR can pin this rule -- a suite containing an
+	// unknown member cannot be loaded here at all. README's "Not pinned"
+	// section says so; go/encoding_test.go and its Python mirror hold the
+	// property instead.
 	var suite Suite
-	if err := json.Unmarshal(data, &suite); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&suite); err != nil {
 		return err
 	}
 	if suite.FormatVersion > supportedFormatVersion {

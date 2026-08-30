@@ -111,6 +111,15 @@ identity and ordering comparison at version 2; and canonicalization normalizes
 a null `tips` to `[]`, so accepting it would let one signature cover two
 distinct documents. The `null_epoch` and `null_tips` negatives pin both.
 
+**An unknown member is rejected**, on a checkpoint, on a tip, and on a signed
+`chain` prefix alike. It is bytes the signature does not cover: a
+struct-decoding validator that drops the member re-canonicalizes the checkpoint
+*without* it and verifies a signature over bytes that are not the ones on the
+wire — on a prefix, that is a forged history the `prev_hash` linkage cannot
+see. The Python reference canonicalizes the object as it arrives, so an
+injected key changes the bytes and fails; the Go reference decodes strictly.
+No published vector can express this — see [Not pinned](#rules-hold-at-every-position--what-that-does-and-does-not-cover).
+
 **Rules an implementation must follow to reproduce the bytes:**
 
 1. **Tip order.** `tips` MUST be sorted before canonicalization by the composite
@@ -410,6 +419,14 @@ above.)
 - **A zero-tip checkpoint inside a chain.** `genesis_empty_tips` exercises an
   empty `tips` array, but only as a vector's own checkpoint, never as a
   `chain` prefix. A rule that mishandles an empty *prefix* is unexercised.
+- **Unknown members, at the level of the published vectors.** Both references
+  reject a member the schema does not define (above), but they describe it
+  differently: Go fails the whole file while decoding, while Python reports the
+  vector it belongs to. A suite file containing an unknown member therefore
+  cannot be loaded by the Go reference at all, so the case is unpublishable as
+  a vector; `go/encoding_test.go` and `py/test_validate.py` inject a member on
+  a checkpoint, a tip and a chain prefix in turn and require both references to
+  reject, which is the strongest instrument available for it.
 - **Prefix-freeness of the identity separator.** Every `stream_id` in the
   suite is a fixed-length UUID, so no two `stream_id`s ever stand in a prefix
   relationship with each other. The tip-identity encoding (`stream_id` +
