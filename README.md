@@ -141,9 +141,11 @@ The 12 positive vectors, one line each:
 - `single_tip` — the second checkpoint of that chain, one committed stream.
 - `multi_tip_unsorted_input` — the third checkpoint, two tips supplied out of
   `stream_id` order, exercising the sort rule.
-- `multi_epoch_same_stream` — one stream committed at three epochs in a
-  single checkpoint; two B4 transitions, so the identical token is emitted
-  twice. See "Why epoch exists" above.
+- `multi_epoch_same_stream` — one stream committed at three epochs across a
+  chain: two (2, then 10) in the vector's own checkpoint, with a third (0)
+  in its chain prefix; two B4 transitions — one cross-checkpoint (0→2) and
+  one intra-checkpoint (2→10) — so the identical token is emitted twice.
+  See "Why epoch exists" above.
 - `advisory_stream_recommitted_new_epoch` — the declared at-least-once path:
   a stream re-committed under a new epoch, accepted with one `B4` warning.
 - `advisory_timestamp_regression` — a timestamp regression against the
@@ -154,9 +156,8 @@ The 12 positive vectors, one line each:
 - `advisory_two_streams_new_epoch` — two different streams each change epoch
   in one checkpoint, with tips supplied out of identity order; pins the B4
   token order for a validator that compares warnings in order.
-- `advisory_chain_b5_then_b4` — a three-checkpoint chain whose warning
-  sequence is B5 then B4, not sorted order; the suite's only vector whose
-  Tier B block runs over three chained checkpoints.
+- `advisory_chain_b5_then_b4` — a three-checkpoint chain raising B5 then B4,
+  whose expected warning list is deliberately not in sorted order.
 - `advisory_epoch_regression` — a stream re-committed under an *older* epoch,
   the rollback-shaped case B4 exists to catch and B3 does not.
 - `advisory_middle_chain_unsorted_prefix_tips` — must-accept over a
@@ -300,8 +301,10 @@ rollback — is identical either way, and scoping it to chains would make an
 operator's warning depend on how the producer batched its commits.
 
 It follows that B4 is emitted **once per transition**. One stream committed at
-three epochs in a single checkpoint makes two transitions and yields two
-identical `B4:<stream_id>` tokens — see `multi_epoch_same_stream`.
+three epochs across a chain — two (2, then 10) in its own checkpoint, a third
+(0) in the chain prefix — makes two transitions, one cross-checkpoint (0→2)
+and one intra-checkpoint (2→10), and yields two identical `B4:<stream_id>`
+tokens — see `multi_epoch_same_stream`.
 
 B4 and B5 are advisory on purpose. B4 is the declared at-least-once path: an
 honest timeout-split produces exactly that shape, including an `entry_count`
@@ -441,9 +444,11 @@ python3 py/validate.py vectors.json
 
 **Scope of what "full RFC 8785" above actually means here.** Every published
 canonical byte is ASCII, drawn from a 40-character alphabet, so the suite
-exercises JCS's key ordering and compact separators and none of its
-string-escaping or Unicode normalization rules. The two implementations are
-also not symmetric in kind: Go canonicalizes through `gowebpki/jcs`, a
+exercises JCS's key ordering and compact separators, but none of its
+string-escaping rules and none of its UTF-16 code-unit key-ordering rule
+(RFC 8785 §3.2.3) — the exact point where Python's code-point
+`sort_keys=True` stops being general JCS. The two implementations are also
+not symmetric in kind: Go canonicalizes through `gowebpki/jcs`, a
 general-purpose RFC 8785 implementation, while Python's
 `json.dumps(sort_keys=True, ensure_ascii=False, separators=(",", ":"))` is
 valid JCS only for this restricted, ASCII/integers-only profile — it is not a
