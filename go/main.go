@@ -1210,7 +1210,32 @@ func gen() Suite {
 		MinFormatVersion: 2,
 	})
 
+	// Spec 5.6 promises this check: every negative is rejected for exactly the
+	// reason its expect field names, asserted at gen time so the invariant
+	// cannot rot as vectors accumulate. It runs before the file is written, so
+	// a vector whose expect is wrong can never be published at all.
+	if err := checkNegativeExpectations(pub, suite.Negatives); err != nil {
+		panic("gen: " + err.Error())
+	}
+
 	return suite
+}
+
+// checkNegativeExpectations reports the first negative whose actual rejection
+// reason differs from its expect field.
+//
+// It deliberately does NOT assert that each negative fails exactly ONE check.
+// duplicate_tip_identity ships with an empty signature and fails both the
+// canonical and the signature check, reporting "canonical" only because that
+// check runs first -- which is precisely why expect is advisory for third
+// parties: a validator checking in another order may name the other one.
+func checkNegativeExpectations(pub ed25519.PublicKey, negs []NegativeVector) error {
+	for _, nv := range negs {
+		if got := rejectReason(pub, nv); got != nv.Expect {
+			return fmt.Errorf("negative %q is rejected for %q, but its expect field says %q", nv.Name, got, nv.Expect)
+		}
+	}
+	return nil
 }
 
 // checkTierB applies the cross-checkpoint rules to an ordered chain, returning

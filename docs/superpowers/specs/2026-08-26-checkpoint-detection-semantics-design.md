@@ -292,11 +292,17 @@ Prose only, in `docs/limits.md`, linked to `otel-agent-audit/docs/threat-model.m
    language's JSON parser, so encoding-level malformations are inexpressible.
    When `input_raw_hex` is present it is the exact bytes to canonicalize, and
    `input` is absent.
-6. **`expect` becomes advisory for third parties.** `rejectReason` checks
-   signature before chain, so a validator checking in another order reports a
-   different reason on a vector failing both. Internally the suite guarantees
-   each negative fails exactly one check, and **the generator asserts this at
-   `gen` time** so the invariant cannot rot as vectors accumulate.
+6. **`expect` becomes advisory for third parties.** `rejectReason` fixes an
+   order — schema, canonical, signature, Tier B, chain — that a conformant
+   validator need not share, so a validator checking in another order can
+   report a different reason on a vector that fails more than one check. Not
+   every negative fails exactly one: `duplicate_tip_identity` ships with an
+   empty signature and fails both the canonical and the signature check,
+   reporting `canonical` only because that check runs first. What the generator
+   asserts at `gen` time, in `checkNegativeExpectations`, is the invariant that
+   can be mechanically held: **every negative is rejected for exactly the
+   reason its `expect` field names, under this reference's check order**, so a
+   vector whose `expect` is wrong can never be published.
 7. **Surface to the SIG, not fixed here:** the signed object carries no version
    field *inside the signed bytes*. Production gets this right —
    `schema_version` is inside `checkpointForSigning`. `format_version` versions

@@ -258,3 +258,28 @@ func TestRoundTrippedSuiteStillValidates(t *testing.T) {
 		t.Fatalf("the unmodified suite must survive a round trip through a generic map: %v", err)
 	}
 }
+
+// The generator asserts every negative's expect field before writing the file,
+// so a vector whose expect is wrong can never be published. Spec 5.6 claimed
+// this assertion existed; it did not. Feeding it a deliberately wrong
+// expectation is what shows the loop is connected to anything.
+func TestGenAssertsEveryNegativeExpectation(t *testing.T) {
+	priv := ed25519.NewKeyFromSeed(testSeed())
+	pub := priv.Public().(ed25519.PublicKey)
+	negs := gen().Negatives
+	if err := checkNegativeExpectations(pub, negs); err != nil {
+		t.Fatalf("the generated suite must satisfy its own assertion: %v", err)
+	}
+	if len(negs) == 0 {
+		t.Fatal("no negatives to check")
+	}
+	for i := range negs {
+		mutated := append([]NegativeVector(nil), negs...)
+		// "no_such_reason" is not a reason rejectReason can ever return, so
+		// this is a wrong expectation at every index in turn.
+		mutated[i].Expect = "no_such_reason"
+		if err := checkNegativeExpectations(pub, mutated); err == nil {
+			t.Fatalf("negative %d (%s) with a wrong expect field was accepted", i, negs[i].Name)
+		}
+	}
+}
