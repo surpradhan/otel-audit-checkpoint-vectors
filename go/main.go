@@ -1080,6 +1080,27 @@ func gen() Suite {
 		MinFormatVersion: 2,
 	})
 
+	// A signature that is not valid base64 at all: one stray "!" spliced into
+	// an otherwise valid 88-character encoding. Every other signature negative
+	// carries well-formed base64 whose BYTES are wrong, so nothing in the
+	// suite pinned the ENCODING. A decoder that skips characters outside the
+	// base64 alphabet -- which is what Python's base64.b64decode does by
+	// default -- recovers the original signature from this string and accepts
+	// the vector, while Go's strict decoder rejects it. The stray character is
+	// deliberately placed mid-string rather than at either end, where a
+	// trailing-garbage check would find it.
+	strayCP := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-11-05T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "5a000000-0000-4000-8000-000000000001", TipHash: "5a" + repeat("00", 31)},
+	}}
+	strayGood := signCP(priv, strayCP).Signature
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "signature_with_stray_character", Expect: "signature",
+		Reason:           "the signature is not valid base64: a stray \"!\" is spliced into an otherwise valid encoding. A lenient decoder discards it, recovers the original signature and accepts the vector, so this separates a validator that rejects malformed base64 from one that silently repairs it",
+		Input:            strayCP,
+		Signature:        strayGood[:10] + "!" + strayGood[10:],
+		MinFormatVersion: 2,
+	})
+
 	return suite
 }
 

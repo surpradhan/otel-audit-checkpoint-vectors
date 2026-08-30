@@ -1777,6 +1777,27 @@
         }
       ],
       "min_format_version": 2
+    },
+    {
+      "name": "signature_with_stray_character",
+      "expect": "signature",
+      "reason": "the signature is not valid base64: a stray \"!\" is spliced into an otherwise valid encoding. A lenient decoder discards it, recovers the original signature and accepts the vector, so this separates a validator that rejects malformed base64 from one that silently repairs it",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2026-11-05T00:00:00Z",
+        "tips": [
+          {
+            "entry_count": 1,
+            "epoch": 0,
+            "sequence_number": 1,
+            "stream_id": "5a000000-0000-4000-8000-000000000001",
+            "tip_hash": "5a00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "Abpt9O2aO8!14huJLycbCcdLDcZSSfqDCwoZFudcsTjGq9zGTeN5VxgLm1h2MczVjy1RBoxewtAKoRqMRxWkiCA==",
+      "min_format_version": 2
     }
   ]
 }

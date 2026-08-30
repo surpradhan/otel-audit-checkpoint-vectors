@@ -114,7 +114,14 @@ def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
             # binascii.Error (a ValueError) for non-base64 input, TypeError for
             # a non-string: Go folds a base64 decode failure into "signature"
             # via `err != nil || !Verify`, so this must too.
-            pub.verify(base64.b64decode(sc.get("signature", ""), validate=False), scb)
+            # validate=True is load-bearing, not decoration. The default
+            # (validate=False) DISCARDS characters outside the base64 alphabet,
+            # so a signature with a stray character spliced into it decodes
+            # back to the untampered bytes and verifies here, while Go's
+            # base64.StdEncoding.DecodeString returns "illegal base64 data" and
+            # rejects. A tampered signature accepted here and rejected there is
+            # the two references disagreeing on third-party input.
+            pub.verify(base64.b64decode(sc.get("signature", ""), validate=True), scb)
         except (InvalidSignature, ValueError, TypeError):
             return ([], "signature")
         full.append(cp)
@@ -182,6 +189,37 @@ def check_tier_b(chain: list) -> tuple:
     return (None, warns)
 
 
+def reject_reason(pub, nv):
+    """Return the check that rejects a negative vector, or "" if it is
+    (wrongly) accepted. At module scope, mirroring Go's top-level
+    rejectReason, so both references can be exercised the same way."""
+    cp = nv.get("input", {})
+    err = check_epoch_presence(cp, nv.get("min_format_version", 0))
+    if err:
+        return "schema"
+    try:
+        cb = canonical(cp)
+    except ValueError:
+        return "canonical"
+    try:
+        # validate=True: see verify_prefixes. A lenient decode silently
+        # repairs a mutated signature string.
+        pub.verify(base64.b64decode(nv.get("signature", ""), validate=True), cb)
+    except (InvalidSignature, ValueError, TypeError):
+        return "signature"
+    if nv.get("chain"):
+        prefixes, reason = verify_prefixes(
+            pub, nv["chain"], nv.get("min_format_version", 0))
+        if reason:
+            return reason
+        tb_err, _ = check_tier_b(prefixes + [cp])
+        if tb_err:
+            return "tier_b"
+    if nv.get("prev_sha256") and cp.get("prev_hash", "") != nv["prev_sha256"]:
+        return "chain"
+    return ""
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("usage: python3 validate.py <vectors.json>")
@@ -218,7 +256,23 @@ def main() -> int:
             print(f"  skip {v['name']:<34} requires format_version {v['min_format_version']}")
             prev_expected = None
             continue
-        cb = canonical(v["input"])
+        # Same check order as Go's positive path -- schema boundary first,
+        # then canonical bytes, hash, signature. Both negative paths already
+        # agree on that order; this one lagged, and a check order a third party
+        # can observe is part of what the two references must share.
+        err = check_epoch_presence(v["input"], v.get("min_format_version", 0))
+        if err:
+            print(f"FAIL [{v['name']}] {err}")
+            return 1
+        # A must-accept vector is third-party data like any other: Go prints a
+        # clean "FAIL:" line for a malformed one, so raising here would make
+        # the same input a traceback in one reference and a diagnosis in the
+        # other.
+        try:
+            cb = canonical(v["input"])
+        except ValueError as e:
+            print(f"FAIL [{v['name']}] canonical: {e}")
+            return 1
         if cb.decode("utf-8") != v["canonical"]:
             print(f"FAIL [{v['name']}] canonical mismatch")
             print(f"  got:  {cb.decode('utf-8')}")
@@ -228,13 +282,9 @@ def main() -> int:
             print(f"FAIL [{v['name']}] sha256 mismatch")
             return 1
         try:
-            pub.verify(base64.b64decode(v["signature"]), cb)
-        except InvalidSignature:
+            pub.verify(base64.b64decode(v["signature"], validate=True), cb)
+        except (InvalidSignature, ValueError, TypeError):
             print(f"FAIL [{v['name']}] signature does not verify")
-            return 1
-        err = check_epoch_presence(v["input"], v.get("min_format_version", 0))
-        if err:
-            print(f"FAIL [{v['name']}] {err}")
             return 1
         if v.get("chain") or v.get("expect_warnings"):
             # A must-accept vector's prefixes are verified exactly as a
@@ -268,36 +318,11 @@ def main() -> int:
         got_positives += 1
         print(f"  ok  {v['name']:<34} sha256={v['sha256'][:16]}…")
 
-    def reject_reason(nv):
-        cp = nv.get("input", {})
-        err = check_epoch_presence(cp, nv.get("min_format_version", 0))
-        if err:
-            return "schema"
-        try:
-            cb = canonical(cp)
-        except ValueError:
-            return "canonical"
-        try:
-            pub.verify(base64.b64decode(nv.get("signature", ""), validate=False), cb)
-        except (InvalidSignature, ValueError, TypeError):
-            return "signature"
-        if nv.get("chain"):
-            prefixes, reason = verify_prefixes(
-                pub, nv["chain"], nv.get("min_format_version", 0))
-            if reason:
-                return reason
-            tb_err, _ = check_tier_b(prefixes + [cp])
-            if tb_err:
-                return "tier_b"
-        if nv.get("prev_sha256") and cp.get("prev_hash", "") != nv["prev_sha256"]:
-            return "chain"
-        return ""
-
     for nv in suite.get("negatives", []):
         if skip_vector(nv.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
             print(f"  skip {nv['name']:<34} requires format_version {nv['min_format_version']}")
             continue
-        got = reject_reason(nv)
+        got = reject_reason(pub, nv)
         if got == "":
             print(f"FAIL [{nv['name']}] accepted, but must be rejected")
             return 1

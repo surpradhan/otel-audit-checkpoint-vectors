@@ -266,6 +266,18 @@ Several carry **three tips supplied in reverse identity order**, so that an
   checked as given; a validator that sorted the prefixes by `seq` would
   silently repair a reordered chain. Rejected: tier_b (B1).
 
+The last group leaves the position axis behind and pins what a validator reads
+*before* any rule applies: the **encoding** of the signature string.
+
+- `signature_with_stray_character` — the signature is not valid base64: a stray
+  `!` is spliced into the middle of an otherwise valid 88-character encoding.
+  Every other signature negative carries well-formed base64 whose *bytes* are
+  wrong, so nothing pinned the encoding. A decoder that skips characters
+  outside the base64 alphabet — the default in Python's `base64.b64decode` —
+  reassembles the original signature from this string and *accepts* a tampered
+  vector, so a lenient validator does not merely miss the mutation, it repairs
+  it. Rejected: signature.
+
 ## Cross-checkpoint rules
 
 Everything above judges one checkpoint (against its signature, or its immediate
@@ -417,7 +429,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 12 positive (9 through Tier B) + 25 negative
+checked: 12 positive (9 through Tier B) + 26 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.

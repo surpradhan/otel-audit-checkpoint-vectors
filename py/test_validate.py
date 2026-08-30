@@ -1043,6 +1043,57 @@ def test_validate_checks_every_vector_and_negative():
         f"main reached {got}, want {(want_pos, want_tier_b, want_neg)}"
 
 
+# --- Encoding of the signature string (round 6) ----------------------------
+
+
+def _splice_stray(sig):
+    """Put a character outside the base64 alphabet into the middle of an
+    otherwise valid encoding. A decoder that skips unknown characters -- the
+    default in base64.b64decode -- recovers the ORIGINAL signature from the
+    result, so this is a mutation a lenient validator silently repairs rather
+    than one it merely fails to notice. Mirrors go's spliceStray."""
+    return sig[:10] + "!" + sig[10:]
+
+
+def test_stray_character_signature_is_not_repaired():
+    """A signature string that is not valid base64 must be rejected, not
+    repaired. With validate=False this implementation decoded the spliced
+    string back to the untampered 64 bytes and ACCEPTED a vector Go rejects
+    with "illegal base64 data" -- the two references disagreeing on
+    third-party input. Mirrors TestStrayCharacterSignatureIsNotRepaired."""
+    import base64 as _b64
+    pub, priv = _pub(), _priv()
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    good = _b64.b64encode(priv.sign(validate.canonical(cp))).decode()
+
+    # The premise: the underlying signature is genuinely valid, so the only
+    # thing wrong with the mutated string is its encoding.
+    nv = {"input": cp, "signature": good, "min_format_version": 2}
+    assert validate.reject_reason(pub, nv) == "", \
+        "the unmutated signature must verify, or the assertion below proves nothing"
+    nv = {"input": cp, "signature": _splice_stray(good), "min_format_version": 2}
+    got = validate.reject_reason(pub, nv)
+    assert got == "signature", \
+        f"a stray character in the signature: reject_reason={got!r}, want 'signature'"
+
+
+def test_stray_character_prefix_signature_is_not_repaired():
+    """The same rule on a chain prefix. verify_prefixes decodes separately from
+    reject_reason, so a strict decode in one and a lenient one in the other
+    would leave a forged history acceptable at the prefix level only. Mirrors
+    TestStrayCharacterPrefixSignatureIsNotRepaired."""
+    pub, priv = _pub(), _priv()
+    cps = _link(_cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")]),
+                _cp(2, _pos_ts(110), [_tip(_pos_stream(2), 0, 2, 2, "bb")]))
+    prefix = _sign(priv, cps[0])
+    _, reason = validate.verify_prefixes(pub, [prefix], 2)
+    assert reason == "", f"the unmutated prefix must verify; reason={reason!r}"
+    prefix = dict(prefix, signature=_splice_stray(prefix["signature"]))
+    _, reason = validate.verify_prefixes(pub, [prefix], 2)
+    assert reason == "signature", \
+        f"a stray character in a prefix signature: reason={reason!r}, want 'signature'"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -1089,6 +1140,8 @@ def main():
         test_chain_prefix_order_is_preserved,
         test_warning_comparison_is_position_generic,
         test_validate_checks_every_vector_and_negative,
+        test_stray_character_signature_is_not_repaired,
+        test_stray_character_prefix_signature_is_not_repaired,
     ]
     failed = []
     for t in tests:
