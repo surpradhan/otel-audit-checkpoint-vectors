@@ -174,7 +174,7 @@ its `expect` field:
 
 The six below all carry a **four-checkpoint** chain (three prefixes), so that
 *first*, *middle* and *last* are three distinct positions — see
-[Rules hold at every position](#rules-hold-at-every-position).
+[Rules hold at every position](#rules-hold-at-every-position--what-that-does-and-does-not-cover) below.
 
 - `tampered_middle_prefix_signature` — the *middle* prefix of a three-prefix
   chain has a flipped signature byte. `tampered_prefix_signature` puts the
@@ -283,29 +283,66 @@ be supplied, so two conformant validators handed identical signed bytes could
 report different warning sequences. The `advisory_two_streams_new_epoch` vector
 supplies exactly that pair in non-identity order and pins the result.
 
-### Rules hold at every position
+### Warning ordering is a stated requirement, not a vector-enforced one
 
-Every rule above holds at **every** position, and "position" here is a product
-of four independent factors:
+`expect_warnings` is an **ordered** list, and a conformant validator compares
+it to what it produces element-wise, in order — not as a set.
 
-```
-(chain index) x (tip index within a checkpoint)
-              x (prefix vs the vector's own checkpoint)
-              x (vector-list index in this file)
-```
+The order is not cosmetic: warnings are emitted by walking tips in identity
+order and appending the timestamp warning after the tip loop, so a validator
+whose warning order varies with the order `tips` happened to be supplied has a
+non-deterministic tip walk. The ordering check above is a diagnostic for
+exactly that defect, not an arbitrary convention.
+
+**No vector in this suite can force that comparison to be ordered rather than
+unordered.** For every published `expect_warnings` vector, the warnings a
+*correct* validator emits are already in the expected order — that is what
+makes the vector correct in the first place — so a validator that compares
+warnings as an unordered multiset also passes the entire published suite. The
+ordered comparison is a stated requirement of a conformant validator; it is
+not something the fixture data mechanically enforces.
+
+### Rules hold at every position — what that does and does not cover
+
+**Pinned.** Every rule above is asserted at every **chain index** — every
+transition of a multi-checkpoint chain, not only the first or the last, and,
+for the identity-uniqueness rule, across all ordered index pairs rather than
+adjacent ones only — and at every **tip index**: rules are asserted against
+interior tips, not only the first or last tip of a checkpoint.
 
 That is a separate claim from the rules themselves, and it needs its own
 coverage. A validator that applies a rule at exactly one position — only the
-first transition, only the last tip, only a vector's prefixes, only the first
-vector in the file — still computes correct bytes and still rejects everything
-a short chain or a two-tip checkpoint can express. Collapse any factor and such
-a validator passes.
-
-Two further orderings are checked the same way, and belong to the *verifier's*
+first transition, only the last tip — still computes correct bytes and still
+rejects everything a short chain or a two-tip checkpoint can express. Collapse
+either axis and such a validator passes. Two further orderings are checked the
+same way by this repo's own test suite, and belong to the *verifier's*
 contract rather than to any single rule: the order of the warning list it
-reports, and the order of the `chain` array it was handed.
+reports, and the order of the `chain` array it was handed. (The warning-order
+case has a narrower guarantee at the level of the published vectors themselves
+— see [Warning ordering](#warning-ordering-is-a-stated-requirement-not-a-vector-enforced-one)
+below.)
 
-Three things pin all of it:
+**Not pinned**, stated plainly rather than left to be discovered:
+
+- **Sequence-number absolute value vs. array index.** Every chain in the
+  suite starts at `seq: 1`. A validator that compares `seq` against its
+  position in the `chain` array, rather than against `seq`'s own absolute
+  value, is indistinguishable from a correct one on every vector here.
+- **A zero-tip checkpoint inside a chain.** `genesis_empty_tips` exercises an
+  empty `tips` array, but only as a vector's own checkpoint, never as a
+  `chain` prefix. A rule that mishandles an empty *prefix* is unexercised.
+- **Prefix-freeness of the identity separator.** Every `stream_id` in the
+  suite is a fixed-length UUID, so no two `stream_id`s ever stand in a prefix
+  relationship with each other. The tip-identity encoding (`stream_id` +
+  `\x00` + zero-padded `epoch`, see `go/main.go`) is designed to stay
+  prefix-free even when one `stream_id` is a prefix of another, but no vector
+  exercises that case, so the suite cannot distinguish that encoding from a
+  naive concatenation that would collide there.
+
+This is an honest account of what the position-axis vectors currently
+constrain, not a claim that every conceivable position is covered.
+
+Two things pin the part that *is* covered:
 
 - **Vectors whose defect sits where the collapse would hide it.** Listed above:
   four-checkpoint chains with the defect in the middle, three-tip checkpoints
@@ -325,16 +362,18 @@ Three things pin all of it:
   index, every tip-index *pair*, and every index of the warning list in turn,
   and require the rule to fire each time. A vector can only pin the positions
   someone thought to write down; these fail for any position a validator omits.
-- **A count of what the harness actually reached.** Rules cannot fix a harness
-  that skips entries: a loop truncated to its first element leaves every rule
-  intact and every gate green. Both validators print a line like
 
-  ```
-  checked: 12 positive (9 through Tier B) + 25 negative
-  ```
+A count of what the harness actually reached backstops both: rules cannot fix
+a harness that skips entries, so a loop truncated to its first element would
+otherwise leave every rule intact and every gate green. Both validators print
+a line like
 
-  and fail if those counts do not match an independent pre-pass over the suite.
-  The tests recount the committed file a third time and compare.
+```
+checked: 12 positive (9 through Tier B) + 25 negative
+```
+
+and fail if those counts do not match an independent pre-pass over the suite.
+The tests recount the committed file a third time and compare.
 
 Rules R1–R3 of the spec constrain the *producer* (how epochs are allocated and
 recovered) rather than the verifier, and are documented rather than implemented

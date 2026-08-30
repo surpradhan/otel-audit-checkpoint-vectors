@@ -172,30 +172,56 @@ Because warnings are compared as ordered lists, tips are walked in
 arrive unsorted, and an input-order walk would let that order decide the
 sequence of `B4` tokens when two different streams each change epoch.
 
+That ordered comparison is a stated requirement of a conformant validator, not
+one the published vectors mechanically enforce. For every `expect_warnings`
+vector in the suite, the warnings a correct validator emits are already in the
+expected order — that is what makes the vector correct — so a validator that
+compares warnings as an unordered multiset also passes the entire suite. No
+vector can force the ordered comparison; it has to be stated as a requirement,
+same as here.
+
 A cross-epoch re-commit carrying a lower `entry_count` is advisory, not a hard
 reject. That is not a detection regression: forging a cross-epoch checkpoint
 requires the signing key, which is Tier C territory, and an honest timeout-split
 produces exactly that shape.
 
-**Every B rule holds at every position, and that is a separate claim from the
-rules themselves.** "Position" is a product of four independent factors — the
-chain index, the tip index within a checkpoint, whether the checkpoint is a
-prefix or the vector's own, and the vector's index in the suite file — plus two
-orderings belonging to the verifier's contract rather than to any rule: the
-order of the warning list it reports and the order of the `chain` array it was
-handed. A validator that applies a rule at exactly one position computes correct
-bytes and rejects everything a one- or two-prefix chain, or a one- or two-tip
-checkpoint, can express; collapse any factor and it passes. The suite therefore
-carries four-checkpoint vectors whose single defect sits in the **middle**, one
-whose defect is on the **final** link of a chain that reaches Tier B (a vector's
-`prev_sha256` field pins only that last link, and only for chainless vectors),
-three-tip checkpoints whose defect sits on the **interior** tip, an epoch defect
-on a chain carrier's **own** input, and prefixes supplied **out of order**.
+**Every B rule holds at every chain index and every tip index, and that is a
+separate claim from the rules themselves — but it is narrower than "every
+position."** Pinned: the chain index (every transition of a multi-checkpoint
+chain, and all ordered index pairs for the identity-uniqueness rule, B3) and
+the tip index (interior tips, not only first or last). A validator that applies
+a rule at exactly one position computes correct bytes and rejects everything a
+one- or two-prefix chain, or a one- or two-tip checkpoint, can express; collapse
+either axis and it passes. The suite therefore carries four-checkpoint vectors
+whose single defect sits in the **middle**, one whose defect is on the
+**final** link of a chain that reaches Tier B (a vector's `prev_sha256` field
+pins only that last link, and only for chainless vectors), three-tip
+checkpoints whose defect sits on the **interior** tip, an epoch defect on a
+chain carrier's **own** input, and prefixes supplied **out of order**.
 Alongside them, both test suites are table-driven over position: for each rule
 the defect is injected at every chain index, every tip index, every tip-index
 pair and every warning-list index in turn. Because rules cannot fix a harness
 that skips entries, both validators additionally count what they actually
 reached and fail if it disagrees with an independent pre-pass over the suite.
+
+Not pinned, and worth stating rather than leaving implicit: every chain in the
+suite starts at `seq: 1`, so a validator that compares `seq` against its
+position in the `chain` array rather than its absolute value is
+indistinguishable from a correct one on every vector here; no zero-tip
+checkpoint appears as a `chain` prefix (`genesis_empty_tips` supplies one only
+as a vector's own input); and every `stream_id` is a fixed-length UUID, so no
+two ever stand in a prefix relationship and the tip-identity encoding's
+prefix-freeness (the `\x00`-separated, zero-padded key in `go/main.go`) is
+unexercised. These are gaps in what the suite currently constrains, not
+defects in the rules.
+
+The two orderings belonging to the verifier's contract rather than to any
+single rule — the order of the warning list it reports and the order of the
+`chain` array it was handed — are checked the same way by this repo's own
+position-generic tests. The warning-order case has a narrower guarantee at the
+level of the published vectors themselves: see the paragraph above on
+`expect_warnings`, and the README's "Warning ordering is a stated requirement,
+not a vector-enforced one" section.
 
 B2 hashes the previous checkpoint's **canonical** bytes, not the bytes as
 received. A checkpoint's tips are explicitly allowed to arrive unsorted, so a
