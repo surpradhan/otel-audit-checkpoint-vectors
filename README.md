@@ -137,9 +137,16 @@ No published vector can express this — see [Not pinned](#rules-hold-at-every-p
    `multi_epoch_same_stream` vector publishes exactly that pair, in an input
    order the sort has to fix, so the disagreement cannot go unnoticed.
 
-   A negative `epoch` is **rejected**, not ordered: signed-integer sort keys
-   differ between implementations at the sign boundary, and no conformant
-   producer emits one. See the `negative_epoch` vector.
+   Both references compare the key **as a pair** — Go a comparable struct,
+   Python a tuple — rather than flattening it into one string. A flattened
+   encoding reproduces this rule only under an assumption about what a
+   `stream_id` may contain; comparing the pair reproduces it unconditionally.
+
+   A negative `epoch` is **rejected**, not ordered. No conformant producer
+   emits one — `epoch` is a generation counter — and an implementation that
+   builds a *text* sort key (the shape this rule already warns against) orders
+   negative values inconsistently, so rejecting the value outright keeps the
+   ambiguity off the wire entirely. See the `negative_epoch` vector.
 2. **Canonicalization.** RFC 8785 (JCS) over the checkpoint object. The schema is
    strings and integers only (no floats), so JCS reduces to sorted keys, compact
    separators, UTF-8, and standard JSON string escaping. Integrity/signature
@@ -436,13 +443,6 @@ above.)
   a vector; `go/encoding_test.go` and `py/test_validate.py` inject a member on
   a checkpoint, a tip and a chain prefix in turn and require both references to
   reject, which is the strongest instrument available for it.
-- **Prefix-freeness of the identity separator.** Every `stream_id` in the
-  suite is a fixed-length UUID, so no two `stream_id`s ever stand in a prefix
-  relationship with each other. The tip-identity encoding (`stream_id` +
-  `\x00` + zero-padded `epoch`, see `go/main.go`) is designed to stay
-  prefix-free even when one `stream_id` is a prefix of another, but no vector
-  and no test exercises that case, so the suite cannot distinguish that
-  encoding from a naive concatenation that would collide there.
 
 This is an honest account of what the position-axis vectors currently
 constrain, not a claim that every conceivable position is covered.

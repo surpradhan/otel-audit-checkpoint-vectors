@@ -234,15 +234,15 @@ func TestNegativeEpochRejected(t *testing.T) {
 	}
 }
 
-// The sort key must order epochs NUMERICALLY. Without the zero-padding, "10"
-// sorts before "2" as a string and Go silently disagrees with Python's tuple
-// compare on published bytes. TestR4CompositeSortKey cannot catch this: it
-// uses single-digit epochs, where padding is irrelevant.
+// The sort key must order epochs NUMERICALLY. A key that compares the epoch as
+// text puts "10" before "2" and silently disagrees with Python's tuple compare
+// on published bytes. TestR4CompositeSortKey cannot catch this: it uses
+// single-digit epochs, where text and numeric order coincide.
 func TestCompositeSortKeyIsNumericForMultiDigitEpochs(t *testing.T) {
 	lo := mkTip("s1", 2, 3, 3, "aa")
 	hi := mkTip("s1", 10, 11, 11, "bb")
-	if tipIdentity(lo) >= tipIdentity(hi) {
-		t.Fatalf("epoch 2 must sort below epoch 10, got %q >= %q", tipIdentity(lo), tipIdentity(hi))
+	if !lessTip(lo, hi) {
+		t.Fatalf("epoch 2 must sort below epoch 10, got %v >= %v", tipIdentity(lo), tipIdentity(hi))
 	}
 	cb, err := canonical(Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{hi, lo}})
 	if err != nil {
@@ -275,8 +275,8 @@ func TestB4AndB5BothRaisedInOrder(t *testing.T) {
 
 // gen() is self-consistent by construction, so a change to canonicalization or
 // the sort key regenerates cleanly and every gen()-based test still passes.
-// Only the COMMITTED bytes catch that. This is what fails if the zero-padding
-// is dropped.
+// Only the COMMITTED bytes catch that. This is what fails if the tip sort stops
+// ordering epochs numerically.
 func TestCommittedVectorsStillValidate(t *testing.T) {
 	var err error
 	out := captureStdout(t, func() { err = validate("../vectors.json") })

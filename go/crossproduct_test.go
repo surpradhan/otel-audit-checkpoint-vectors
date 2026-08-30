@@ -179,7 +179,7 @@ func TestCanonicalFullySortsTips(t *testing.T) {
 		t.Fatalf("canonical dropped tips: got %d, want %d", len(got.Tips), k)
 	}
 	for i := 1; i < len(got.Tips); i++ {
-		if tipIdentity(got.Tips[i-1]) >= tipIdentity(got.Tips[i]) {
+		if !lessTip(got.Tips[i-1], got.Tips[i]) {
 			t.Fatalf("canonical tips are not fully sorted at index %d: %s then %s\n%s",
 				i, got.Tips[i-1].StreamID, got.Tips[i].StreamID, cb)
 		}

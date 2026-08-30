@@ -1202,6 +1202,39 @@ def test_unknown_member_is_rejected():
     assert rc == 0, f"the committed suite no longer validates\n{output}"
 
 
+# The same literal appears in go/encoding_test.go as wantNULCanonical: the two
+# references must agree on these exact bytes, not merely each be internally
+# consistent.
+WANT_NUL_CANONICAL = (
+    '{"prev_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",'
+    '"seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":['
+    '{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"a","tip_hash":"aa"},'
+    '{"entry_count":2,"epoch":0,"sequence_number":2,"stream_id":"a\\u0000","tip_hash":"bb"}]}'
+)
+
+
+def test_nul_in_stream_id_sorts_by_the_published_rule():
+    """The published rule is "stream_id ascending by Unicode code point, then
+    epoch ascending numerically" -- what this implementation's tuple key does
+    literally. Go flattened it into stream_id + a NUL separator + a zero-padded
+    epoch, which reproduces the rule only while no stream_id contains a NUL:
+    with tips "a" and "a<NUL>" at the same epoch the flattened key ordered them
+    the other way round, so the two references disagreed on signed bytes.
+    Mirrors TestNULInStreamIDSortsByThePublishedRule."""
+    lo = {"entry_count": 1, "epoch": 0, "sequence_number": 1,
+          "stream_id": "a", "tip_hash": "aa"}
+    hi = {"entry_count": 2, "epoch": 0, "sequence_number": 2,
+          "stream_id": "a" + chr(0), "tip_hash": "bb"}
+    assert validate.tip_identity(lo) < validate.tip_identity(hi), \
+        "'a' must sort below 'a<NUL>' by Unicode code point"
+    # Supplied in the wrong order, so the sort has to fix it.
+    cp = _cp(1, "2026-01-01T00:00:00Z", [hi, lo],
+             prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    got = validate.canonical(cp).decode()
+    assert got == WANT_NUL_CANONICAL, \
+        f"canonical bytes:\n got:  {got}\n want: {WANT_NUL_CANONICAL}"
+
+
 def main():
     tests = [
         test_baseline_suite_still_passes,
@@ -1254,6 +1287,7 @@ def main():
         test_null_tips_rejected,
         test_null_members_reject_cleanly_on_every_path,
         test_unknown_member_is_rejected,
+        test_nul_in_stream_id_sorts_by_the_published_rule,
     ]
     failed = []
     for t in tests:

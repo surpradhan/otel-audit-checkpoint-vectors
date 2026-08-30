@@ -98,10 +98,12 @@ def check_epoch_presence(cp: dict, min_ver: int):
             return f"stream {sid!r}: epoch required at format_version >= 2"
         if min_ver < 2 and ep is not None:
             return f"stream {sid!r}: epoch not permitted in a v1 vector"
-        # Epoch must be non-negative. Go zero-pads it into a string sort key
-        # where a leading "-" sorts above the digits, while this tuple compare
-        # puts -10 below -1: the two implementations would order the same tips
-        # differently, which is precisely what this repo exists to rule out.
+        # Epoch must be non-negative: it is a producer generation counter, so
+        # no conformant producer emits one, and an implementation that builds a
+        # TEXT sort key -- the shape the spec already warns against -- puts a
+        # leading "-" above the digits and orders -10 above -1. Rejecting the
+        # value keeps that ambiguity off the wire rather than relying on every
+        # implementation to compare it the same way.
         if ep is not None and ep < 0:
             return f"stream {sid!r}: epoch must be non-negative, got {ep}"
     return None

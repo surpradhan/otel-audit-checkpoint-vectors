@@ -20,6 +20,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/gowebpki/jcs"
 )
@@ -124,14 +125,47 @@ type Checkpoint struct {
 	Tips      []Tip  `json:"tips"`
 }
 
-// tipIdentity is the uniqueness and sort key. Epoch is part of it (spec R4):
-// two tips for one stream at different epochs are legal in a single checkpoint,
-// so sorting on stream_id alone would let input order leak into signed bytes.
-// The \x00 separator cannot occur in a stream id and sorts below every
-// printable byte, so the encoding is prefix-free; the zero-padded epoch makes
-// string comparison agree with numeric order.
-func tipIdentity(t Tip) string {
-	return fmt.Sprintf("%s\x00%020d", t.StreamID, tipEpoch(t))
+// tipKey is the tip uniqueness and sort key: the composite (stream_id, epoch)
+// of spec R4. Epoch is part of it because two tips for one stream at different
+// epochs are legal in a single checkpoint, so sorting on stream_id alone would
+// let input order leak into the signed bytes.
+//
+// It is a comparable struct rather than a flattened string. The published rule
+// (README rule 1) is "stream_id ascending by Unicode code point, then epoch
+// ascending numerically", which is what lessTip does literally and what the
+// Python reference does with a tuple. The previous encoding -- stream_id, a
+// \x00 separator, and a zero-padded epoch -- reproduced that rule only under
+// an assumption nothing validated: that \x00 never occurs in a stream_id. A
+// stream_id containing one sorts differently under the two implementations,
+// and a repo whose whole purpose is to rule that class out should not carry
+// the assumption at all.
+type tipKey struct {
+	StreamID string
+	Epoch    int
+}
+
+func tipIdentity(t Tip) tipKey {
+	return tipKey{StreamID: t.StreamID, Epoch: tipEpoch(t)}
+}
+
+// lessTip orders two tips by the published rule, and is the ONLY tip ordering
+// in this file: sortedTips uses it for canonicalization and for the Tier B
+// walk alike, so the two cannot drift apart.
+func lessTip(a, b Tip) bool {
+	ka, kb := tipIdentity(a), tipIdentity(b)
+	if c := strings.Compare(ka.StreamID, kb.StreamID); c != 0 {
+		return c < 0
+	}
+	return ka.Epoch < kb.Epoch
+}
+
+// sortedTips returns a checkpoint's tips in identity order, leaving the
+// caller's slice untouched.
+func sortedTips(c Checkpoint) []Tip {
+	tips := make([]Tip, len(c.Tips))
+	copy(tips, c.Tips)
+	sort.Slice(tips, func(i, j int) bool { return lessTip(tips[i], tips[j]) })
+	return tips
 }
 
 // canonical returns the JCS canonical bytes of a checkpoint. Tips are sorted
@@ -140,18 +174,15 @@ func tipIdentity(t Tip) string {
 // tips sharing an identity would make that order (and thus the canonical
 // bytes) depend on input order, so duplicates are rejected outright.
 func canonical(c Checkpoint) ([]byte, error) {
-	seen := make(map[string]struct{}, len(c.Tips))
+	seen := make(map[tipKey]struct{}, len(c.Tips))
 	for _, t := range c.Tips {
 		id := tipIdentity(t)
 		if _, dup := seen[id]; dup {
-			return nil, fmt.Errorf("duplicate tip identity %q: canonical bytes would depend on input order", id)
+			return nil, fmt.Errorf("duplicate tip identity (stream_id=%q, epoch=%d): canonical bytes would depend on input order", id.StreamID, id.Epoch)
 		}
 		seen[id] = struct{}{}
 	}
-	tips := make([]Tip, len(c.Tips))
-	copy(tips, c.Tips)
-	sort.Slice(tips, func(i, j int) bool { return tipIdentity(tips[i]) < tipIdentity(tips[j]) })
-	c.Tips = tips // sort a copy; leave the caller's input order intact
+	c.Tips = sortedTips(c) // sort a copy; leave the caller's input order intact
 	raw, err := json.Marshal(c)
 	if err != nil {
 		return nil, err
@@ -1250,7 +1281,7 @@ func checkNegativeExpectations(pub ed25519.PublicKey, negs []NegativeVector) err
 // above; mixed-version chains are out of scope and are never constructed here.
 func checkTierB(chain []Checkpoint) (error, []string) {
 	var warns []string
-	seenIdentity := make(map[string]int)
+	seenIdentity := make(map[tipKey]int)
 	lastEpoch := make(map[string]int)
 	for i, cp := range chain {
 		if i > 0 {
@@ -1282,10 +1313,7 @@ func checkTierB(chain []Checkpoint) (error, []string) {
 		// repeat of a (stream_id, epoch), so the next epoch differs from every
 		// value lastEpoch could hold and B4 fires either way.)
 		// advisory_two_streams_new_epoch is the vector that pins this.
-		tips := make([]Tip, len(cp.Tips))
-		copy(tips, cp.Tips)
-		sort.Slice(tips, func(a, b int) bool { return tipIdentity(tips[a]) < tipIdentity(tips[b]) })
-		for _, t := range tips {
+		for _, t := range sortedTips(cp) {
 			id := tipIdentity(t)
 			if prevSeq, dup := seenIdentity[id]; dup {
 				return fmt.Errorf("B3: stream %q epoch %d committed in checkpoint %d and again in %d",
@@ -1325,12 +1353,13 @@ func checkEpochPresence(cp Checkpoint, minVer int) error {
 		if minVer < 2 && t.Epoch != nil {
 			return fmt.Errorf("stream %q: epoch is not permitted in a format_version 1 vector", t.StreamID)
 		}
-		// Epoch must be non-negative. tipIdentity zero-pads it into a sort key,
-		// and a leading "-" sorts above the digits in Go while Python's tuple
-		// compare puts -10 below -1: the two implementations would order the
-		// same tips differently, which is precisely what this repo exists to
-		// rule out. A conformant producer never emits one, but a third party
-		// feeding its own data must be told, not silently mis-sorted.
+		// Epoch must be non-negative: it is a producer generation counter, so
+		// no conformant producer emits one, and an implementation that builds
+		// a TEXT sort key -- the shape README rule 1 already warns against --
+		// puts a leading "-" above the digits and orders -10 above -1.
+		// Rejecting the value keeps that ambiguity off the wire rather than
+		// relying on every implementation to compare it the same way. A third
+		// party feeding its own data must be told, not silently mis-sorted.
 		if t.Epoch != nil && *t.Epoch < 0 {
 			return fmt.Errorf("stream %q: epoch must be non-negative, got %d", t.StreamID, *t.Epoch)
 		}

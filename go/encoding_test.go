@@ -283,3 +283,34 @@ func TestGenAssertsEveryNegativeExpectation(t *testing.T) {
 		}
 	}
 }
+
+// wantNULCanonical is the canonical form of a checkpoint whose two tips are
+// "a" and "a\x00" at the same epoch, supplied in the wrong order. The same
+// literal appears in py/test_validate.py as WANT_NUL_CANONICAL: the two
+// references must agree on these exact bytes, not merely each be internally
+// consistent.
+const wantNULCanonical = `{"prev_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":[{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"a","tip_hash":"aa"},{"entry_count":2,"epoch":0,"sequence_number":2,"stream_id":"a\u0000","tip_hash":"bb"}]}`
+
+// The published sort rule is "stream_id ascending by Unicode code point, then
+// epoch ascending numerically". The old key flattened that into
+// stream_id + "\x00" + zero-padded epoch, which reproduces the rule only while
+// no stream_id contains a NUL: with tips "a" and "a\x00" at the same epoch the
+// flattened key compares 0x00 against the '0' of the padding and orders them
+// the OTHER WAY ROUND from the rule -- and from Python's tuple compare, which
+// is exactly the disagreement on signed bytes this repo exists to rule out.
+func TestNULInStreamIDSortsByThePublishedRule(t *testing.T) {
+	lo := Tip{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "a", TipHash: "aa"}
+	hi := Tip{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "a\x00", TipHash: "bb"}
+	if !lessTip(lo, hi) {
+		t.Fatalf("%q must sort below %q by Unicode code point", lo.StreamID, hi.StreamID)
+	}
+	// Supplied in the wrong order, so the sort has to fix it.
+	cb, err := canonical(Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z",
+		Tips: []Tip{hi, lo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cb) != wantNULCanonical {
+		t.Fatalf("canonical bytes:\n got:  %s\n want: %s", cb, wantNULCanonical)
+	}
+}

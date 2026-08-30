@@ -209,11 +209,15 @@ suite starts at `seq: 1`, so a validator that compares `seq` against its
 position in the `chain` array rather than its absolute value is
 indistinguishable from a correct one on every vector here; no zero-tip
 checkpoint appears as a `chain` prefix (`genesis_empty_tips` supplies one only
-as a vector's own input); and every `stream_id` is a fixed-length UUID, so no
-two ever stand in a prefix relationship and the tip-identity encoding's
-prefix-freeness (the `\x00`-separated, zero-padded key in `go/main.go`) is
-unexercised. These are gaps in what the suite currently constrains, not
-defects in the rules.
+as a vector's own input); and an unknown member on a checkpoint, a tip or a
+chain prefix is rejected by both references but by different mechanisms, so no
+vector can express it. These are gaps in what the suite currently constrains,
+not defects in the rules.
+
+The tip-identity key is compared as a pair — a comparable struct in Go, a tuple
+in Python — rather than flattened into a single string, so the published sort
+rule holds for any `stream_id` rather than only for ones that avoid the
+separator byte a flattened encoding would need.
 
 The two orderings belonging to the verifier's contract rather than to any
 single rule — the order of the warning list it reports and the order of the
