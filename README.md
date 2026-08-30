@@ -194,8 +194,18 @@ The 12 positive vectors, one line each:
 ## Negative vectors (a conformant validator MUST reject these)
 
 Positive vectors prove an implementation computes the same bytes. Negative
-vectors prove it actually enforces the rules. Each is rejected for the reason in
-its `expect` field:
+vectors prove it actually enforces the rules. Each must be **rejected**; the
+reason in its `expect` field is **advisory for third parties**.
+
+`expect` records the reason *this repo's* reference validators give, under
+their check order — schema, canonical, signature, Tier B, chain — and the
+generator asserts that at `gen` time, so a vector whose `expect` is wrong
+cannot be published. A conformant validator need not share that order, and a
+vector that fails more than one check may be named differently by one that
+does not: `duplicate_tip_identity` ships with an empty signature and fails both
+the canonical and the signature check, reporting `canonical` only because that
+check runs first. **What conformance requires is the rejection, not the
+label.**
 
 - `tampered_signature` — one byte of a valid signature is flipped. Rejected: signature.
 - `truncation_rewrites_committed_tip` — a stream is truncated (`entry_count` 7 to 5)
@@ -443,6 +453,16 @@ above.)
   a vector; `go/encoding_test.go` and `py/test_validate.py` inject a member on
   a checkpoint, a tip and a chain prefix in turn and require both references to
   reject, which is the strongest instrument available for it.
+
+- **The version-1-carrying-`epoch` direction.** A version-2 tip missing
+  `epoch` is published as a vector (`missing_epoch_in_v2`); the mirror-image
+  case — a version-1 vector that *carries* an `epoch` — is not, and cannot be.
+  Any vector declaring `min_format_version` below 2 while carrying an `epoch`
+  member would be mangled by a genuine version-1 consumer, which is the one
+  reader the boundary exists to protect. `TestEpochPresenceBoundary`
+  (`go/tierb_test.go`) and `test_epoch_presence_boundary`
+  (`py/test_validate.py`) assert that direction as a unit test in both
+  references instead.
 
 This is an honest account of what the position-axis vectors currently
 constrain, not a claim that every conceivable position is covered.
