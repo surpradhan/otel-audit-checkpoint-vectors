@@ -443,11 +443,13 @@ python3 py/validate.py vectors.json
 ```
 
 **Scope of what "full RFC 8785" above actually means here.** Every published
-canonical byte is ASCII, drawn from a 40-character alphabet, so the suite
-exercises JCS's key ordering and compact separators, but none of its
-string-escaping rules and none of its UTF-16 code-unit key-ordering rule
-(RFC 8785 §3.2.3) — the exact point where Python's code-point
-`sort_keys=True` stops being general JCS. The two implementations are also
+canonical byte is ASCII, drawn from a 40-character alphabet.
+The suite therefore exercises JCS's compact separators, and its key ordering
+only over ASCII keys — where UTF-16 code-unit order, code-point order and byte
+order all coincide. It exercises none of JCS's string-escaping rules, and
+nothing here distinguishes the UTF-16 code-unit key ordering RFC 8785 §3.2.3
+requires from a plain code-point sort. That distinction is exactly where
+Python's `sort_keys=True` stops being general JCS. The two implementations are also
 not symmetric in kind: Go canonicalizes through `gowebpki/jcs`, a
 general-purpose RFC 8785 implementation, while Python's
 `json.dumps(sort_keys=True, ensure_ascii=False, separators=(",", ":"))` is
