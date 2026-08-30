@@ -254,6 +254,13 @@ The six below all carry a **four-checkpoint** chain (three prefixes), so that
 - `seq_skip_at_middle_transition` — `seq` runs 1, 2, 4, 5: the gap is at the
   *middle* transition and the first and last transitions are both contiguous.
   Rejected: tier_b (B1).
+- `stream_recommitted_at_chain_distance_3` — the same `(stream_id, epoch)` is
+  committed by `chain[0]` and by the vector's own input, **three checkpoints
+  apart**, with two clean checkpoints between them. Every other B3 negative
+  places its duplicate at adjacent chain indices, so a validator comparing each
+  checkpoint's identities only against its immediate predecessor — rather than
+  against every identity committed so far — passed the whole published suite.
+  Rejected: tier_b (B3).
 - `stream_recommitted_between_prefixes` — the same `(stream_id, epoch)` is
   committed by the second and third *prefixes*, with the vector's own input
   clean. A validator that only compares its input against `chain[0]` accepts
@@ -395,7 +402,9 @@ not something the fixture data mechanically enforces.
 **Pinned.** Every rule above is asserted at every **chain index** — every
 transition of a multi-checkpoint chain, not only the first or the last, and,
 for the identity-uniqueness rule, across all ordered index pairs rather than
-adjacent ones only — and at every **tip index**: rules are asserted against
+adjacent ones only (`stream_recommitted_at_chain_distance_3` carries that one
+into the published vectors, at distance 3; the full sweep of pairs is the test
+suite's) — and at every **tip index**: rules are asserted against
 interior tips, not only the first or last tip of a checkpoint.
 
 That is a separate claim from the rules themselves, and it needs its own
@@ -465,7 +474,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 12 positive (9 through Tier B) + 28 negative
+checked: 12 positive (9 through Tier B) + 29 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.

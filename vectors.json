@@ -1779,6 +1779,80 @@
       "min_format_version": 2
     },
     {
+      "name": "stream_recommitted_at_chain_distance_3",
+      "expect": "tier_b",
+      "reason": "the same (stream_id, epoch) is committed by the FIRST chain prefix and by the vector's own input, three checkpoints apart, with two clean checkpoints between them; a validator that compares each checkpoint's identities only against its immediate predecessor accepts this and every other B3 negative in the suite",
+      "input": {
+        "prev_hash": "ed99ad60651c37123d29d17c938cda16695f2ed0a56498acdccd94767f09f0b6",
+        "seq": 4,
+        "timestamp": "2026-10-01T00:03:00Z",
+        "tips": [
+          {
+            "entry_count": 4,
+            "epoch": 0,
+            "sequence_number": 4,
+            "stream_id": "a8a8a8a8-0000-4000-8000-000000000001",
+            "tip_hash": "d800000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "Z5lcuAEjDEQbnCGaPG5SZWX7q/qTbDA5CEKznJTxsDZDnKr11xL31YbxuHqfnSskUT5K1sttZj9jWfwgJIegCg==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-10-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "a8a8a8a8-0000-4000-8000-000000000001",
+                "tip_hash": "0100000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "/m+WIugIvtCY9jpQclpwZTFyag27+vBYVQsW8nklfNlGoA+D3hWdQCfvEt8o8/2+DULPIDppo3upL8ZaS/U0AA=="
+        },
+        {
+          "input": {
+            "prev_hash": "945690f2541e705f3aee2929d748afb760a9fdca6ca012d00262bfcb6be0b527",
+            "seq": 2,
+            "timestamp": "2026-10-01T00:01:00Z",
+            "tips": [
+              {
+                "entry_count": 2,
+                "epoch": 0,
+                "sequence_number": 2,
+                "stream_id": "a8a8a8a8-0000-4000-8000-000000000002",
+                "tip_hash": "0200000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "sGxGXxSY+1OPwkM/tuhuW8d0JT/4JBd+re/tuyBo4saDnCW1ZAdHsxS51TB10GpESp6nGCnYH61jg5cC/rqgAg=="
+        },
+        {
+          "input": {
+            "prev_hash": "9a4c31a588aabc47769ed0f8bede2fc0d0e81fc48ac26469d98f1dfb2601c756",
+            "seq": 3,
+            "timestamp": "2026-10-01T00:02:00Z",
+            "tips": [
+              {
+                "entry_count": 3,
+                "epoch": 0,
+                "sequence_number": 3,
+                "stream_id": "a8a8a8a8-0000-4000-8000-000000000003",
+                "tip_hash": "0300000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "+JNxfksvkzfyjyDu6oHnuCuHwR7oyuwh0Uiog5dXs345QYxHNRdj7KunK++3shWrdlDmWqfPenHjXqkuSa1uCw=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
       "name": "signature_with_stray_character",
       "expect": "signature",
       "reason": "the signature is not valid base64: a stray \"!\" is spliced into an otherwise valid encoding. A lenient decoder discards it, recovers the original signature and accepts the vector, so this separates a validator that rejects malformed base64 from one that silently repairs it",

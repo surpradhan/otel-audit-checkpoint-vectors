@@ -1132,6 +1132,28 @@ func gen() Suite {
 		MinFormatVersion: 2,
 	})
 
+	// B3 violated at chain DISTANCE 3. Every other B3 negative places the
+	// duplicate identity at adjacent chain indices, so a validator that
+	// compared each checkpoint's identities only against its IMMEDIATE
+	// predecessor -- rather than against every identity committed so far --
+	// passed the entire published suite. The suite's own tests sweep all
+	// ordered index pairs; this is the vector that makes the same property
+	// visible to a third party who has only the file.
+	//
+	// The duplicate is between chain[0] and the vector's own input, with two
+	// clean checkpoints in between.
+	dupFar := posChain("a8a8a8a8", 4)
+	dupFar[3].Tips[0].StreamID = dupFar[0].Tips[0].StreamID
+	dupFar[3].Tips[0].TipHash = "d8" + repeat("00", 31)
+	suite.Negatives = append(suite.Negatives, NegativeVector{
+		Name: "stream_recommitted_at_chain_distance_3", Expect: "tier_b",
+		Reason:           "the same (stream_id, epoch) is committed by the FIRST chain prefix and by the vector's own input, three checkpoints apart, with two clean checkpoints between them; a validator that compares each checkpoint's identities only against its immediate predecessor accepts this and every other B3 negative in the suite",
+		Input:            dupFar[3],
+		Signature:        signCP(priv, dupFar[3]).Signature,
+		Chain:            signAll(priv, dupFar[:3]),
+		MinFormatVersion: 2,
+	})
+
 	// A signature that is not valid base64 at all: one stray "!" spliced into
 	// an otherwise valid 88-character encoding. Every other signature negative
 	// carries well-formed base64 whose BYTES are wrong, so nothing in the
