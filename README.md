@@ -115,8 +115,9 @@ The `null_epoch` and `null_tips` negatives pin the parts a vector can express
 — see each vector's entry below for exactly which reading it discriminates —
 and unit tests in both references hold the rest.
 
-**An unknown member is rejected**, on a checkpoint, on a tip, on a signed
-`chain` prefix, and on the prefix wrapper alike. It is bytes the signature does
+**An unknown member is rejected** anywhere in the document: on a checkpoint,
+on a tip, on a signed `chain` prefix, on the prefix wrapper, on a vector or
+negative entry, and on the suite object itself. It is bytes the signature does
 not cover: a struct-decoding validator that drops the member re-canonicalizes
 the checkpoint *without* it and verifies a signature over bytes that are not
 the ones on the wire — on a prefix, that is a forged history the `prev_hash`
@@ -487,7 +488,9 @@ above.)
   a checkpoint, a tip, a chain prefix and a prefix wrapper in turn — each into
   a suite that is **re-signed afterwards**, so the signature is valid and only
   the schema rule can reject it — and require both references to reject, which
-  is the strongest instrument available for it.
+  is the strongest instrument available for it. The envelope positions (a
+  vector, a negative, the suite object) are covered the same way; no signature
+  reaches them at all, so only an explicit member set can.
 
 - **Wrong-typed scalars, at the level of the published vectors.** `"epoch":
   "1"`, `"epoch": true`, `"epoch": 1.0` and a null `tips` *element* are

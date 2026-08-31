@@ -1395,6 +1395,30 @@ def test_unknown_member_is_rejected():
             f"an unknown member {name} was rejected, but not by the schema rule ({want!r}):\n{output}"
 
 
+def test_unknown_member_on_the_envelope_is_rejected():
+    """The unknown-member rule covers the DOCUMENT, not only the objects a
+    signature happens to reach. An unknown member beside "name" on a vector or
+    a negative, or beside "vectors" at the top level, is not covered by any
+    signature at all -- so nothing but an explicit member set can notice it.
+    Go's DisallowUnknownFields refused the file at all three; this reference
+    accepted all three. No Go mirror is needed: its decoder gets these for
+    free, and TestUnknownMemberIsRejected already shows the decoder refusing a
+    file."""
+    for name, inject in (
+            ("on a vector", lambda s: s["vectors"][0].update(bogus="x")),
+            ("on a negative", lambda s: s["negatives"][0].update(bogus="x")),
+            ("on the suite object", lambda s: s.update(bogus="x"))):
+        suite = _load_real_suite()
+        inject(suite)
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc != 0, f"an unknown member {name} was accepted\n{output}"
+        assert "unknown member" in output, \
+            f"an unknown member {name} was rejected, but not as an unknown member:\n{output}"
+    # The premise: the untouched suite still passes.
+    rc, output = _run_main_capturing_stdout(_load_real_suite())
+    assert rc == 0, f"the committed suite no longer validates\n{output}"
+
+
 def test_trailing_data_after_the_suite_is_rejected():
     """A conformance suite is ONE JSON document. json.load already refuses a
     file with data appended after the suite object, but it did so by raising

@@ -140,6 +140,45 @@ _CP_MEMBERS = frozenset({"prev_hash", "seq", "timestamp", "tips"})
 _TIP_MEMBERS = frozenset({"entry_count", "epoch", "sequence_number",
                           "stream_id", "tip_hash"})
 _SIGNED_CP_MEMBERS = frozenset({"input", "signature"})
+# The envelope around the checkpoints. Go's DisallowUnknownFields covers these
+# structs as a matter of course, so an unknown member beside "name" -- or
+# beside "vectors" at the top level -- failed the whole file there while this
+# reference ignored it. The rule the README states is about the document, not
+# only about the objects a signature happens to cover.
+_SUITE_MEMBERS = frozenset({"format_version", "description", "algorithm",
+                            "signing_seed_hex", "public_key_hex", "vectors",
+                            "negatives"})
+_VECTOR_MEMBERS = frozenset({"name", "input", "canonical", "sha256", "signature",
+                             "chain", "expect_warnings", "min_format_version"})
+_NEGATIVE_MEMBERS = frozenset({"name", "expect", "reason", "input", "signature",
+                               "prev_sha256", "chain", "min_format_version"})
+
+
+def check_envelope(suite):
+    """Reason the suite envelope is malformed, or None: the suite object, each
+    vector and each negative may carry only the members the schema defines.
+
+    Checked once over the whole file rather than per entry, because that is
+    what Go does -- its decoder refuses the document -- and because these
+    members are not covered by any signature, so nothing else would notice
+    them."""
+    if not isinstance(suite, dict):
+        return "the suite must be a JSON object"
+    err = unknown_members(suite, _SUITE_MEMBERS, "the suite")
+    if err:
+        return err
+    for key, allowed, what in (("vectors", _VECTOR_MEMBERS, "a vector"),
+                               ("negatives", _NEGATIVE_MEMBERS, "a negative")):
+        entries = suite.get(key) or []
+        if not isinstance(entries, list):
+            return f"{key} must be an array"
+        for e in entries:
+            if not isinstance(e, dict):
+                return f"{what} must be a JSON object"
+            err = unknown_members(e, allowed, f"{what} ({e.get('name', '?')!r})")
+            if err:
+                return err
+    return None
 
 
 def unknown_members(obj, allowed, what: str):
@@ -373,6 +412,10 @@ def main() -> int:
             suite = json.load(f)
     except json.JSONDecodeError as e:
         print(f"FAIL: {sys.argv[1]} is not a single JSON document: {e}")
+        return 1
+    err = check_envelope(suite)
+    if err:
+        print(f"FAIL: {err}")
         return 1
     if suite.get("format_version", 1) > SUPPORTED_FORMAT_VERSION:
         print(f"  note: suite format_version={suite['format_version']} exceeds "
