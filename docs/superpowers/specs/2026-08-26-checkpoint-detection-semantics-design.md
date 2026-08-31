@@ -209,9 +209,10 @@ suite starts at `seq: 1`, so a validator that compares `seq` against its
 position in the `chain` array rather than its absolute value is
 indistinguishable from a correct one on every vector here; no zero-tip
 checkpoint appears as a `chain` prefix (`genesis_empty_tips` supplies one only
-as a vector's own input); and an unknown member on a checkpoint, a tip or a
-chain prefix is rejected by both references but by different mechanisms, so no
-vector can express it. These are gaps in what the suite currently constrains,
+as a vector's own input); and an unknown member on a checkpoint, a tip, a
+chain prefix or a prefix wrapper is rejected by both references — each by an
+explicit member-set rule, Go's decoder and Python's declared sets — but the two
+report it differently, so no vector can express it. These are gaps in what the suite currently constrains,
 not defects in the rules.
 
 The tip-identity key is compared as a pair — a comparable struct in Go, a tuple

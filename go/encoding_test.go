@@ -168,13 +168,14 @@ func TestNullMembersRejectedOnChainPrefixes(t *testing.T) {
 // An unknown member is bytes the signature does not cover. Struct decoding
 // drops it, so the checkpoint was re-canonicalized WITHOUT it and the
 // signature verified over bytes that are not the ones on the wire -- on a
-// chain prefix, that is a forged history the linkage cannot see. The Python
-// reference canonicalizes the object as it arrives and so never had the hole.
+// chain prefix, that is a forged history the linkage cannot see.
 //
 // The injection is done on the generated suite's JSON rather than through the
 // structs, because the structs are exactly what cannot express it. Mirrored by
 // py/test_validate.py's test_unknown_member_is_rejected, which pins the same
-// three positions in the other reference.
+// four positions in the other reference -- there against a suite re-signed
+// after the injection, because that reference had no member-set rule at all
+// and was only ever rejecting the broken signature.
 func TestUnknownMemberIsRejected(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -204,6 +205,22 @@ func TestUnknownMemberIsRejected(t *testing.T) {
 				}
 				cp := chain[0].(map[string]any)["input"].(map[string]any)
 				cp["injected"] = "forged history"
+				return
+			}
+			t.Fatal("no vector with a chain prefix to inject into")
+		}},
+		// The wrapper, not the checkpoint inside it. Nothing canonicalizes the
+		// wrapper, so a member injected here changes no signed bytes at all --
+		// the one position where "the signature breaks anyway" was never even
+		// accidentally true in either reference.
+		{"on a chain prefix wrapper", func(s map[string]any) {
+			for _, raw := range s["vectors"].([]any) {
+				v := raw.(map[string]any)
+				chain, ok := v["chain"].([]any)
+				if !ok || len(chain) == 0 {
+					continue
+				}
+				chain[0].(map[string]any)["injected"] = "forged history"
 				return
 			}
 			t.Fatal("no vector with a chain prefix to inject into")

@@ -1182,45 +1182,95 @@ def test_null_members_reject_cleanly_on_every_path():
     assert err is None or isinstance(err, str), "check_tier_b raised on a null tips member"
 
 
+def _positive(cp, chain=None):
+    """A must-accept vector built from `cp`: canonical bytes, hash and
+    signature all derived from the checkpoint as given. Everything is computed
+    AFTER the caller has injected whatever it means to inject, so the vector is
+    self-consistent and only a schema rule can reject it."""
+    import base64 as _b64
+    import hashlib as _h
+    cb = validate.canonical(cp)
+    v = {"name": "probe", "input": cp, "canonical": cb.decode(),
+         "sha256": _h.sha256(cb).hexdigest(),
+         "signature": _b64.b64encode(_priv().sign(cb)).decode(),
+         "min_format_version": 2}
+    if chain is not None:
+        v["chain"] = chain
+    return v
+
+
+def _unknown_member_cases():
+    """A self-consistently signed suite carrying one unknown member, at each of
+    the four positions the schema has: a checkpoint, a tip, the checkpoint
+    inside a signed chain prefix, and the prefix WRAPPER itself."""
+    import hashlib as _h
+    genesis = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    def tail_after(pre):
+        """A clean second checkpoint linked to `pre` AS GIVEN. The prefix is
+        built first and the link computed from its canonical bytes afterwards,
+        so an injected member leaves B2 satisfied and the prefix signature
+        valid: nothing but the schema rule can then reject the vector. Linking
+        to the uninjected prefix instead would let a B2 break do the work and
+        the test would pass with no unknown-member rule at all."""
+        return dict(_cp(2, _pos_ts(110), [_tip(_pos_stream(2), 0, 2, 2, "bb")]),
+                    prev_hash=_h.sha256(validate.canonical(pre)).hexdigest())
+
+    clean_cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")], prev=genesis)
+    pre = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")], prev=genesis)
+    injected_pre = dict(pre, injected="forged history")
+
+    # Each case is (vector, fragment the FAIL line must contain). The fragment
+    # is what separates "rejected by the schema rule" from "rejected because
+    # the signature broke" -- and these signatures are all valid, so only the
+    # schema rule can be doing the work. The prefix paths report the vocabulary
+    # reason both references share, hence a different fragment.
+    return {
+        "clean": (_positive(clean_cp), None),
+        "on a checkpoint": (
+            _positive(dict(clean_cp, injected="not covered by the signature")),
+            "unknown member"),
+        "on a tip": (
+            _positive(_cp(1, _pos_ts(100),
+                          [dict(_tip(_pos_stream(1), 0, 1, 1, "aa"),
+                                injected="not covered by the signature")],
+                          prev=genesis)),
+            "unknown member"),
+        "on a chain prefix's checkpoint": (
+            _positive(tail_after(injected_pre), chain=[_sign(_priv(), injected_pre)]),
+            "chain context was rejected (schema)"),
+        "on a chain prefix wrapper": (
+            _positive(tail_after(pre),
+                      chain=[dict(_sign(_priv(), pre), injected="forged history")]),
+            "chain context was rejected (schema)"),
+    }
+
+
 def test_unknown_member_is_rejected():
-    """An unknown member is bytes the signature does not cover. This reference
-    canonicalizes the object as it ARRIVES, so an injected key changes the
-    bytes and the vector fails; Go's struct decoding dropped it and verified
-    over bytes that were not the ones on the wire, which on a chain prefix is a
-    forged history the linkage cannot see. Go now decodes strictly.
+    """An unknown member is bytes the signature does not cover, and it is
+    rejected on a checkpoint, on a tip, on a signed chain prefix and on the
+    prefix wrapper alike -- the rule the README states as normative.
 
-    The two references reject the same documents and describe them differently
-    -- Go fails the whole file at load, this one reports per vector -- which is
-    why no published vector can pin this and these tests do instead. Mirrors
-    TestUnknownMemberIsRejected."""
-    def on_checkpoint(suite):
-        suite["vectors"][0]["input"]["injected"] = "not covered by the signature"
-
-    def on_tip(suite):
-        for v in suite["vectors"]:
-            if v["input"]["tips"]:
-                v["input"]["tips"][0]["injected"] = "not covered by the signature"
-                return
-        raise AssertionError("no vector with a tip to inject into")
-
-    def on_prefix(suite):
-        for v in suite["vectors"]:
-            if v.get("chain"):
-                v["chain"][0]["input"]["injected"] = "forged history"
-                return
-        raise AssertionError("no vector with a chain prefix to inject into")
-
-    for name, inject in (("on a checkpoint", on_checkpoint),
-                         ("on a tip", on_tip),
-                         ("on a signed chain prefix", on_prefix)):
-        suite = _load_real_suite()
-        inject(suite)
-        rc, output = _run_main_capturing_stdout(suite)
-        assert rc != 0, f"an unknown member {name} was accepted\n{output}"
-    # The premise: the same suite untouched still passes, so the rejections
-    # above are about the injected member.
-    rc, output = _run_main_capturing_stdout(_load_real_suite())
-    assert rc == 0, f"the committed suite no longer validates\n{output}"
+    This reference did NOT have that rule; it only had a side effect of one.
+    Canonicalizing the object as it arrives means an injected member changes
+    the bytes, so injecting into the ALREADY-SIGNED committed suite always
+    failed the signature check -- which is what the previous version of this
+    test did, and so it could never have failed however absent the schema rule
+    was. Every suite below is re-signed AFTER the injection, exactly as a
+    forger would produce it: against the pre-fix code all four returned rc=0,
+    PASS while Go rejected all four. Mirrors TestUnknownMemberIsRejected."""
+    cases = _unknown_member_cases()
+    # The premise: the same construction with nothing injected passes, so the
+    # rejections below are about the injected member and not about the shape of
+    # these synthetic vectors.
+    clean, _ = cases.pop("clean")
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[clean]))
+    assert rc == 0, f"the uninjected probe suite must validate\n{output}"
+    for name, (v, want) in cases.items():
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+        assert rc != 0, f"a re-signed suite with an unknown member {name} was accepted\n{output}"
+        assert want in output, \
+            f"an unknown member {name} was rejected, but not by the schema rule ({want!r}):\n{output}"
 
 
 def test_trailing_data_after_the_suite_is_rejected():

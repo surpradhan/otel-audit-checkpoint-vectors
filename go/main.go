@@ -1456,9 +1456,11 @@ func validate(path string) error {
 	// Strict decoding. Struct decoding DROPS unknown members by default, so a
 	// key injected on a checkpoint, a tip or a signed chain prefix was decoded
 	// away, re-canonicalized without it, and accepted -- bytes the signature
-	// does not cover, and on the prefix path a forged history. The Python
-	// reference never had the hole: it canonicalizes the object as it arrives,
-	// so an injected key changes the bytes and fails the signature.
+	// does not cover, and on the prefix path a forged history. Python holds the
+	// same rule by declaring the member set of each object explicitly; it does
+	// NOT lean on "canonicalizing as it arrives breaks the signature", which
+	// only rejects a member injected into an already-signed document and lets
+	// a re-signed one straight through.
 	//
 	// The two references reject the same documents but describe them
 	// differently: this one fails the whole file at load, while Python reports

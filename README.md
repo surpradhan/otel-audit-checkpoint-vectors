@@ -111,13 +111,16 @@ identity and ordering comparison at version 2; and canonicalization normalizes
 a null `tips` to `[]`, so accepting it would let one signature cover two
 distinct documents. The `null_epoch` and `null_tips` negatives pin both.
 
-**An unknown member is rejected**, on a checkpoint, on a tip, and on a signed
-`chain` prefix alike. It is bytes the signature does not cover: a
-struct-decoding validator that drops the member re-canonicalizes the checkpoint
-*without* it and verifies a signature over bytes that are not the ones on the
-wire — on a prefix, that is a forged history the `prev_hash` linkage cannot
-see. The Python reference canonicalizes the object as it arrives, so an
-injected key changes the bytes and fails; the Go reference decodes strictly.
+**An unknown member is rejected**, on a checkpoint, on a tip, on a signed
+`chain` prefix, and on the prefix wrapper alike. It is bytes the signature does
+not cover: a struct-decoding validator that drops the member re-canonicalizes
+the checkpoint *without* it and verifies a signature over bytes that are not
+the ones on the wire — on a prefix, that is a forged history the `prev_hash`
+linkage cannot see. Both references hold it as an explicit rule: Go through its
+decoder's `DisallowUnknownFields`, Python through a declared member set for
+each object in the schema. Neither leans on "the signature breaks anyway" —
+that only rejects a member injected into an *already-signed* document, and a
+forger re-signs.
 No published vector can express this — see [Not pinned](#rules-hold-at-every-position--what-that-does-and-does-not-cover).
 
 **Rules an implementation must follow to reproduce the bytes:**
@@ -451,8 +454,10 @@ above.)
   vector it belongs to. A suite file containing an unknown member therefore
   cannot be loaded by the Go reference at all, so the case is unpublishable as
   a vector; `go/encoding_test.go` and `py/test_validate.py` inject a member on
-  a checkpoint, a tip and a chain prefix in turn and require both references to
-  reject, which is the strongest instrument available for it.
+  a checkpoint, a tip, a chain prefix and a prefix wrapper in turn — each into
+  a suite that is **re-signed afterwards**, so the signature is valid and only
+  the schema rule can reject it — and require both references to reject, which
+  is the strongest instrument available for it.
 
 - **The version-1-carrying-`epoch` direction.** A version-2 tip missing
   `epoch` is published as a vector (`missing_epoch_in_v2`); the mirror-image

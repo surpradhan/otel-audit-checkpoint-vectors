@@ -109,11 +109,40 @@ def check_epoch_presence(cp: dict, min_ver: int):
     return None
 
 
+# The complete member set of each object in the schema. Anything else is bytes
+# the signature does not cover, and both references reject it -- Go through its
+# decoder's DisallowUnknownFields, this one through the checks below.
+#
+# Declaring the sets explicitly is the only way this reference can hold that
+# rule. It canonicalizes the object AS IT ARRIVES, so an injected member does
+# change the bytes and break the published signature -- but that only rejects a
+# suite whose signatures were computed BEFORE the injection. A third party who
+# re-signs after injecting, which is what a forger does, produced a
+# self-consistent suite this reference ACCEPTED and Go rejected: on a
+# checkpoint, on a tip, and on a signed chain prefix alike. "The signature no
+# longer matches" was never the unknown-member rule; it was a side effect that
+# happened to fire on the one case a test injected.
+_CP_MEMBERS = frozenset({"prev_hash", "seq", "timestamp", "tips"})
+_TIP_MEMBERS = frozenset({"entry_count", "epoch", "sequence_number",
+                          "stream_id", "tip_hash"})
+_SIGNED_CP_MEMBERS = frozenset({"input", "signature"})
+
+
+def unknown_members(obj, allowed, what: str):
+    """Reason naming the members of `obj` outside `allowed`, or None. Sorted,
+    so the message does not depend on dict iteration order."""
+    extra = sorted(set(obj) - allowed)
+    if extra:
+        return f"unknown member(s) {extra} on {what}; the signature does not cover them"
+    return None
+
+
 def check_schema(cp, min_ver: int):
     """Structural rules a checkpoint must satisfy before any byte-level check:
-    it is an object, `tips` is present as an array of objects, and every tip
-    satisfies the epoch rules for the vector's format_version. Mirrors Go's
-    checkSchema; both report a failure as "schema".
+    it is an object, it carries no member the schema does not define, `tips` is
+    present as an array of objects, and every tip satisfies the epoch rules for
+    the vector's format_version. Mirrors Go's checkSchema; both report a failure
+    as "schema".
 
     The tips rule is not pedantry. Canonicalization normalizes a missing or
     null tips member to `[]`, so `"tips": null` and `"tips": []` would
@@ -127,10 +156,17 @@ def check_schema(cp, min_ver: int):
     traceback in this reference and a clean verdict in the other."""
     if not isinstance(cp, dict):
         return "a checkpoint must be a JSON object"
+    err = unknown_members(cp, _CP_MEMBERS, "a checkpoint")
+    if err:
+        return err
     tips = cp.get("tips")
     if not isinstance(tips, list) or not all(isinstance(t, dict) for t in tips):
         return ("tips is required and must be an array of objects; null and "
                 "absent are not an empty array")
+    for t in tips:
+        err = unknown_members(t, _TIP_MEMBERS, "a tip")
+        if err:
+            return err
     return check_epoch_presence(cp, min_ver)
 
 
@@ -155,6 +191,15 @@ def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
         # third-party input like any other: Go fails to decode it and reports
         # that, so this must report rather than raise AttributeError.
         if not isinstance(sc, dict):
+            return ([], "schema")
+        # The wrapper gets the unknown-member rule too, not only the checkpoint
+        # inside it. Nothing here canonicalizes the wrapper, so an injected
+        # member on it changes no signed bytes at all -- it is the one position
+        # where the "it breaks the signature anyway" reasoning was never even
+        # accidentally true. Go's DisallowUnknownFields covers the wrapper as a
+        # matter of course; this reference has to say so.
+        err = unknown_members(sc, _SIGNED_CP_MEMBERS, "a signed chain prefix")
+        if err:
             return ([], "schema")
         # `or {}`, not .get("input", {}): a present-but-null input is not an
         # absent one. Go decodes either into a zero Checkpoint, whose nil tips
