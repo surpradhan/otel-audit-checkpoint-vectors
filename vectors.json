@@ -1070,7 +1070,7 @@
     {
       "name": "negative_epoch",
       "expect": "schema",
-      "reason": "epoch must be non-negative; a negative value sorts differently in the two implementations, so it is rejected rather than ordered arbitrarily",
+      "reason": "epoch must be non-negative: it is a producer generation counter, so no conformant producer emits one, and an implementation that builds a TEXT sort key -- the shape the published sort rule warns against -- puts a leading \"-\" above the digits and orders -10 above -1. Rejecting the value keeps that ambiguity off the wire rather than relying on every implementation to compare it the same way",
       "input": {
         "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "seq": 1,

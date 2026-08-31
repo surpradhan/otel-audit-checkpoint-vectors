@@ -104,12 +104,16 @@ byte-identical. A tip missing `epoch` in a version-2 vector is rejected, not
 defaulted — see the `missing_epoch_in_v2` vector.
 
 **A member that is present and `null` is not an absent member.** `"epoch":
-null` is rejected at every `format_version`, and so is `"tips": null`. Neither
-is a hypothetical: a pointer- or Optional-typed decoder reads a null epoch as
-"no epoch", which is legal at version 1 and a silent epoch `0` in every
-identity and ordering comparison at version 2; and canonicalization normalizes
-a null `tips` to `[]`, so accepting it would let one signature cover two
-distinct documents. The `null_epoch` and `null_tips` negatives pin both.
+null` is rejected at every `format_version`, and so is `"tips": null` and a
+null `tips` *element*. None is a hypothetical: a pointer- or Optional-typed
+decoder reads a null epoch as "no epoch", which is legal at version 1 and a
+silent epoch `0` in every identity and ordering comparison at version 2;
+canonicalization normalizes a null `tips` to `[]`, so accepting it would let
+one signature cover two distinct documents; and a null tips *element* decodes
+into a tip of zero values under Go's usual `UnmarshalJSON(null)` convention.
+The `null_epoch` and `null_tips` negatives pin the parts a vector can express
+— see each vector's entry below for exactly which reading it discriminates —
+and unit tests in both references hold the rest.
 
 **An unknown member is rejected**, on a checkpoint, on a tip, on a signed
 `chain` prefix, and on the prefix wrapper alike. It is bytes the signature does
@@ -315,10 +319,23 @@ The last group leaves the position axis behind and pins what a validator reads
 **encoding** of the signature string.
 
 - `null_epoch` — the second tip of two carries `epoch: null`. `null` is neither
-  an epoch nor an absent epoch: a decoder that conflates the two reads these
-  bytes as epoch `0` at version 2 and as a legal version-1 tip at version 1,
-  and a dynamically typed one that reaches for a default gets `None`, which is
-  not orderable against an integer. Rejected: schema.
+  an epoch nor an absent epoch, and a dynamically typed validator that reaches
+  for a default gets `None`, which is not orderable against an integer.
+  Rejected: schema.
+
+  What this vector discriminates, precisely: the **null-read-as-zero**
+  direction. A validator that reads `null` as the integer `0` accepts a
+  checkpoint it must reject, and only this vector catches that. It does *not*
+  discriminate the **null-read-as-absent** direction — the vector declares
+  `min_format_version: 2`, so a validator conflating null with absent still
+  rejects it, under the ordinary "epoch is required at version 2" rule.
+  Reading `null` as absent is wrong at version 1, where the same bytes would
+  be a legal tip; no vector can pin that (a version-1 vector must not carry an
+  `epoch` member at all — see [Not
+  pinned](#rules-hold-at-every-position--what-that-does-and-does-not-cover)),
+  so `TestNullEpochRejectedAtEveryVersion` and
+  `test_null_epoch_rejected_at_every_version` hold it in both references
+  instead.
 - `null_tips` — the `tips` member is present and `null`. It is not an empty
   array: canonicalization would normalize it to `[]` and let one signature
   cover two distinct documents. The signature published with this vector is

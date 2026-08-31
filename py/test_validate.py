@@ -408,15 +408,20 @@ def test_epoch_presence_scans_all_tips():
 
 
 def test_negative_epoch_rejected():
-    """A negative epoch orders differently in the two implementations, so it is
-    rejected rather than ordered arbitrarily."""
+    """A negative epoch is rejected rather than ordered. The two references
+    agree on how to order one -- both compare the identity as a pair -- so the
+    rule is about the third party: an implementation that builds a TEXT sort
+    key puts a leading "-" above the digits and orders -10 above -1. Mirrors
+    TestNegativeEpochRejected."""
     cp = _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", -1, 1, 1, "aa")])
     assert validate.check_epoch_presence(cp, 2) is not None, "a negative epoch must be rejected"
 
 
 def test_composite_sort_key_is_numeric_for_multi_digit_epochs():
-    """The sort key must order epochs NUMERICALLY. test_r4_composite_sort_key
-    cannot catch a padding regression: it uses single-digit epochs."""
+    """The sort key must order epochs NUMERICALLY. An implementation that
+    compares the epoch as TEXT puts 10 before 2 and disagrees with this one on
+    published bytes. test_r4_composite_sort_key cannot catch that: it uses
+    single-digit epochs, where text and numeric order coincide."""
     lo = _tip("s1", 2, 3, 3, "aa")
     hi = _tip("s1", 10, 11, 11, "bb")
     assert validate.tip_identity(lo) < validate.tip_identity(hi), (

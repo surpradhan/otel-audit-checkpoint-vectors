@@ -222,9 +222,11 @@ func TestEpochPresenceScansAllTips(t *testing.T) {
 	}
 }
 
-// A negative epoch orders differently in the two implementations (Go pads it
-// into a string key where "-" sorts above the digits; Python compares it as an
-// integer tuple element), so it is rejected rather than ordered arbitrarily.
+// A negative epoch is rejected rather than ordered. The two references AGREE on
+// how to order one -- both compare the identity as a pair -- so the rule is
+// about the third party: epoch is a producer generation counter, and an
+// implementation that builds a TEXT sort key puts a leading "-" above the
+// digits and orders -10 above -1. Rejecting keeps that ambiguity off the wire.
 func TestNegativeEpochRejected(t *testing.T) {
 	cp := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{
 		{EntryCount: 1, Epoch: ptr(-1), SequenceNumber: 1, StreamID: "s1", TipHash: "aa"},

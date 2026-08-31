@@ -545,11 +545,11 @@ func genTierB(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 
 	// R4: two tips for ONE stream at different epochs are legal in a single
 	// checkpoint, so the sort key is composite. Epochs 2 and 10 are chosen
-	// deliberately: with a naive "%s\x00%d" key Go orders them [10, 2] while
-	// Python's tuple compare orders them [2, 10], so the two implementations
-	// would disagree on published bytes and nothing else in the suite would
-	// notice. Given in reverse order so the sort has to fix it. This vector is
-	// the only thing that pins the zero-padding width.
+	// deliberately: an implementation that compares the epoch as TEXT orders
+	// them [10, 2] while a numeric comparison gives [2, 10], so the two would
+	// disagree on published bytes and nothing else in the suite would notice.
+	// Given in reverse order so the sort has to fix it. This vector is the only
+	// thing that pins the epoch half of the key as numeric rather than textual.
 	//
 	// It carries a chain prefix committing the same stream at epoch 0, so the
 	// checkpoint makes TWO epoch transitions (0->2 and 2->10) and B4 is emitted
@@ -888,18 +888,22 @@ func genTierB(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 		MinFormatVersion: 2,
 	})
 
-	// A negative epoch. Go zero-pads the epoch into the sort key and Python
-	// compares it as a tuple element: "-1" sorts above the digits in Go, while
-	// -10 sorts below -1 in Python. The two implementations would order the
-	// same tips differently, so the value is rejected outright. The offending
-	// tip is again NOT first.
+	// A negative epoch. The two references AGREE on how to order one -- both
+	// compare the identity as a pair, Go a struct and Python a tuple -- so
+	// this rule is not about them. It is about the third party: epoch is a
+	// producer generation counter, so no conformant producer emits a negative
+	// one, and an implementation that builds a TEXT sort key (the shape
+	// README rule 1 already warns against) puts a leading "-" above the digits
+	// and orders -10 above -1. Rejecting the value keeps that ambiguity off
+	// the wire instead of relying on every implementation to compare it the
+	// same way. The offending tip is again NOT first.
 	negEpoch := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
 		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "77777777-7777-4777-8777-777777777777", TipHash: "7a" + strings.Repeat("00", 31)},
 		{EntryCount: 2, Epoch: ptr(-1), SequenceNumber: 2, StreamID: "88888888-8888-4888-8888-888888888888", TipHash: "8a" + strings.Repeat("00", 31)},
 	}}
 	negatives = append(negatives, NegativeVector{
 		Name: "negative_epoch", Expect: "schema",
-		Reason:           "epoch must be non-negative; a negative value sorts differently in the two implementations, so it is rejected rather than ordered arbitrarily",
+		Reason:           "epoch must be non-negative: it is a producer generation counter, so no conformant producer emits one, and an implementation that builds a TEXT sort key -- the shape the published sort rule warns against -- puts a leading \"-\" above the digits and orders -10 above -1. Rejecting the value keeps that ambiguity off the wire rather than relying on every implementation to compare it the same way",
 		Input:            negEpoch,
 		Signature:        signCP(priv, negEpoch).Signature,
 		MinFormatVersion: 2,
