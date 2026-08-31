@@ -1609,6 +1609,50 @@ def test_unknown_member_is_not_masked_by_the_expected_reason():
         f"negative {injected!r} was rejected, but not as an unknown member:\n{output}"
 
 
+def test_member_sets_match_the_committed_suite():
+    """The six member frozensets in validate.py are a hand-written parallel to
+    the Go structs' JSON tags, and nothing in either language makes the two
+    agree. This closes the loop the only way one reference can: vectors.json is
+    generated FROM the Go structs, so the members it actually carries are the
+    Go tags, and each frozenset must equal the union observed across the
+    committed file.
+
+    Partial by construction, and deliberately so: a Go field that is `omitempty`
+    and never set emits nothing, so it appears in no suite and this cannot see
+    it. It catches the drift that matters in practice -- a field renamed,
+    removed, or added and used -- and it needs no cross-language plumbing to do
+    it."""
+    suite = _load_real_suite()
+    observed = {"suite": set(suite), "vector": set(), "negative": set(),
+                "checkpoint": set(), "tip": set(), "prefix": set()}
+
+    def scan_checkpoint(cp):
+        observed["checkpoint"] |= set(cp)
+        for t in cp.get("tips") or []:
+            observed["tip"] |= set(t)
+
+    for key, kind in (("vectors", "vector"), ("negatives", "negative")):
+        for e in suite[key]:
+            observed[kind] |= set(e)
+            scan_checkpoint(e["input"])
+            for sc in e.get("chain", []):
+                observed["prefix"] |= set(sc)
+                scan_checkpoint(sc["input"])
+
+    for kind, declared in (("suite", validate._SUITE_MEMBERS),
+                           ("vector", validate._VECTOR_MEMBERS),
+                           ("negative", validate._NEGATIVE_MEMBERS),
+                           ("checkpoint", validate._CP_MEMBERS),
+                           ("tip", validate._TIP_MEMBERS),
+                           ("prefix", validate._SIGNED_CP_MEMBERS)):
+        seen = observed[kind]
+        assert seen, f"no {kind} object found in the committed suite; this test is vacuous"
+        assert seen == set(declared), (
+            f"the {kind} member set has drifted from the committed suite: "
+            f"in the suite but not declared {sorted(seen - set(declared))}, "
+            f"declared but never emitted {sorted(set(declared) - seen)}")
+
+
 def main():
     # Derived from the module, not hand-maintained. A list written out by hand
     # silently stops running any test nobody remembers to add to it -- a test
