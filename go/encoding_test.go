@@ -3,8 +3,11 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -514,5 +517,62 @@ func TestWrongTypedEpochIsRejectedWhileDecoding(t *testing.T) {
 	var tip Tip
 	if err := json.Unmarshal([]byte(`{"entry_count":1,"epoch":3,"sequence_number":1,"stream_id":"s1","tip_hash":"aa"}`), &tip); err != nil {
 		t.Fatalf("an integer epoch must still decode: %v", err)
+	}
+}
+
+// The two marshal paths must agree on EVERY member except `epoch`. The null
+// path used to re-declare all five fields in a parallel anonymous struct, so a
+// sixth field added to Tip would appear in the signed bytes of an ordinary tip
+// and vanish from those of a null-epoch one -- silently, and only for the tips
+// whose shape is already the subtle one. This test is derived from the struct
+// rather than from a second hand-written list, so it cannot drift the same way
+// the code it guards did.
+func TestNullEpochMarshalPathDropsNoField(t *testing.T) {
+	tip := Tip{EntryCount: 7, Epoch: nil, SequenceNumber: 9, StreamID: "s1", TipHash: "aa"}
+	normal := tip
+	normal.Epoch = ptr(4)
+
+	decode := func(v Tip) map[string]json.RawMessage {
+		t.Helper()
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	nullTip := tip
+	nullTip.EpochNull = true
+	got, want := decode(nullTip), decode(normal)
+	if string(got["epoch"]) != "null" {
+		t.Fatalf("the null path must emit an explicit null epoch, got %s", got["epoch"])
+	}
+	// Every field the ordinary path emits, the null path must emit too, with
+	// the same bytes -- epoch excepted, which is the whole point of the path.
+	delete(got, "epoch")
+	delete(want, "epoch")
+	if len(got) != len(want) {
+		t.Fatalf("the two marshal paths emit different member sets:\n null:   %v\n normal: %v",
+			slices.Sorted(maps.Keys(got)), slices.Sorted(maps.Keys(want)))
+	}
+	for k, wv := range want {
+		gv, ok := got[k]
+		if !ok {
+			t.Errorf("the null-epoch path dropped %q; it is in the ordinary path's output but not in the signed bytes here", k)
+			continue
+		}
+		if string(gv) != string(wv) {
+			t.Errorf("member %q: null path %s, ordinary path %s", k, gv, wv)
+		}
+	}
+	// The premise: the ordinary path really does carry every field of the
+	// struct, so "agrees with the ordinary path" is a meaningful bar.
+	if n := reflect.TypeOf(Tip{}).NumField(); len(want)+1 != n-1 {
+		t.Fatalf("Tip has %d fields (one of them the unserialized EpochNull) but the ordinary path emits %d members plus epoch; the counts must match or this test is checking a stale field set",
+			n, len(want))
 	}
 }

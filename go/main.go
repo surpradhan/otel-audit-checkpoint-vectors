@@ -105,17 +105,29 @@ func (t *Tip) UnmarshalJSON(b []byte) error {
 // null_epoch vector can be published at all. Every other tip marshals exactly
 // as the struct tags say, in the same key order -- this is byte-neutral for
 // them.
+//
+// BOTH paths go through the struct. The null path used to re-declare all five
+// fields in a parallel anonymous struct, which silently DROPPED any field
+// later added to Tip: the normal path would carry it into the signed bytes and
+// the null path would not, untested, for exactly the tips whose shape is
+// already the subtle one. A hand-maintained parallel field list is the drift
+// class an earlier commit in this branch set out to remove, and the marshalled
+// bytes here are what gets hashed and signed. Patching the one key through a
+// RawMessage map instead means the field list exists once.
 func (t Tip) MarshalJSON() ([]byte, error) {
-	if !t.EpochNull {
-		return json.Marshal(tipFields(t))
+	b, err := json.Marshal(tipFields(t))
+	if err != nil || !t.EpochNull {
+		return b, err
 	}
-	return json.Marshal(struct {
-		EntryCount     int    `json:"entry_count"`
-		Epoch          *int   `json:"epoch"`
-		SequenceNumber int    `json:"sequence_number"`
-		StreamID       string `json:"stream_id"`
-		TipHash        string `json:"tip_hash"`
-	}{t.EntryCount, nil, t.SequenceNumber, t.StreamID, t.TipHash})
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	// The struct tag is `epoch,omitempty` and Epoch is nil on this path, so
+	// the member is absent from b and this ADDS it. Marshalling a map sorts
+	// the keys, which is the order the struct tags are already in.
+	m["epoch"] = json.RawMessage("null")
+	return json.Marshal(m)
 }
 
 // ptr returns a pointer to i, for building tips with an explicit epoch.
