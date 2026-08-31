@@ -371,11 +371,14 @@ func signAll(priv ed25519.PrivateKey, cps []Checkpoint) []SignedCheckpoint {
 // timestamp. The positional vectors below start from one of these and inject a
 // single defect at a chosen index.
 //
-// n is 4 for every caller, which is the point: with four checkpoints the chain
-// has three transitions, so "first", "middle" and "last" are three DISTINCT
-// positions. Every chain in the suite before this one was short enough that at
-// least two of those coincided -- which is what let a rule applied at only one
-// position pass the whole suite.
+// n is 4 for every caller but one, which is the point: with four checkpoints
+// the chain has three transitions, so "first", "middle" and "last" are three
+// DISTINCT positions. Every chain in the suite before these was short enough
+// that at least two of those coincided -- which is what let a rule applied at
+// only one position pass the whole suite. The exception is
+// prefixes_out_of_order, which passes 3: it is about the ORDER of the chain
+// array rather than about a position within it, and two prefixes are enough to
+// supply them newest-first.
 func posChain(idPrefix string, n int) []Checkpoint {
 	cps := make([]Checkpoint, n)
 	for i := range cps {
@@ -912,18 +915,16 @@ func genTierB(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 	return vectors, negatives
 }
 
+// genPositional builds the positional-coverage entries: every vector in the
+// groups above pins its rule at exactly ONE chain position, so a validator that
+// applies the rule only at that position passes the whole suite.
+//
+// The vectors below put the defect in the MIDDLE of a four-checkpoint chain,
+// where "only the first" and "only the last" both miss it, and one puts it on
+// the FINAL link, which no chain-carrying vector reached before.
 func genPositional(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 	var vectors []Vector
 	var negatives []NegativeVector
-
-	// ------------------------------------------------------------------
-	// Positional coverage. Every vector above pins its rule at exactly ONE
-	// chain position, so a validator that applies the rule only at that
-	// position passes the whole suite. The vectors below put the defect in
-	// the MIDDLE of a four-checkpoint chain, where "only the first" and
-	// "only the last" both miss it, and one puts it on the FINAL link,
-	// which no chain-carrying vector reached before.
-	// ------------------------------------------------------------------
 
 	// Must-accept over a THREE-prefix chain. It pins two things no other
 	// vector can:
@@ -1074,23 +1075,20 @@ func genPositional(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 	return vectors, negatives
 }
 
+// genCrossProduct builds the entries whose defect sits at a position factor the
+// chain-index vectors above cannot reach. Chain index is only one factor:
+//
+//	(chain index) x (tip index within a checkpoint)
+//	              x (prefix vs the vector's own checkpoint)
+//	              x (vector-list index in this file)
+//
+// Several carry THREE tips supplied in reverse identity order, so an "interior
+// tip" exists at all -- before these, no checkpoint that reached checkTierB had
+// more than two tips, and no published positive needed more than a single swap
+// to sort.
 func genCrossProduct(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 	var vectors []Vector
 	var negatives []NegativeVector
-
-	// ------------------------------------------------------------------
-	// The cross-product. Chain index is only one factor of "position":
-	//
-	//   (chain index) x (tip index within a checkpoint)
-	//                 x (prefix vs the vector's own checkpoint)
-	//                 x (vector-list index in this file)
-	//
-	// The vectors below put the defect at a factor the chain-index vectors
-	// above cannot reach. Several carry THREE tips supplied in reverse
-	// identity order, so an "interior tip" exists at all -- before these, no
-	// checkpoint that reached checkTierB had more than two tips, and no
-	// published positive needed more than a single swap to sort.
-	// ------------------------------------------------------------------
 
 	c1, c2, c3 := "c1000000-0000-4000-8000-000000000001", "c2000000-0000-4000-8000-000000000002", "c3000000-0000-4000-8000-000000000003"
 	b0, d9 := "b0000000-0000-4000-8000-000000000000", "d9000000-0000-4000-8000-000000000009"
@@ -1330,6 +1328,13 @@ func checkNegativeExpectations(pub ed25519.PublicKey, negs []NegativeVector) err
 // the advisory warnings raised (B4, B5) and a rejection error (B1, B2, B3).
 // Warning tokens are stable, machine-comparable strings so the Go and Python
 // validators can be checked for agreement rather than eyeballed.
+//
+// This is the ONE mirrored pair whose return order differs by design: Python's
+// check_tier_b returns (error, warnings). Go's convention puts the error last
+// and Python has no such convention, so each side follows its own; swapping
+// Python's order to match would touch every call site there and change no
+// behaviour. Every other mirrored pair agrees on argument and return order,
+// and a reader comparing the two files should expect that.
 //
 // B2 (prev_hash linkage) is applied here rather than only via a vector's
 // prev_sha256 field, because that field pins only the final link.

@@ -14,6 +14,20 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Go formatting (gofmt)
+        working-directory: go
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would rewrite these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Go static checks (go vet)
+        working-directory: go
+        run: go vet ./...
+
       - name: Go unit tests (skip rule, tip identity, Tier B)
         working-directory: go
         run: go test ./... -v
