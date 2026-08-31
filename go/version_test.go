@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -220,4 +223,140 @@ func TestValidateSkipsUnsupportedVectorEndToEnd(t *testing.T) {
 			t.Errorf("unmarked negative %q was not validated (no \"ok\" line found); it must not be skipped\noutput:\n%s", nv.Name, output)
 		}
 	}
+}
+
+// futureFormatFixture is testdata/future_format_fixture.json: two entries of a
+// format NEWER than this build, each carrying members it has no field for.
+// Shared with py/test_validate.py's mirror so both references are handed the
+// same bytes.
+//
+// The entries are held as generic maps because that is exactly what the
+// structs cannot express -- a Vector has no field for a v3 member, which is
+// the whole premise.
+type futureFormatFixture struct {
+	FormatVersion int            `json:"format_version"`
+	Vector        map[string]any `json:"vector"`
+	Negative      map[string]any `json:"negative"`
+}
+
+func loadFutureFormatFixture(t *testing.T) futureFormatFixture {
+	t.Helper()
+	data, err := os.ReadFile("../testdata/future_format_fixture.json")
+	if err != nil {
+		t.Fatalf("read future_format_fixture.json: %v", err)
+	}
+	var f futureFormatFixture
+	if err := json.Unmarshal(data, &f); err != nil {
+		t.Fatalf("unmarshal future_format_fixture.json: %v", err)
+	}
+	if f.FormatVersion <= supportedFormatVersion {
+		t.Fatalf("fixture format_version %d does not exceed supportedFormatVersion %d",
+			f.FormatVersion, supportedFormatVersion)
+	}
+	return f
+}
+
+// futureFormatSuite is the committed suite with the fixture's two entries
+// appended and format_version raised, marshalled through a generic map so the
+// v3 members survive.
+func futureFormatSuite(t *testing.T, f futureFormatFixture, minVer int) string {
+	t.Helper()
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suite map[string]any
+	if err := json.Unmarshal(raw, &suite); err != nil {
+		t.Fatal(err)
+	}
+	suite["format_version"] = f.FormatVersion
+	v, nv := maps.Clone(f.Vector), maps.Clone(f.Negative)
+	v["min_format_version"] = minVer
+	nv["min_format_version"] = minVer
+	suite["vectors"] = append(suite["vectors"].([]any), v)
+	suite["negatives"] = append(suite["negatives"].([]any), nv)
+	out, err := json.Marshal(suite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "future_format.json")
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A vector of a format this build does not support must be SKIPPED even when
+// it carries members this build has no field for -- which is the only
+// interesting case, since a future format that added nothing would need no
+// version bump. "Validators MUST skip ... and MUST NOT treat a skip as a
+// failure" is what allows new vector shapes to be added without breaking
+// existing validators, and strict-decoding the whole file before consulting
+// the skip rule broke exactly that: the file failed to load with
+// `json: unknown field "provenance"` and every vector in it, old and new
+// alike, went unchecked.
+//
+// Mirrors py/test_validate.py's
+// test_future_format_entry_is_skipped_not_strict_decoded, over the same
+// fixture bytes.
+func TestFutureFormatEntryIsSkippedNotStrictDecoded(t *testing.T) {
+	f := loadFutureFormatFixture(t)
+	suite := gen()
+
+	path := futureFormatSuite(t, f, f.FormatVersion)
+	var validateErr error
+	output := captureStdout(t, func() { validateErr = validate(path) })
+	if validateErr != nil {
+		t.Fatalf("a future-format entry must be skipped, not fail the file: %v\noutput:\n%s", validateErr, output)
+	}
+	assertStringSetsEqual(t, skippedNames(output),
+		[]string{f.Vector["name"].(string), f.Negative["name"].(string)},
+		"skipped vector/negative names")
+	// The skip must not cost the rest of the file: every committed entry is
+	// still checked. This is what catches "skip everything on a version
+	// mismatch" as much as it catches the load failure.
+	for _, v := range suite.Vectors {
+		if !bytes.Contains([]byte(output), []byte(fmt.Sprintf("ok  %s", v.Name))) {
+			t.Errorf("vector %q was not validated alongside the skipped future entry\noutput:\n%s", v.Name, output)
+		}
+	}
+	for _, nv := range suite.Negatives {
+		if !bytes.Contains([]byte(output), []byte(fmt.Sprintf("ok  %s", nv.Name))) {
+			t.Errorf("negative %q was not validated alongside the skipped future entry\noutput:\n%s", nv.Name, output)
+		}
+	}
+
+	// The control, and the reason the assertions above are not vacuous: the
+	// SAME entries at a version this build does support must be rejected, as
+	// unknown members. Without this the test would pass just as happily if
+	// those members were ones the structs already knew.
+	t.Run("not skipped, therefore rejected", func(t *testing.T) {
+		path := futureFormatSuite(t, f, supportedFormatVersion)
+		err := validate(path)
+		if err == nil {
+			t.Fatal("the fixture entries carry no member this build is unaware of; the skip assertion above proves nothing")
+		}
+		if !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("rejected, but not as an unknown member: %v", err)
+		}
+	})
+}
+
+// The validator's view of the file must not drift from the generator's. They
+// are two structs over one document -- suiteFile holds the entry arrays raw so
+// the skip rule can run before strict decoding -- and a member added to one
+// and not the other would be silently dropped on the way in or out.
+func TestSuiteFileMirrorsSuiteMembers(t *testing.T) {
+	jsonNames := func(v any) []string {
+		var out []string
+		rt := reflect.TypeOf(v)
+		for i := range rt.NumField() {
+			tag, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+			out = append(out, tag)
+		}
+		sort.Strings(out)
+		return out
+	}
+	assertStringSetsEqual(t, jsonNames(suiteFile{}), jsonNames(Suite{}),
+		"suiteFile vs Suite JSON member names")
 }

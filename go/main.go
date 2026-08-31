@@ -267,6 +267,88 @@ type Suite struct {
 	Negatives     []NegativeVector `json:"negatives"`
 }
 
+// suiteFile is the VALIDATOR's view of the same document: member for member
+// the Suite above, except that the two entry arrays are held as raw JSON.
+//
+// That one difference is the point. Decoding straight into Suite with
+// DisallowUnknownFields strict-decodes every entry before the skip rule is
+// ever consulted, so a vector of a NEWER format -- carrying a member this
+// build has no struct field for -- failed the whole file rather than being
+// skipped. That is precisely the case the MUST-skip rule exists for: "new
+// vector shapes can be added without breaking existing validators", and a
+// skip that MUST NOT be treated as a failure cannot survive being decoded
+// first. Holding the entries raw lets the skip decision come first and the
+// strict decode reach only the entries that will actually be checked.
+//
+// The envelope members have no skip semantics -- there is no per-file
+// "version I may ignore" -- so they stay strictly and eagerly decoded, and an
+// unknown member beside them still fails the file at load.
+// TestSuiteFileMirrorsSuiteMembers pins the two member sets together, so the
+// validator's view cannot drift from the generator's.
+type suiteFile struct {
+	FormatVersion int               `json:"format_version"`
+	Description   string            `json:"description"`
+	Algorithm     string            `json:"algorithm"`
+	SeedHex       string            `json:"signing_seed_hex"`
+	PublicKeyHex  string            `json:"public_key_hex"`
+	Vectors       []json.RawMessage `json:"vectors"`
+	Negatives     []json.RawMessage `json:"negatives"`
+}
+
+// entryHeader is the permissive first look at one `vectors` or `negatives`
+// entry: only what the skip decision and its log line need, read WITHOUT
+// DisallowUnknownFields so an entry of a newer format can be recognized as
+// skippable before any strictness rejects it.
+//
+// Just these two members, because these two are what the skip mechanism
+// itself is made of: a format that renamed or re-typed them would break
+// skipping for every existing validator, so it cannot. Everything else in the
+// entry is read only once the skip decision says the entry belongs to this
+// build.
+type entryHeader struct {
+	Name             string `json:"name"`
+	MinFormatVersion int    `json:"min_format_version"`
+}
+
+// loadedEntry is one entry after the skip decision. A skipped entry carries
+// its header and nothing else: it is never strict-decoded at all, which is
+// what "MUST NOT treat a skip as a failure" requires.
+type loadedEntry[T any] struct {
+	Header  entryHeader
+	Skipped bool
+	Entry   T // the zero value when Skipped
+}
+
+// loadEntries applies the skip rule to raw entries and strict-decodes only the
+// rest. Strictness on a CHECKED entry is unchanged and deliberate: an unknown
+// member is bytes the signature does not cover, so it fails the whole file
+// here exactly as it did when the decode was a single pass.
+func loadEntries[T any](raws []json.RawMessage, what string) ([]loadedEntry[T], error) {
+	out := make([]loadedEntry[T], 0, len(raws))
+	for i, raw := range raws {
+		var h entryHeader
+		// json.Unmarshal, not a strict Decoder: dropping the members this
+		// build has no field for is the entire reason this pass is separate
+		// from the one below.
+		if err := json.Unmarshal(raw, &h); err != nil {
+			return nil, fmt.Errorf("%s %d: %v", what, i, err)
+		}
+		le := loadedEntry[T]{Header: h}
+		if skipVector(h.MinFormatVersion, supportedFormatVersion) {
+			le.Skipped = true
+			out = append(out, le)
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&le.Entry); err != nil {
+			return nil, fmt.Errorf("%s %q: %v", what, h.Name, err)
+		}
+		out = append(out, le)
+	}
+	return out, nil
+}
+
 // mustCanonical returns a checkpoint's canonical bytes, panicking so a
 // malformed checkpoint can never reach the published file. `what` names the
 // vector under construction, so a panic says which one.
@@ -1508,23 +1590,28 @@ func validate(path string) error {
 	if err != nil {
 		return err
 	}
-	// Strict decoding. Struct decoding DROPS unknown members by default, so a
-	// key injected on a checkpoint, a tip or a signed chain prefix was decoded
-	// away, re-canonicalized without it, and accepted -- bytes the signature
-	// does not cover, and on the prefix path a forged history. Python holds the
-	// same rule by declaring the member set of each object explicitly; it does
-	// NOT lean on "canonicalizing as it arrives breaks the signature", which
-	// only rejects a member injected into an already-signed document and lets
-	// a re-signed one straight through.
+	// Strict decoding, in TWO stages: the envelope eagerly, the entries only
+	// after the skip rule has had its say. See suiteFile for why the order
+	// matters -- strict-decoding a vector of a newer format is exactly the
+	// failure the MUST-skip rule forbids.
+	//
+	// Strictness itself is unchanged. Struct decoding DROPS unknown members by
+	// default, so a key injected on a checkpoint, a tip or a signed chain
+	// prefix was decoded away, re-canonicalized without it, and accepted --
+	// bytes the signature does not cover, and on the prefix path a forged
+	// history. Python holds the same rule by declaring the member set of each
+	// object explicitly; it does NOT lean on "canonicalizing as it arrives
+	// breaks the signature", which only rejects a member injected into an
+	// already-signed document and lets a re-signed one straight through.
 	//
 	// The two references reject the same documents but describe them
 	// differently: this one fails the whole file at load, while Python reports
-	// per vector. That is the same divergence class as a wrong-typed scalar,
-	// and it is why no VECTOR can pin this rule -- a suite containing an
-	// unknown member cannot be loaded here at all. README's "Not pinned"
-	// section says so; go/encoding_test.go and its Python mirror hold the
-	// property instead.
-	var suite Suite
+	// a FAIL line naming the entry. That is the same divergence class as a
+	// wrong-typed scalar, and it is why no VECTOR can pin this rule -- a suite
+	// containing an unknown member on a CHECKED entry cannot be loaded here at
+	// all. README's "Not pinned" section says so; go/encoding_test.go and its
+	// Python mirror hold the property instead.
+	var suite suiteFile
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&suite); err != nil {
@@ -1538,6 +1625,16 @@ func validate(path string) error {
 	// attacker appends. dec.Token() must report io.EOF and nothing else.
 	if _, err := dec.Token(); err != io.EOF {
 		return fmt.Errorf("trailing data after the suite object: the file is not a single JSON document")
+	}
+	// Stage two: skip first, strict-decode second. Nothing below this point
+	// sees a skipped entry as anything but its header.
+	vectors, err := loadEntries[Vector](suite.Vectors, "vector")
+	if err != nil {
+		return err
+	}
+	negatives, err := loadEntries[NegativeVector](suite.Negatives, "negative")
+	if err != nil {
+		return err
 	}
 	if suite.FormatVersion > supportedFormatVersion {
 		fmt.Printf("  note: suite format_version=%d exceeds supported=%d; unsupported vectors will be skipped\n",
@@ -1556,29 +1653,30 @@ func validate(path string) error {
 	// class; TestValidateChecksEveryVectorAndNegative and its Python mirror
 	// recount the committed file independently and catch it too.
 	wantPositives, wantTierB, wantNegatives := 0, 0, 0
-	for _, v := range suite.Vectors {
-		if skipVector(v.MinFormatVersion, supportedFormatVersion) {
+	for _, lv := range vectors {
+		if lv.Skipped {
 			continue
 		}
 		wantPositives++
-		if len(v.Chain) != 0 || len(v.ExpectWarnings) != 0 {
+		if len(lv.Entry.Chain) != 0 || len(lv.Entry.ExpectWarnings) != 0 {
 			wantTierB++
 		}
 	}
-	for _, nv := range suite.Negatives {
-		if !skipVector(nv.MinFormatVersion, supportedFormatVersion) {
+	for _, ln := range negatives {
+		if !ln.Skipped {
 			wantNegatives++
 		}
 	}
 	gotPositives, gotTierB, gotNegatives := 0, 0, 0
 
 	prevExpected := ""
-	for i, v := range suite.Vectors {
-		if skipVector(v.MinFormatVersion, supportedFormatVersion) {
-			fmt.Printf("  skip %-34s requires format_version %d\n", v.Name, v.MinFormatVersion)
+	for i, lv := range vectors {
+		if lv.Skipped {
+			fmt.Printf("  skip %-34s requires format_version %d\n", lv.Header.Name, lv.Header.MinFormatVersion)
 			prevExpected = ""
 			continue
 		}
+		v := lv.Entry
 		if err := checkSchema(v.Input, v.MinFormatVersion); err != nil {
 			return fmt.Errorf("[%s] %v", v.Name, err)
 		}
@@ -1635,11 +1733,12 @@ func validate(path string) error {
 	}
 
 	// Negative vectors: each MUST be rejected, for the stated reason.
-	for _, nv := range suite.Negatives {
-		if skipVector(nv.MinFormatVersion, supportedFormatVersion) {
-			fmt.Printf("  skip %-34s requires format_version %d\n", nv.Name, nv.MinFormatVersion)
+	for _, ln := range negatives {
+		if ln.Skipped {
+			fmt.Printf("  skip %-34s requires format_version %d\n", ln.Header.Name, ln.Header.MinFormatVersion)
 			continue
 		}
+		nv := ln.Entry
 		got := rejectReason(pub, nv)
 		if got == "" {
 			return fmt.Errorf("[%s] accepted, but must be rejected (%s)", nv.Name, nv.Expect)

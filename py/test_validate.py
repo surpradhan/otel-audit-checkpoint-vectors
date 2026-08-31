@@ -1345,8 +1345,16 @@ def _unknown_member_cases():
     # Each case is (vector, fragment the FAIL line must contain). The fragment
     # is what separates "rejected by the schema rule" from "rejected because
     # the signature broke" -- and these signatures are all valid, so only the
-    # schema rule can be doing the work. The prefix paths report the vocabulary
-    # reason both references share, hence a different fragment.
+    # schema rule can be doing the work.
+    #
+    # All four fragments are the same now. They were not: the two prefix cases
+    # used to be reported through reject_reason's shared vocabulary
+    # ("chain context was rejected (schema)"), because the member check reached
+    # them only once validation was already under way. It now runs over every
+    # non-skipped entry BEFORE any of them is validated -- the position Go's
+    # strict decode occupies -- so all four positions report the member
+    # directly, and a defect that would also have failed for another reason can
+    # no longer hide behind that reason's token.
     return {
         "clean": (_positive(clean_cp), None),
         "on a checkpoint": (
@@ -1360,11 +1368,11 @@ def _unknown_member_cases():
             "unknown member"),
         "on a chain prefix's checkpoint": (
             _positive(tail_after(injected_pre), chain=[_sign(_priv(), injected_pre)]),
-            "chain context was rejected (schema)"),
+            "unknown member"),
         "on a chain prefix wrapper": (
             _positive(tail_after(pre),
                       chain=[dict(_sign(_priv(), pre), injected="forged history")]),
-            "chain context was rejected (schema)"),
+            "unknown member"),
     }
 
 
@@ -1516,6 +1524,89 @@ def test_stream_id_sorts_by_code_point_not_length():
     got = validate.canonical(cp).decode()
     assert got == WANT_SHORTER_LATER_CANONICAL, \
         f"canonical bytes:\n got:  {got}\n want: {WANT_SHORTER_LATER_CANONICAL}"
+
+
+def _load_future_format_fixture():
+    """testdata/future_format_fixture.json: two entries of a format NEWER than
+    this build, each carrying members it has no member set for. Shared with
+    go/version_test.go's mirror, so both references are handed the same
+    bytes."""
+    with open(os.path.join(HERE, "..", "testdata", "future_format_fixture.json")) as f:
+        fx = json.load(f)
+    assert fx["format_version"] > validate.SUPPORTED_FORMAT_VERSION, \
+        "fixture format_version must exceed SUPPORTED_FORMAT_VERSION"
+    return fx
+
+
+def _future_format_suite(fx, min_ver):
+    """The committed suite with the fixture's two entries appended at
+    `min_ver` and format_version raised."""
+    suite = _load_real_suite()
+    suite["format_version"] = fx["format_version"]
+    suite["vectors"].append(dict(fx["vector"], min_format_version=min_ver))
+    suite["negatives"].append(dict(fx["negative"], min_format_version=min_ver))
+    return suite
+
+
+def test_future_format_entry_is_skipped_not_strict_decoded():
+    """A vector of a format this build does not support must be SKIPPED even
+    when it carries members this build does not recognize -- which is the only
+    interesting case, since a future format that added nothing would need no
+    version bump. "Validators MUST skip ... and MUST NOT treat a skip as a
+    failure" is what lets new vector shapes be added without breaking existing
+    validators, and applying the member-set rule to the whole file before
+    consulting the skip rule broke exactly that. Mirrors
+    TestFutureFormatEntryIsSkippedNotStrictDecoded, over the same fixture
+    bytes."""
+    fx = _load_future_format_fixture()
+    real = _load_real_suite()
+    rc, output = _run_main_capturing_stdout(_future_format_suite(fx, fx["format_version"]))
+    assert rc == 0, f"a future-format entry must be skipped, not fail the file\n{output}"
+    assert _skipped_names(output) == sorted([fx["vector"]["name"], fx["negative"]["name"]]), \
+        f"skipped names: {_skipped_names(output)}\n{output}"
+    # The skip must not cost the rest of the file: every committed entry is
+    # still checked. This catches "skip everything on a version mismatch" as
+    # much as it catches the load failure.
+    for e in real["vectors"] + real["negatives"]:
+        assert f"ok  {e['name']}" in output, \
+            f"{e['name']!r} was not validated alongside the skipped future entry\n{output}"
+
+    # The control, and the reason the assertions above are not vacuous: the
+    # SAME entries at a version this build does support must be rejected, as
+    # unknown members. Without this the test would pass just as happily if
+    # those members were ones the schema already defined.
+    rc, output = _run_main_capturing_stdout(
+        _future_format_suite(fx, validate.SUPPORTED_FORMAT_VERSION))
+    assert rc != 0, \
+        f"the fixture entries carry no member this build is unaware of; the skip assertion proves nothing\n{output}"
+    assert "unknown member" in output, \
+        f"rejected, but not as an unknown member:\n{output}"
+
+
+def test_unknown_member_is_not_masked_by_the_expected_reason():
+    """An unknown member must be reported wherever it sits, including on a
+    negative that was ALREADY going to be rejected for the reason its `expect`
+    names.
+
+    reject_reason compares only the reason TOKEN, so an unknown member injected
+    into a negative whose `expect` is already "schema" still returned "schema",
+    matched, and the suite PASSED -- while Go refused to load the same file.
+    The member-set check now runs over every non-skipped entry before the
+    reason dispatch, which is the position that makes the two agree. Mirrors
+    TestUnknownMemberOnANegativeIsNotMaskedByItsExpectedReason."""
+    suite = _load_real_suite()
+    injected = None
+    for nv in suite["negatives"]:
+        if nv["expect"] == "schema":
+            nv["input"]["injected"] = "not covered by the signature"
+            injected = nv["name"]
+            break
+    assert injected, "no negative with expect 'schema' to inject into"
+    rc, output = _run_main_capturing_stdout(suite)
+    assert rc != 0, \
+        f"an unknown member on negative {injected!r} was accepted because it was already expected to fail for 'schema'\n{output}"
+    assert "unknown member" in output, \
+        f"negative {injected!r} was rejected, but not as an unknown member:\n{output}"
 
 
 def main():

@@ -212,11 +212,11 @@ checkpoint appears as a `chain` prefix (`genesis_empty_tips` supplies one only
 as a vector's own input); every `stream_id` in the suite is a 36-character
 UUID, so no vector compares two of different lengths and a validator that sorts
 by length before code point is indistinguishable from a correct one here; and
-an unknown member on a checkpoint, a tip, a
-chain prefix or a prefix wrapper is rejected by both references — each by an
-explicit member-set rule, Go's decoder and Python's declared sets — but the two
-report it differently, so no vector can express it; the same is true of a
-wrong-typed scalar (`"epoch": "1"`, `true`, `1.0`) and of a null `tips`
+an unknown member on a checkpoint, a tip, a chain prefix or a prefix wrapper is
+rejected by both references — each by an explicit member-set rule, Go's decoder
+and Python's declared sets — and both refuse the whole file rather than
+reporting a per-vector verdict, so no vector can express it; the same is true
+of a wrong-typed scalar (`"epoch": "1"`, `true`, `1.0`) and of a null `tips`
 element, which both references reject and neither can publish. These are gaps in what the suite currently constrains,
 not defects in the rules.
 
@@ -227,6 +227,15 @@ separator byte a flattened encoding would need. Unit tests in both references
 hold the two orderings no published vector separates: `a` against `a<NUL>`,
 which a NUL-separated flattened key gets backwards, and `aa` against `b`, which
 a length-before-code-point comparator gets backwards.
+
+The `min_format_version` skip decision is made before any structural rule is
+applied to an entry, and a skipped entry is never examined further. A vector of
+a newer format is exactly the one that may carry members the reading validator
+has no schema for, so applying the member-set rule first would fail the whole
+file on the first future vector — the opposite of what "MUST NOT treat a skip
+as a failure" is for. Conversely the member-set rule is applied to a whole
+non-skipped entry before that entry is validated, so a defect the entry's
+`expect` already names cannot mask an unknown member beside it.
 
 The two orderings belonging to the verifier's contract rather than to any
 single rule — the order of the warning list it reports and the order of the

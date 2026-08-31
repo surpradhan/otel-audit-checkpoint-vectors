@@ -155,29 +155,122 @@ _NEGATIVE_MEMBERS = frozenset({"name", "expect", "reason", "input", "signature",
 
 
 def check_envelope(suite):
-    """Reason the suite envelope is malformed, or None: the suite object, each
-    vector and each negative may carry only the members the schema defines.
+    """Reason the suite ENVELOPE is malformed, or None: the suite object may
+    carry only the members the schema defines, and `vectors`/`negatives` must
+    be arrays of objects.
 
-    Checked once over the whole file rather than per entry, because that is
-    what Go does -- its decoder refuses the document -- and because these
-    members are not covered by any signature, so nothing else would notice
-    them."""
+    Envelope only. The per-ENTRY member sets live in check_entries, which runs
+    after the skip decision, because a vector of a newer format is skipped and
+    a skipped entry's members must not be examined at all -- "MUST NOT treat a
+    skip as a failure". Go draws the line in the same place: its envelope
+    decode is strict and eager (there is no per-file version a validator may
+    ignore), its entry decodes strict and only for the entries it will check.
+
+    "Is it an object" stays here rather than moving with them, because Go
+    cannot skip past that either: it has to read min_format_version off every
+    entry to make the skip decision at all, and a non-object entry defeats
+    that in both references."""
     if not isinstance(suite, dict):
         return "the suite must be a JSON object"
     err = unknown_members(suite, _SUITE_MEMBERS, "the suite")
     if err:
         return err
-    for key, allowed, what in (("vectors", _VECTOR_MEMBERS, "a vector"),
-                               ("negatives", _NEGATIVE_MEMBERS, "a negative")):
+    for key, what in (("vectors", "a vector"), ("negatives", "a negative")):
         entries = suite.get(key) or []
         if not isinstance(entries, list):
             return f"{key} must be an array"
         for e in entries:
             if not isinstance(e, dict):
                 return f"{what} must be a JSON object"
-            err = unknown_members(e, allowed, f"{what} ({e.get('name', '?')!r})")
+    return None
+
+
+def check_checkpoint_members(cp, what: str):
+    """Reason for an unknown member on a checkpoint or on one of its tips, or
+    None. Shape problems below that -- a null `input`, a non-object, a
+    wrong-typed or null `tips` -- are check_schema's verdict, not this one, and
+    are passed over here so the two references keep reporting them the same
+    way."""
+    if not isinstance(cp, dict):
+        return None
+    err = unknown_members(cp, _CP_MEMBERS, what)
+    if err:
+        return err
+    tips = cp.get("tips")
+    if not isinstance(tips, list):
+        return None
+    for t in tips:
+        if not isinstance(t, dict):
+            continue
+        err = unknown_members(t, _TIP_MEMBERS, f"a tip on {what}")
+        if err:
+            return err
+    return None
+
+
+def check_entries(suite):
+    """Reason an entry this build will actually CHECK carries a member the
+    schema does not define, or None.
+
+    Two things about WHERE this runs, and both are the point of it.
+
+    After the skip decision: Go strict-decodes only the non-skipped entries and
+    never looks inside a skipped one, so this must not either. A future-format
+    vector carrying a member neither build knows is skipped by both -- which is
+    the whole promise of min_format_version, that new vector shapes can be
+    added without breaking existing validators.
+
+    Before the per-entry validation, unconditionally: reject_reason compares
+    only the reason TOKEN, so an unknown member injected into a negative whose
+    `expect` is already "schema" still returned "schema", matched, and the
+    suite PASSED -- while Go refused to load the same file. A pre-existing
+    defect must not mask an injected one. An unknown member is bytes the
+    signature does not cover; it is reported wherever it sits.
+
+    The positions covered are exactly the ones Go's strict decode reaches: the
+    entry itself, its checkpoint and that checkpoint's tips, each signed chain
+    prefix wrapper, and each prefix's checkpoint and tips."""
+    for key, allowed, what in (("vectors", _VECTOR_MEMBERS, "a vector"),
+                               ("negatives", _NEGATIVE_MEMBERS, "a negative")):
+        entries = suite.get(key) or []
+        if not isinstance(entries, list):
+            continue  # check_envelope's verdict, already returned above
+        for e in entries:
+            if not isinstance(e, dict):
+                continue  # likewise
+            named = f"{what} ({e.get('name', '?')!r})"
+            min_ver = e.get("min_format_version", 0)
+            # Type-gate before comparing: `>` against a str raises TypeError,
+            # which is a traceback here and a clean decode error in Go. It runs
+            # before the skip decision because the skip decision is what reads
+            # the member -- Go reads it off every entry too, skipped or not.
+            if isinstance(min_ver, bool) or not isinstance(min_ver, int):
+                return (f"min_format_version on {named} must be an integer, got "
+                        f"{type(min_ver).__name__}")
+            if skip_vector(min_ver, SUPPORTED_FORMAT_VERSION):
+                continue
+            err = unknown_members(e, allowed, named)
             if err:
                 return err
+            err = check_checkpoint_members(e.get("input"),
+                                           f"the checkpoint of {named}")
+            if err:
+                return err
+            chain = e.get("chain")
+            if not isinstance(chain, list):
+                continue
+            for sc in chain:
+                if not isinstance(sc, dict):
+                    continue  # verify_prefixes' verdict, not this one
+                err = unknown_members(sc, _SIGNED_CP_MEMBERS,
+                                      f"a signed chain prefix of {named}")
+                if err:
+                    return err
+                err = check_checkpoint_members(
+                    sc.get("input"),
+                    f"the checkpoint of a signed chain prefix of {named}")
+                if err:
+                    return err
     return None
 
 
@@ -414,6 +507,14 @@ def main() -> int:
         print(f"FAIL: {sys.argv[1]} is not a single JSON document: {e}")
         return 1
     err = check_envelope(suite)
+    if err:
+        print(f"FAIL: {err}")
+        return 1
+    # Structural member check over the entries this build will check, in the
+    # position Go's strict entry decode occupies: after the envelope, after the
+    # skip decision, before anything is validated or reported. Both references
+    # therefore refuse the same file, before printing a single "ok" line.
+    err = check_entries(suite)
     if err:
         print(f"FAIL: {err}")
         return 1

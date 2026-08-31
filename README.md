@@ -32,6 +32,19 @@ exceeds the version they support, and MUST NOT treat a skip as a failure.**
 This is what allows new vector shapes to be added without breaking existing
 validators.
 
+**The skip decision comes first — before any structural check, including the
+unknown-member rule below.** A vector of a newer format is precisely one that
+may carry members the reading validator has no schema for, so a validator that
+rejects unknown members *before* deciding whether to skip fails the whole file
+on the first future vector it meets and checks nothing in it, old vectors
+included. Both references therefore read only `name` and `min_format_version`
+off an entry to make the decision, and apply the member rules afterwards, to
+the entries they will actually check. `testdata/future_format_fixture.json`
+pins this in both languages: a version-3 vector and negative carrying
+unrecognized members on the entry, the checkpoint, a tip and a chain-prefix
+wrapper, alongside untouched version-1 and version-2 entries, which must be
+skipped while everything else still validates.
+
 `min_format_version` does double duty: besides gating whether a validator
 skips the vector, it is also that vector's own self-declared schema version,
 and it is what a validator checks the `epoch` field's presence against (see
@@ -115,17 +128,26 @@ The `null_epoch` and `null_tips` negatives pin the parts a vector can express
 — see each vector's entry below for exactly which reading it discriminates —
 and unit tests in both references hold the rest.
 
-**An unknown member is rejected** anywhere in the document: on a checkpoint,
-on a tip, on a signed `chain` prefix, on the prefix wrapper, on a vector or
-negative entry, and on the suite object itself. It is bytes the signature does
-not cover: a struct-decoding validator that drops the member re-canonicalizes
-the checkpoint *without* it and verifies a signature over bytes that are not
-the ones on the wire — on a prefix, that is a forged history the `prev_hash`
-linkage cannot see. Both references hold it as an explicit rule: Go through its
-decoder's `DisallowUnknownFields`, Python through a declared member set for
-each object in the schema. Neither leans on "the signature breaks anyway" —
-that only rejects a member injected into an *already-signed* document, and a
-forger re-signs.
+**An unknown member is rejected** anywhere in the document the validator
+reads: on a checkpoint, on a tip, on a signed `chain` prefix, on the prefix
+wrapper, on a vector or negative entry, and on the suite object itself. It is
+bytes the signature does not cover: a struct-decoding validator that drops the
+member re-canonicalizes the checkpoint *without* it and verifies a signature
+over bytes that are not the ones on the wire — on a prefix, that is a forged
+history the `prev_hash` linkage cannot see. Both references hold it as an
+explicit rule: Go through its decoder's `DisallowUnknownFields`, Python through
+a declared member set for each object in the schema. Neither leans on "the
+signature breaks anyway" — that only rejects a member injected into an
+*already-signed* document, and a forger re-signs.
+
+Two boundaries on it, and both references draw them in the same place. The
+rule covers the suite envelope and every **non-skipped** entry, not a skipped
+one — see the skip rule above. And it is applied to a whole entry **before**
+that entry is validated, not as one verdict among the others: a negative
+vector's `reason` token is what its `expect` is compared against, so an
+unknown member injected into a negative that was already going to be rejected
+for the reason it names would otherwise be masked by that reason and the suite
+would pass.
 No published vector can express this — see [Not pinned](#rules-hold-at-every-position--what-that-does-and-does-not-cover).
 
 **Rules an implementation must follow to reproduce the bytes:**
@@ -492,11 +514,12 @@ above.)
   assert the discriminating pair in both references instead, over the same
   expected canonical bytes.
 - **Unknown members, at the level of the published vectors.** Both references
-  reject a member the schema does not define (above), but they describe it
-  differently: Go fails the whole file while decoding, while Python reports the
-  vector it belongs to. A suite file containing an unknown member therefore
-  cannot be loaded by the Go reference at all, so the case is unpublishable as
-  a vector; `go/encoding_test.go` and `py/test_validate.py` inject a member on
+  reject a member the schema does not define (above) and both refuse the whole
+  file rather than reporting a per-vector verdict, so a suite file containing
+  one cannot be loaded at all and the case is unpublishable as a vector. (They
+  still word it differently — Go names the field its decoder tripped on,
+  Python the member set it violated.) `go/encoding_test.go` and
+  `py/test_validate.py` inject a member on
   a checkpoint, a tip, a chain prefix and a prefix wrapper in turn — each into
   a suite that is **re-signed afterwards**, so the signature is valid and only
   the schema rule can reject it — and require both references to reject, which

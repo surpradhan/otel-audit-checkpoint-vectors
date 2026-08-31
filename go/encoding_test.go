@@ -623,3 +623,52 @@ func TestStreamIDSortsByCodePointNotLength(t *testing.T) {
 		t.Fatalf("canonical bytes:\n got:  %s\n want: %s", cb, wantShorterLaterCanonical)
 	}
 }
+
+// An unknown member must be reported wherever it sits, including on a negative
+// vector that was ALREADY going to be rejected for the reason its `expect`
+// names. This reference fails the whole file while decoding, so it never had
+// the problem; the Python reference compared only the reason TOKEN, so an
+// unknown member injected into a negative whose `expect` is already "schema"
+// still returned "schema", matched, and PASSED. The two must agree, so both
+// hold the case.
+//
+// Mirrors py/test_validate.py's
+// test_unknown_member_is_not_masked_by_the_expected_reason.
+func TestUnknownMemberOnANegativeIsNotMaskedByItsExpectedReason(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suite map[string]any
+	if err := json.Unmarshal(raw, &suite); err != nil {
+		t.Fatal(err)
+	}
+	injected := ""
+	for _, e := range suite["negatives"].([]any) {
+		nv := e.(map[string]any)
+		if nv["expect"] != "schema" {
+			continue
+		}
+		nv["input"].(map[string]any)["injected"] = "not covered by the signature"
+		injected = nv["name"].(string)
+		break
+	}
+	if injected == "" {
+		t.Fatal("no negative with expect \"schema\" to inject into")
+	}
+	out, err := json.Marshal(suite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "masked.json")
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = validate(path)
+	if err == nil {
+		t.Fatalf("an unknown member on negative %q was accepted because it was already expected to fail for \"schema\"", injected)
+	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("negative %q was rejected, but not as an unknown member: %v", injected, err)
+	}
+}
