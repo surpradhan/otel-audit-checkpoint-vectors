@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"sort"
@@ -1471,6 +1472,15 @@ func validate(path string) error {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&suite); err != nil {
 		return err
+	}
+	// A Decoder reads ONE value and stops, so DisallowUnknownFields above says
+	// nothing about what follows the suite object: a second JSON document, or
+	// arbitrary text, was silently ignored and the file still PASSED. Python's
+	// json.load rejects the same file. A conformance suite is a single
+	// document, and "the bytes after the one I read" is exactly where an
+	// attacker appends. dec.Token() must report io.EOF and nothing else.
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("trailing data after the suite object: the file is not a single JSON document")
 	}
 	if suite.FormatVersion > supportedFormatVersion {
 		fmt.Printf("  note: suite format_version=%d exceeds supported=%d; unsupported vectors will be skipped\n",

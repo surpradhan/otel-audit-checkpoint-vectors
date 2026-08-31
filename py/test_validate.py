@@ -90,6 +90,27 @@ def _run_main_capturing_stdout(suite):
         os.unlink(path)
 
 
+def _run_main_on_raw(text):
+    """As above, but writes `text` verbatim. json.dump can only produce a
+    single well-formed document, so a file with trailing data after the suite
+    object -- the thing being tested -- cannot be built through it."""
+    fd, path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        old_argv = sys.argv
+        sys.argv = ["validate.py", path]
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                rc = validate.main()
+        finally:
+            sys.argv = old_argv
+        return rc, buf.getvalue()
+    finally:
+        os.unlink(path)
+
+
 def _skipped_names(output):
     return sorted(m.group(1) for m in SKIP_LINE_RE.finditer(output))
 
@@ -1200,6 +1221,28 @@ def test_unknown_member_is_rejected():
     # above are about the injected member.
     rc, output = _run_main_capturing_stdout(_load_real_suite())
     assert rc == 0, f"the committed suite no longer validates\n{output}"
+
+
+def test_trailing_data_after_the_suite_is_rejected():
+    """A conformance suite is ONE JSON document. json.load already refuses a
+    file with data appended after the suite object, but it did so by raising
+    JSONDecodeError out of main() -- a traceback, not a verdict -- while Go's
+    json.Decoder read one value, stopped, and PASSED the same file. Both
+    references must now print a FAIL line and return non-zero. Mirrors
+    TestTrailingDataAfterSuiteIsRejected."""
+    body = json.dumps(_load_real_suite())
+    # The premise: the same bytes with nothing appended pass, so the rejections
+    # below are about the trailing data and nothing else.
+    rc, output = _run_main_on_raw(body)
+    assert rc == 0, f"the unmodified suite must validate\n{output}"
+    for tail in ('{"format_version":9}',
+                 "this is not JSON at all",
+                 "\n\n[1,2,3]",
+                 '{"vectors":[],"negatives":[]}'):
+        rc, output = _run_main_on_raw(body + tail)
+        assert rc != 0, f"a file with {tail!r} appended was accepted\n{output}"
+        assert "FAIL" in output, \
+            f"{tail!r} was rejected without a FAIL line; a traceback is not a verdict\n{output}"
 
 
 # The same literal appears in go/encoding_test.go as wantNULCanonical: the two

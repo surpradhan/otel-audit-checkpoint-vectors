@@ -281,8 +281,17 @@ def main() -> int:
     if len(sys.argv) < 2:
         print("usage: python3 validate.py <vectors.json>")
         return 2
-    with open(sys.argv[1], "rb") as f:
-        suite = json.load(f)
+    # json.load already rejects a file carrying trailing data after the suite
+    # object ("Extra data") -- but as an uncaught traceback, which is not a
+    # verdict. Go now prints "FAIL: ..." and exits 1 for the same file, and a
+    # third party must not have to read a stack trace in one reference and a
+    # diagnosis in the other. Catching it here is the whole difference.
+    try:
+        with open(sys.argv[1], "rb") as f:
+            suite = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"FAIL: {sys.argv[1]} is not a single JSON document: {e}")
+        return 1
     if suite.get("format_version", 1) > SUPPORTED_FORMAT_VERSION:
         print(f"  note: suite format_version={suite['format_version']} exceeds "
               f"supported={SUPPORTED_FORMAT_VERSION}; unsupported vectors will be skipped")

@@ -314,3 +314,41 @@ func TestNULInStreamIDSortsByThePublishedRule(t *testing.T) {
 		t.Fatalf("canonical bytes:\n got:  %s\n want: %s", cb, wantNULCanonical)
 	}
 }
+
+// A conformance suite is ONE JSON document. A json.Decoder reads one value and
+// stops, so DisallowUnknownFields said nothing about what follows: appending a
+// second object -- or arbitrary text -- to the published file left it PASSING
+// here while Python's json.load rejected it. Mirrors
+// py/test_validate.py's test_trailing_data_after_the_suite_is_rejected.
+func TestTrailingDataAfterSuiteIsRejected(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	// The premise: the same bytes with nothing appended validate, so the
+	// rejections below are about the trailing data and nothing else.
+	clean := filepath.Join(dir, "clean.json")
+	if err := os.WriteFile(clean, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(clean); err != nil {
+		t.Fatalf("the unmodified suite must validate: %v", err)
+	}
+	for _, tail := range []string{
+		`{"format_version":9}`,          // a second, well-formed JSON document
+		"this is not JSON at all",       // arbitrary text
+		"\n\n[1,2,3]",                   // a document of another type, after blank lines
+		`{"vectors":[],"negatives":[]}`, // a suite-shaped second document
+	} {
+		t.Run(tail, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "trailing.json")
+			if err := os.WriteFile(path, append(append([]byte(nil), raw...), tail...), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := validate(path); err == nil {
+				t.Fatalf("a file with %q appended after the suite was accepted; it is not a single JSON document", tail)
+			}
+		})
+	}
+}
