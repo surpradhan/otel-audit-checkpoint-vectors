@@ -278,6 +278,29 @@ func mustSigBytes(sig, what string) []byte {
 	return raw
 }
 
+// decodeSig decodes a base64 signature and requires the encoding to be the
+// CANONICAL one, returning ok=false otherwise. It is the only base64 decode on
+// any verification path, so the three call sites cannot drift apart.
+//
+// The round trip is the check, not the decode. base64.StdEncoding.DecodeString
+// silently ignores embedded newlines and carriage returns by documented
+// behaviour, so a signature with a "\n" spliced into it decoded back to the
+// untampered 64 bytes and VERIFIED here, while Python's
+// b64decode(validate=True) rejected it -- the two references disagreeing on
+// third-party input, in the direction nothing tested because spliceStray only
+// ever used "!". .Strict() does not help: it enforces the padding BITS, not
+// the alphabet. Both decoders also ignore non-zero padding bits, so two
+// different signature strings decoded to the same bytes and both verified;
+// re-encoding and comparing rejects that class too, and the Python reference
+// mirrors this function exactly so the strictness stays symmetric.
+func decodeSig(s string) ([]byte, bool) {
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil || base64.StdEncoding.EncodeToString(raw) != s {
+		return nil, false
+	}
+	return raw, true
+}
+
 // signCP canonicalizes and signs a checkpoint, panicking on malformed input so
 // a bad vector can never be published.
 func signCP(priv ed25519.PrivateKey, cp Checkpoint) SignedCheckpoint {
@@ -1409,8 +1432,8 @@ func verifyPrefixes(pub ed25519.PublicKey, chain []SignedCheckpoint, minVer int)
 		if err != nil {
 			return nil, "canonical"
 		}
-		sig, err := base64.StdEncoding.DecodeString(sc.Signature)
-		if err != nil || !ed25519.Verify(pub, cb, sig) {
+		sig, ok := decodeSig(sc.Signature)
+		if !ok || !ed25519.Verify(pub, cb, sig) {
 			return nil, "signature"
 		}
 		full = append(full, sc.Input)
@@ -1428,8 +1451,8 @@ func rejectReason(pub ed25519.PublicKey, nv NegativeVector) string {
 	if err != nil {
 		return "canonical"
 	}
-	sig, err := base64.StdEncoding.DecodeString(nv.Signature)
-	if err != nil || !ed25519.Verify(pub, cb, sig) {
+	sig, ok := decodeSig(nv.Signature)
+	if !ok || !ed25519.Verify(pub, cb, sig) {
 		return "signature"
 	}
 	if len(nv.Chain) > 0 {
@@ -1538,9 +1561,9 @@ func validate(path string) error {
 		if hex.EncodeToString(sum[:]) != v.SHA256 {
 			return fmt.Errorf("[%s] sha256 mismatch", v.Name)
 		}
-		sig, err := base64.StdEncoding.DecodeString(v.Signature)
-		if err != nil {
-			return err
+		sig, ok := decodeSig(v.Signature)
+		if !ok {
+			return fmt.Errorf("[%s] signature is not canonically base64-encoded", v.Name)
 		}
 		if !ed25519.Verify(pub, cb, sig) {
 			return fmt.Errorf("[%s] signature does not verify", v.Name)

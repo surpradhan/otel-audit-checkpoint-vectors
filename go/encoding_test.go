@@ -9,12 +9,45 @@ import (
 	"testing"
 )
 
-// spliceStray puts a character outside the base64 alphabet into the middle of
-// an otherwise valid encoding. A decoder that skips unknown characters -- the
-// default in Python's base64.b64decode -- recovers the original signature from
-// the result, so this is a mutation that a lenient validator silently repairs
-// rather than one it merely fails to notice.
-func spliceStray(sig string) string { return sig[:10] + "!" + sig[10:] }
+// spliceStray splices `stray` into the middle of an otherwise valid encoding.
+// Every value below is one a decoder somewhere silently REPAIRS -- it recovers
+// the original signature from the result -- rather than one it merely fails to
+// notice, and the two references were lenient about different ones:
+//
+//	"!"   Python's base64.b64decode discards it by default; Go rejects it.
+//	"\n"  Go's base64.StdEncoding.DecodeString ignores it by documented
+//	      behaviour, and .Strict() does not change that; Python rejects it.
+//	"\r"  the same, in Go.
+//
+// Round 1 tested only "!" -- the direction Python had just been fixed in --
+// which is exactly why the newline direction survived it. Both are checked in
+// both languages now.
+var strayChars = []string{"!", "\n", "\r"}
+
+func spliceStray(sig, stray string) string { return sig[:10] + stray + sig[10:] }
+
+// b64Alphabet indexes a base64 value to its character, for mutatePadBits.
+const b64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+// mutatePadBits returns a DIFFERENT signature string that decodes to the same
+// 64 bytes, by flipping the padding bits of the last data character of an
+// 88-character Ed25519 signature. A 64-byte value leaves one byte in the final
+// group, so that character carries four bits no byte depends on; both
+// languages' decoders ignore them, and both therefore verified two distinct
+// strings for one signature. Only the round-trip comparison rejects it, which
+// is why the same round trip had to go into both references and not just Go.
+func mutatePadBits(t *testing.T, sig string) string {
+	t.Helper()
+	if len(sig) != 88 || !strings.HasSuffix(sig, "==") {
+		t.Fatalf("expected an 88-character Ed25519 signature ending in \"==\", got %q", sig)
+	}
+	i := len(sig) - 3
+	v := strings.IndexByte(b64Alphabet, sig[i])
+	if v < 0 {
+		t.Fatalf("signature character %q is not in the base64 alphabet", sig[i])
+	}
+	return sig[:i] + string(b64Alphabet[v^0x0f]) + sig[i+1:]
+}
 
 // A signature string that is not valid base64 must be rejected, not repaired.
 // The published signature_with_stray_character vector pins this end to end;
@@ -33,8 +66,17 @@ func TestStrayCharacterSignatureIsNotRepaired(t *testing.T) {
 	if got := rejectReason(pub, NegativeVector{Input: cp, Signature: good, MinFormatVersion: 2}); got != "" {
 		t.Fatalf("the unmutated signature must verify; rejectReason = %q", got)
 	}
-	if got := rejectReason(pub, NegativeVector{Input: cp, Signature: spliceStray(good), MinFormatVersion: 2}); got != "signature" {
-		t.Fatalf("a stray character in the signature: rejectReason = %q, want \"signature\"", got)
+	for _, stray := range strayChars {
+		mutated := spliceStray(good, stray)
+		if got := rejectReason(pub, NegativeVector{Input: cp, Signature: mutated, MinFormatVersion: 2}); got != "signature" {
+			t.Errorf("stray %q in the signature: rejectReason = %q, want \"signature\"", stray, got)
+		}
+	}
+	// Same bytes, different string: the padding bits of the last data
+	// character. Nothing about the ALPHABET is wrong here, so a decoder that
+	// only checks the alphabet accepts it -- which both references did.
+	if got := rejectReason(pub, NegativeVector{Input: cp, Signature: mutatePadBits(t, good), MinFormatVersion: 2}); got != "signature" {
+		t.Errorf("non-canonical padding bits: rejectReason = %q, want \"signature\"", got)
 	}
 }
 
@@ -51,9 +93,16 @@ func TestStrayCharacterPrefixSignatureIsNotRepaired(t *testing.T) {
 	if _, reason := verifyPrefixes(pub, []SignedCheckpoint{prefix}, 2); reason != "" {
 		t.Fatalf("the unmutated prefix must verify; reason = %q", reason)
 	}
-	prefix.Signature = spliceStray(prefix.Signature)
+	good := prefix.Signature
+	for _, stray := range strayChars {
+		prefix.Signature = spliceStray(good, stray)
+		if _, reason := verifyPrefixes(pub, []SignedCheckpoint{prefix}, 2); reason != "signature" {
+			t.Errorf("stray %q in a prefix signature: reason = %q, want \"signature\"", stray, reason)
+		}
+	}
+	prefix.Signature = mutatePadBits(t, good)
 	if _, reason := verifyPrefixes(pub, []SignedCheckpoint{prefix}, 2); reason != "signature" {
-		t.Fatalf("a stray character in a prefix signature: reason = %q, want \"signature\"", reason)
+		t.Errorf("non-canonical padding bits in a prefix signature: reason = %q, want \"signature\"", reason)
 	}
 }
 
@@ -367,5 +416,54 @@ func TestTrailingDataAfterSuiteIsRejected(t *testing.T) {
 				t.Fatalf("a file with %q appended after the suite was accepted; it is not a single JSON document", tail)
 			}
 		})
+	}
+}
+
+// The third decode site: the positive path in validate(). rejectReason and
+// verifyPrefixes are covered above, but a must-accept vector's own signature
+// is decoded separately, and a strict decode in two places out of three leaves
+// exactly one lenient. End to end on the generated suite, which is the shape a
+// third party actually hands the validator. Mirrors
+// py/test_validate.py's test_non_canonical_signature_encoding_is_rejected.
+func TestNonCanonicalSignatureEncodingIsRejectedEndToEnd(t *testing.T) {
+	mutations := map[string]func(string) string{}
+	for _, stray := range strayChars {
+		mutations["stray "+stray] = func(sig string) string { return spliceStray(sig, stray) }
+	}
+	mutations["padding bits"] = func(sig string) string { return mutatePadBits(t, sig) }
+
+	for name, mutate := range mutations {
+		for _, where := range []string{"a positive vector's own signature", "a chain prefix's signature"} {
+			t.Run(name+" in "+where, func(t *testing.T) {
+				suite := gen()
+				switch where {
+				case "a positive vector's own signature":
+					suite.Vectors[0].Signature = mutate(suite.Vectors[0].Signature)
+				default:
+					done := false
+					for i := range suite.Vectors {
+						if len(suite.Vectors[i].Chain) > 0 {
+							suite.Vectors[i].Chain[0].Signature = mutate(suite.Vectors[i].Chain[0].Signature)
+							done = true
+							break
+						}
+					}
+					if !done {
+						t.Fatal("no vector with a chain prefix to mutate")
+					}
+				}
+				raw, err := json.Marshal(suite)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(t.TempDir(), "mutated.json")
+				if err := os.WriteFile(path, raw, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := validate(path); err == nil {
+					t.Fatal("a non-canonically encoded signature was accepted; the decoder repaired it")
+				}
+			})
+		}
 	}
 }

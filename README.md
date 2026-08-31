@@ -333,6 +333,19 @@ The last group leaves the position axis behind and pins what a validator reads
   vector, so a lenient validator does not merely miss the mutation, it repairs
   it. Rejected: signature.
 
+**The signature must carry the canonical base64 encoding of its bytes**, not
+merely *an* encoding that decodes to them. Both references decode and then
+re-encode, comparing the result against the string on the wire. Two mutation
+classes need it, and each was silently repaired by exactly one of the two
+before: Go's `base64.StdEncoding.DecodeString` ignores embedded newlines and
+carriage returns by documented behaviour (and `.Strict()` does not change that
+— it enforces the padding *bits*, not the alphabet), while Python's
+`b64decode(validate=True)` rejects them; and *both* ignored non-canonical
+padding bits, so two different signature strings decoded to the same 64 bytes
+and both verified. The round trip is what makes one signature have exactly one
+spelling. `go/encoding_test.go` and `py/test_validate.py` splice `!`, `\n` and
+`\r` and flip the padding bits, at all three decode sites in each reference.
+
 ## Cross-checkpoint rules
 
 Everything above judges one checkpoint (against its signature, or its immediate

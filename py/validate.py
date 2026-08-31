@@ -170,6 +170,32 @@ def check_schema(cp, min_ver: int):
     return check_epoch_presence(cp, min_ver)
 
 
+def decode_signature(s) -> bytes:
+    """Decode a base64 signature, requiring the encoding to be the CANONICAL
+    one. Raises ValueError (or TypeError for a non-string) otherwise; every
+    caller already folds both into reason "signature", as Go does.
+
+    The round trip is the check, not the decode, and it mirrors Go's decodeSig
+    byte for byte. Go's base64.StdEncoding.DecodeString ignores embedded
+    newlines and carriage returns by documented behaviour, so a signature with
+    a "\n" spliced into it verified there and was rejected here -- and .Strict()
+    does not fix it, since it enforces the padding BITS, not the alphabet.
+    Making Go strict by round trip without doing the same here would only move
+    the divergence: both decoders ignore non-zero padding bits, so two
+    different signature STRINGS decode to the same 64 bytes and both verify.
+    Re-encoding and comparing closes both classes, in both references.
+
+    validate=True stays: it is what rejects the stray "!" of the published
+    signature_with_stray_character vector as a decode failure rather than
+    silently discarding it, and it is a narrower, clearer error than the round
+    trip alone would give.
+    """
+    raw = base64.b64decode(s, validate=True)
+    if base64.b64encode(raw).decode("ascii") != s:
+        raise ValueError("signature is not canonically base64-encoded")
+    return raw
+
+
 def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
     """Check a vector's preceding chain context, returning (prefixes, reason);
     reason is "" on success.
@@ -216,14 +242,11 @@ def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
             # binascii.Error (a ValueError) for non-base64 input, TypeError for
             # a non-string: Go folds a base64 decode failure into "signature"
             # via `err != nil || !Verify`, so this must too.
-            # validate=True is load-bearing, not decoration. The default
-            # (validate=False) DISCARDS characters outside the base64 alphabet,
-            # so a signature with a stray character spliced into it decodes
-            # back to the untampered bytes and verifies here, while Go's
-            # base64.StdEncoding.DecodeString returns "illegal base64 data" and
-            # rejects. A tampered signature accepted here and rejected there is
-            # the two references disagreeing on third-party input.
-            pub.verify(base64.b64decode(sc.get("signature", ""), validate=True), scb)
+            # decode_signature, not a bare b64decode: a lenient or merely
+            # alphabet-checking decode silently repairs a mutated signature
+            # string, and the two references must repair exactly the same set
+            # of them -- which is none. See its docstring.
+            pub.verify(decode_signature(sc.get("signature", "")), scb)
         except (InvalidSignature, ValueError, TypeError):
             return ([], "signature")
         full.append(cp)
@@ -304,9 +327,9 @@ def reject_reason(pub, nv):
     except ValueError:
         return "canonical"
     try:
-        # validate=True: see verify_prefixes. A lenient decode silently
+        # decode_signature: see verify_prefixes. A lenient decode silently
         # repairs a mutated signature string.
-        pub.verify(base64.b64decode(nv.get("signature", ""), validate=True), cb)
+        pub.verify(decode_signature(nv.get("signature", "")), cb)
     except (InvalidSignature, ValueError, TypeError):
         return "signature"
     if nv.get("chain"):
@@ -394,7 +417,7 @@ def main() -> int:
             print(f"FAIL [{v['name']}] sha256 mismatch")
             return 1
         try:
-            pub.verify(base64.b64decode(v["signature"], validate=True), cb)
+            pub.verify(decode_signature(v["signature"]), cb)
         except (InvalidSignature, ValueError, TypeError):
             print(f"FAIL [{v['name']}] signature does not verify")
             return 1

@@ -1076,13 +1076,42 @@ def test_validate_checks_every_vector_and_negative():
 # --- Encoding of the signature string (round 6) ----------------------------
 
 
-def _splice_stray(sig):
-    """Put a character outside the base64 alphabet into the middle of an
-    otherwise valid encoding. A decoder that skips unknown characters -- the
-    default in base64.b64decode -- recovers the ORIGINAL signature from the
-    result, so this is a mutation a lenient validator silently repairs rather
-    than one it merely fails to notice. Mirrors go's spliceStray."""
-    return sig[:10] + "!" + sig[10:]
+# Every character here is one a decoder somewhere silently REPAIRS -- it
+# recovers the original signature from the result -- rather than one it merely
+# fails to notice, and the two references were lenient about different ones:
+#
+#   "!"   base64.b64decode discards it by default; Go rejects it.
+#   "\n"  Go's base64.StdEncoding.DecodeString ignores it by documented
+#         behaviour, and .Strict() does not change that; this one rejects it.
+#   "\r"  the same, in Go.
+#
+# Round 1 tested only "!" -- the direction this reference had just been fixed
+# in -- which is exactly why the newline direction survived it. Mirrors go's
+# strayChars.
+STRAY_CHARS = ("!", "\n", "\r")
+
+B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+def _splice_stray(sig, stray):
+    """Splice `stray` into the middle of an otherwise valid encoding. Mirrors
+    go's spliceStray."""
+    return sig[:10] + stray + sig[10:]
+
+
+def _mutate_pad_bits(sig):
+    """A DIFFERENT signature string that decodes to the same 64 bytes, by
+    flipping the padding bits of the last data character of an 88-character
+    Ed25519 signature. A 64-byte value leaves one byte in the final group, so
+    that character carries four bits no byte depends on; both languages'
+    decoders ignore them, and both therefore verified two distinct strings for
+    one signature. Only a round-trip comparison rejects it, which is why the
+    same round trip had to go into both references. Mirrors go's
+    mutatePadBits."""
+    assert len(sig) == 88 and sig.endswith("=="), \
+        f"expected an 88-character Ed25519 signature ending in '==', got {sig!r}"
+    i = len(sig) - 3
+    return sig[:i] + B64_ALPHABET[B64_ALPHABET.index(sig[i]) ^ 0x0F] + sig[i + 1:]
 
 
 def test_stray_character_signature_is_not_repaired():
@@ -1101,10 +1130,19 @@ def test_stray_character_signature_is_not_repaired():
     nv = {"input": cp, "signature": good, "min_format_version": 2}
     assert validate.reject_reason(pub, nv) == "", \
         "the unmutated signature must verify, or the assertion below proves nothing"
-    nv = {"input": cp, "signature": _splice_stray(good), "min_format_version": 2}
+    for stray in STRAY_CHARS:
+        nv = {"input": cp, "signature": _splice_stray(good, stray),
+              "min_format_version": 2}
+        got = validate.reject_reason(pub, nv)
+        assert got == "signature", \
+            f"stray {stray!r} in the signature: reject_reason={got!r}, want 'signature'"
+    # Same bytes, different string: the padding bits of the last data
+    # character. Nothing about the ALPHABET is wrong here, so a decoder that
+    # only checks the alphabet accepts it -- which both references did.
+    nv = {"input": cp, "signature": _mutate_pad_bits(good), "min_format_version": 2}
     got = validate.reject_reason(pub, nv)
     assert got == "signature", \
-        f"a stray character in the signature: reject_reason={got!r}, want 'signature'"
+        f"non-canonical padding bits: reject_reason={got!r}, want 'signature'"
 
 
 def test_stray_character_prefix_signature_is_not_repaired():
@@ -1118,10 +1156,47 @@ def test_stray_character_prefix_signature_is_not_repaired():
     prefix = _sign(priv, cps[0])
     _, reason = validate.verify_prefixes(pub, [prefix], 2)
     assert reason == "", f"the unmutated prefix must verify; reason={reason!r}"
-    prefix = dict(prefix, signature=_splice_stray(prefix["signature"]))
-    _, reason = validate.verify_prefixes(pub, [prefix], 2)
+    good = prefix["signature"]
+    for stray in STRAY_CHARS:
+        mutated = dict(prefix, signature=_splice_stray(good, stray))
+        _, reason = validate.verify_prefixes(pub, [mutated], 2)
+        assert reason == "signature", \
+            f"stray {stray!r} in a prefix signature: reason={reason!r}, want 'signature'"
+    mutated = dict(prefix, signature=_mutate_pad_bits(good))
+    _, reason = validate.verify_prefixes(pub, [mutated], 2)
     assert reason == "signature", \
-        f"a stray character in a prefix signature: reason={reason!r}, want 'signature'"
+        f"non-canonical padding bits in a prefix signature: reason={reason!r}, want 'signature'"
+
+
+def test_non_canonical_signature_encoding_is_rejected():
+    """The third decode site: the positive path in main(). reject_reason and
+    verify_prefixes are covered above, but a must-accept vector's own signature
+    is decoded separately, and a strict decode in two places out of three
+    leaves exactly one lenient. End to end on the committed suite, which is the
+    shape a third party actually hands the validator. Mirrors
+    TestNonCanonicalSignatureEncodingIsRejectedEndToEnd."""
+    mutations = {f"stray {stray!r}": (lambda sig, c=stray: _splice_stray(sig, c))
+                 for stray in STRAY_CHARS}
+    mutations["padding bits"] = _mutate_pad_bits
+
+    def on_own_signature(suite, mutate):
+        suite["vectors"][0]["signature"] = mutate(suite["vectors"][0]["signature"])
+
+    def on_prefix_signature(suite, mutate):
+        for v in suite["vectors"]:
+            if v.get("chain"):
+                v["chain"][0]["signature"] = mutate(v["chain"][0]["signature"])
+                return
+        raise AssertionError("no vector with a chain prefix to mutate")
+
+    for name, mutate in mutations.items():
+        for where, inject in (("a positive vector's own signature", on_own_signature),
+                              ("a chain prefix's signature", on_prefix_signature)):
+            suite = _load_real_suite()
+            inject(suite, mutate)
+            rc, output = _run_main_capturing_stdout(suite)
+            assert rc != 0, \
+                f"{name} in {where} was accepted; the decoder repaired it\n{output}"
 
 
 # --- Present-but-null members (round 6) ------------------------------------
