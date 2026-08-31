@@ -467,3 +467,52 @@ func TestNonCanonicalSignatureEncodingIsRejectedEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// A JSON null tip element is not a zero tip. Go's UnmarshalJSON convention
+// leaves the zero value for null, which made `"tips": [null]` decode into a
+// full tip of zero values and validate at version 1 -- while the Python
+// reference, which type-checks the element, rejected it at every version. The
+// two agreed at version 2 only by accident: the zero tip has no epoch, so the
+// epoch-required rule caught it there. Mirrors
+// py/test_validate.py's test_null_tip_element_rejected_at_every_version.
+func TestNullTipElementRejected(t *testing.T) {
+	var tip Tip
+	if err := json.Unmarshal([]byte(`null`), &tip); err == nil {
+		t.Fatal("a null tip element was accepted; a null is not a tip")
+	}
+	// It is the ELEMENT that must be rejected, so the enclosing checkpoint
+	// fails too -- decoding a tip in isolation is not where a suite arrives.
+	for _, minVer := range []int{1, 2} {
+		var cp Checkpoint
+		body := `{"prev_hash":"` + sha256Empty + `","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":[null]}`
+		if err := json.Unmarshal([]byte(body), &cp); err == nil {
+			t.Fatalf("minVer=%d: a checkpoint with a null tip element decoded cleanly into %+v", minVer, cp.Tips)
+		}
+	}
+	// The contrast: a real tip object still decodes, so the rejection above is
+	// about null specifically and not about the method refusing everything.
+	var ok Tip
+	if err := json.Unmarshal([]byte(`{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"s1","tip_hash":"aa"}`), &ok); err != nil {
+		t.Fatalf("an ordinary tip must still decode: %v", err)
+	}
+}
+
+// A wrong-typed epoch must produce a clean rejection in both references, not a
+// decode panic in one and a traceback in the other. Go's *int rejects every
+// value below while decoding; the Python mirror
+// (test_wrong_typed_epoch_returns_a_reason) type-gates before comparing,
+// because `ep < 0` against a str raised TypeError and `epoch: true` /
+// `epoch: 1.0` passed there while failing here.
+func TestWrongTypedEpochIsRejectedWhileDecoding(t *testing.T) {
+	for _, raw := range []string{`"1"`, `[1]`, `true`, `1.0`, `{"a":1}`} {
+		var tip Tip
+		body := `{"entry_count":1,"epoch":` + raw + `,"sequence_number":1,"stream_id":"s1","tip_hash":"aa"}`
+		if err := json.Unmarshal([]byte(body), &tip); err == nil {
+			t.Errorf("epoch %s was accepted; epoch must be an integer", raw)
+		}
+	}
+	var tip Tip
+	if err := json.Unmarshal([]byte(`{"entry_count":1,"epoch":3,"sequence_number":1,"stream_id":"s1","tip_hash":"aa"}`), &tip); err != nil {
+		t.Fatalf("an integer epoch must still decode: %v", err)
+	}
+}

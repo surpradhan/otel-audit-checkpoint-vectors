@@ -1220,6 +1220,48 @@ def test_null_epoch_rejected_at_every_version():
             "an absent epoch must stay legal at version 1"
 
 
+def test_null_tip_element_rejected_at_every_version():
+    """A JSON null tip ELEMENT is not a zero tip. This reference type-checks
+    the element and rejected it at every version; Go's UnmarshalJSON convention
+    left the zero value for null, so `"tips": [null]` decoded into a full tip
+    of zero values and VALIDATED at version 1. The two agreed at version 2 only
+    by accident -- the zero tip has no epoch, so the epoch-required rule caught
+    it there. Mirrors TestNullTipElementRejected."""
+    for min_ver in (1, 2):
+        cp = _cp(1, _pos_ts(100), [None])
+        assert validate.check_schema(cp, min_ver) is not None, \
+            f"min_ver={min_ver}: a null tip element was accepted; null is not a tip"
+    # The contrast: a real tip object is still legal, so the rejection above is
+    # about null specifically.
+    assert validate.check_schema(_cp(1, _pos_ts(100),
+                                     [_tip(_pos_stream(1), 0, 1, 1, "aa")]), 2) is None, \
+        "an ordinary tip must stay legal"
+
+
+def test_wrong_typed_epoch_returns_a_reason():
+    """check_epoch_presence must return a reason, never raise -- Go returns a
+    clean decode error for every value below. `ep < 0` against a str, a list or
+    a dict raised TypeError here, and `epoch: true` / `epoch: 1.0` PASSED (bool
+    is an int subclass, and a float compares fine against 0) while Go rejected
+    both. Mirrors TestWrongTypedEpochIsRejectedWhileDecoding."""
+    for ep in ("1", [1], True, False, 1.0, {"a": 1}):
+        for min_ver in (1, 2):
+            cp = _cp(1, _pos_ts(100),
+                     [dict(_tip(_pos_stream(1), 0, 1, 1, "aa"), epoch=ep)])
+            try:
+                err = validate.check_schema(cp, min_ver)
+            except Exception as e:  # noqa: BLE001 -- a raise IS the failure here
+                raise AssertionError(
+                    f"min_ver={min_ver}, epoch={ep!r}: raised {type(e).__name__}; "
+                    "this path must return a reason, never raise") from e
+            assert err is not None, \
+                f"min_ver={min_ver}: epoch={ep!r} was accepted; epoch must be an integer"
+    # The contrast: an ordinary integer epoch is still legal at v2.
+    assert validate.check_schema(
+        _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 3, 1, 1, "aa")]), 2) is None, \
+        "an integer epoch must stay legal"
+
+
 def test_null_tips_rejected():
     """A present-but-null tips member is not an empty array: canonicalization
     normalizes it to [], so one signature would cover two distinct documents,

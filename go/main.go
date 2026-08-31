@@ -73,6 +73,17 @@ type tipFields Tip
 // would be the one place the suite-level strictness does not reach -- and an
 // unknown member is bytes the signature does not cover.
 func (t *Tip) UnmarshalJSON(b []byte) error {
+	// A JSON null is not a tip. Go's convention is that UnmarshalJSON(null) is
+	// a no-op leaving the zero value; that convention is deliberately
+	// overridden here, the same kind of deliberate override as the
+	// DisallowUnknownFields below. Otherwise `"tips": [null]` decoded into a
+	// zero Tip, canonicalized as a full object of zero values, and was
+	// ACCEPTED at version 1 -- where the Python reference, which type-checks
+	// the element, rejects it. At version 2 the two agreed only by accident:
+	// the zero tip carries no epoch, so the epoch-required rule caught it.
+	if string(bytes.TrimSpace(b)) == "null" {
+		return fmt.Errorf("a tip must be a JSON object; null is not a tip")
+	}
 	var tf tipFields
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()

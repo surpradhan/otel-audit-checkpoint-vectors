@@ -80,7 +80,12 @@ def skip_vector(min_ver: int, supported_ver: int) -> bool:
 def check_epoch_presence(cp: dict, min_ver: int):
     """Spec 5a boundary: epoch required at v2+, absent at v1. Without this the
     absent-vs-zero distinction is unenforced spec text, and a v2 tip missing
-    epoch would silently validate as 0."""
+    epoch would silently validate as 0.
+
+    Like every reason-returning function here it must return a reason, never
+    raise: Go's decoder gives a clean error for a wrong-typed epoch, and a
+    traceback in one reference where the other prints a diagnosis is the two
+    disagreeing on third-party input."""
     for t in (cp.get("tips") or []):
         sid = t.get("stream_id", "")
         # Present-but-null is neither an epoch nor an absent epoch. Rejecting
@@ -94,6 +99,15 @@ def check_epoch_presence(cp: dict, min_ver: int):
         # member twice under two different rules; `ep is None` is exactly what
         # Go's *int reports once null is out of the way.
         ep = t.get("epoch")
+        # Type-gate before comparing. `ep < 0` against a str, list or dict
+        # raises TypeError, which the contract above forbids; and bool is an
+        # int subclass while a float compares fine against 0, so `epoch: true`
+        # and `epoch: 1.0` passed here while Go's *int rejected both with
+        # "cannot unmarshal". One gate, in one place, rather than a defence at
+        # every comparison below.
+        if ep is not None and (isinstance(ep, bool) or not isinstance(ep, int)):
+            return (f"stream {sid!r}: epoch must be an integer, got "
+                    f"{type(ep).__name__}")
         if min_ver >= 2 and ep is None:
             return f"stream {sid!r}: epoch required at format_version >= 2"
         if min_ver < 2 and ep is not None:

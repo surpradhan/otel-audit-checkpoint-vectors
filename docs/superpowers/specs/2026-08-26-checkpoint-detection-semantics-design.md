@@ -212,7 +212,9 @@ checkpoint appears as a `chain` prefix (`genesis_empty_tips` supplies one only
 as a vector's own input); and an unknown member on a checkpoint, a tip, a
 chain prefix or a prefix wrapper is rejected by both references — each by an
 explicit member-set rule, Go's decoder and Python's declared sets — but the two
-report it differently, so no vector can express it. These are gaps in what the suite currently constrains,
+report it differently, so no vector can express it; the same is true of a
+wrong-typed scalar (`"epoch": "1"`, `true`, `1.0`) and of a null `tips`
+element, which both references reject and neither can publish. These are gaps in what the suite currently constrains,
 not defects in the rules.
 
 The tip-identity key is compared as a pair — a comparable struct in Go, a tuple

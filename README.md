@@ -472,6 +472,16 @@ above.)
   the schema rule can reject it — and require both references to reject, which
   is the strongest instrument available for it.
 
+- **Wrong-typed scalars, at the level of the published vectors.** `"epoch":
+  "1"`, `"epoch": true`, `"epoch": 1.0` and a null `tips` *element* are
+  rejected by both references, but — like unknown members — by different
+  mechanisms: Go's decoder refuses the whole file, while Python returns a
+  per-tip schema reason. So no vector can carry one. `go/encoding_test.go` and
+  `py/test_validate.py` assert both directions instead. (Getting this wrong is
+  not hypothetical: `true` and `1.0` were *accepted* by the Python reference
+  until this was written down, because `bool` is an `int` subclass and a float
+  compares fine against `0`.)
+
 - **The version-1-carrying-`epoch` direction.** A version-2 tip missing
   `epoch` is published as a vector (`missing_epoch_in_v2`); the mirror-image
   case — a version-1 vector that *carries* an `epoch` — is not, and cannot be.
