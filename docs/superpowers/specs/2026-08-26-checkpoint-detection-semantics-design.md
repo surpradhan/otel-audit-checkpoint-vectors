@@ -148,16 +148,108 @@ not JCS, if challenged.
 
 | # | Rule | Detects | Strength |
 |---|---|---|---|
-| B1 | `seq` increments by exactly 1 | dropped or replayed checkpoint | hard |
-| B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes | reordering, forking | hard (have) |
+| B1 | `seq` increments by exactly 1, at **every** transition of the assembled chain | dropped or replayed checkpoint | hard |
+| B2 | `prev_hash` equals SHA-256 of the previous checkpoint's canonical bytes, at **every** transition of the assembled chain including between prefixes | reordering, forking | hard |
 | B3 | `(stream_id, epoch)` appears at most once in the chain | re-commit within a generation; **same-epoch** rollback | hard |
-| B4 | Same `stream_id` under a different `epoch` | at-least-once re-delivery; **cross-epoch** rollback | **advisory** |
-| B5 | `timestamp` non-decreasing across the chain | clock regression | **advisory** — the operator controls the clock |
+| B4 | A stream's `epoch` differs from its previous committed `epoch` (same checkpoint or an earlier one), in **either direction** | at-least-once re-delivery; **cross-epoch** rollback | **advisory** |
+| B5 | `timestamp` non-decreasing against the **immediate predecessor**, at every transition | clock regression | **advisory** — the operator controls the clock |
+
+B4 fires on an epoch **difference**, not an increase: a stream re-committed
+under an older generation is the most rollback-shaped case B4 exists to surface,
+and B3 does not cover it, since `(s, 5)` and `(s, 3)` are distinct identities.
+
+B4 is defined **per transition**, not per checkpoint pair. Two commits of one
+stream at different epochs raise it whether they land in the same checkpoint or
+in two, because the operational fact reported — the producer's generation
+changed between those commits — is identical either way; scoping it to chains
+would make the warning depend on the producer's batching, which is exactly the
+input-shape dependence this design removes. It is emitted once per transition,
+so a stream committed at three epochs in one checkpoint yields two identical
+`B4:<stream_id>` tokens.
+
+Because warnings are compared as ordered lists, tips are walked in
+`(stream_id, epoch)` order rather than input order: a checkpoint's tips may
+arrive unsorted, and an input-order walk would let that order decide the
+sequence of `B4` tokens when two different streams each change epoch.
+
+That ordered comparison is a stated requirement of a conformant validator, not
+one the published vectors mechanically enforce. For every `expect_warnings`
+vector in the suite, the warnings a correct validator emits are already in the
+expected order — that is what makes the vector correct — so a validator that
+compares warnings as an unordered multiset also passes the entire suite. No
+vector can force the ordered comparison; it has to be stated as a requirement,
+same as here.
 
 A cross-epoch re-commit carrying a lower `entry_count` is advisory, not a hard
 reject. That is not a detection regression: forging a cross-epoch checkpoint
 requires the signing key, which is Tier C territory, and an honest timeout-split
 produces exactly that shape.
+
+**Every B rule holds at every chain index and every tip index, and that is a
+separate claim from the rules themselves — but it is narrower than "every
+position."** Pinned: the chain index (every transition of a multi-checkpoint
+chain, and all ordered index pairs for the identity-uniqueness rule, B3) and
+the tip index (interior tips, not only first or last). A validator that applies
+a rule at exactly one position computes correct bytes and rejects everything a
+one- or two-prefix chain, or a one- or two-tip checkpoint, can express; collapse
+either axis and it passes. The suite therefore carries four-checkpoint vectors
+whose single defect sits in the **middle**, one whose defect is on the
+**final** link of a chain that reaches Tier B (a vector's `prev_sha256` field
+pins only that last link, and only for chainless vectors), three-tip
+checkpoints whose defect sits on the **interior** tip, an epoch defect on a
+chain carrier's **own** input, and prefixes supplied **out of order**.
+Alongside them, both test suites are table-driven over position: for each rule
+the defect is injected at every chain index, every tip index, every tip-index
+pair and every warning-list index in turn. Because rules cannot fix a harness
+that skips entries, both validators additionally count what they actually
+reached and fail if it disagrees with an independent pre-pass over the suite.
+
+Not pinned, and worth stating rather than leaving implicit: every chain in the
+suite starts at `seq: 1`, so a validator that compares `seq` against its
+position in the `chain` array rather than its absolute value is
+indistinguishable from a correct one on every vector here; no zero-tip
+checkpoint appears as a `chain` prefix (`genesis_empty_tips` supplies one only
+as a vector's own input); every `stream_id` in the suite is a 36-character
+UUID, so no vector compares two of different lengths and a validator that sorts
+by length before code point is indistinguishable from a correct one here; and
+an unknown member on a checkpoint, a tip, a chain prefix or a prefix wrapper is
+rejected by both references — each by an explicit member-set rule, Go's decoder
+and Python's declared sets — and both refuse the whole file rather than
+reporting a per-vector verdict, so no vector can express it; the same is true
+of a wrong-typed scalar (`"epoch": "1"`, `true`, `1.0`) and of a null `tips`
+element, which both references reject and neither can publish. These are gaps in what the suite currently constrains,
+not defects in the rules.
+
+The tip-identity key is compared as a pair — a comparable struct in Go, a tuple
+in Python — rather than flattened into a single string, so the published sort
+rule holds for any `stream_id` rather than only for ones that avoid the
+separator byte a flattened encoding would need. Unit tests in both references
+hold the two orderings no published vector separates: `a` against `a<NUL>`,
+which a NUL-separated flattened key gets backwards, and `aa` against `b`, which
+a length-before-code-point comparator gets backwards.
+
+The `min_format_version` skip decision is made before any structural rule is
+applied to an entry, and a skipped entry is never examined further. A vector of
+a newer format is exactly the one that may carry members the reading validator
+has no schema for, so applying the member-set rule first would fail the whole
+file on the first future vector — the opposite of what "MUST NOT treat a skip
+as a failure" is for. Conversely the member-set rule is applied to a whole
+non-skipped entry before that entry is validated, so a defect the entry's
+`expect` already names cannot mask an unknown member beside it.
+
+The two orderings belonging to the verifier's contract rather than to any
+single rule — the order of the warning list it reports and the order of the
+`chain` array it was handed — are checked the same way by this repo's own
+position-generic tests. The warning-order case has a narrower guarantee at the
+level of the published vectors themselves: see the paragraph above on
+`expect_warnings`, and the README's "Warning ordering is a stated requirement,
+not a vector-enforced one" section.
+
+B2 hashes the previous checkpoint's **canonical** bytes, not the bytes as
+received. A checkpoint's tips are explicitly allowed to arrive unsorted, so a
+validator that canonicalized without first imposing the tip order would compute
+a different digest and reject a legitimate chain; the suite carries a chain
+prefix supplying its tips out of identity order to pin this.
 
 B1 is largely subsumed by B2 on a contiguous chain: a dropped or duplicated
 checkpoint breaks `prev_hash` either way. It is retained for precise diagnostics
@@ -222,11 +314,17 @@ Prose only, in `docs/limits.md`, linked to `otel-agent-audit/docs/threat-model.m
    language's JSON parser, so encoding-level malformations are inexpressible.
    When `input_raw_hex` is present it is the exact bytes to canonicalize, and
    `input` is absent.
-6. **`expect` becomes advisory for third parties.** `rejectReason` checks
-   signature before chain, so a validator checking in another order reports a
-   different reason on a vector failing both. Internally the suite guarantees
-   each negative fails exactly one check, and **the generator asserts this at
-   `gen` time** so the invariant cannot rot as vectors accumulate.
+6. **`expect` becomes advisory for third parties.** `rejectReason` fixes an
+   order — schema, canonical, signature, Tier B, chain — that a conformant
+   validator need not share, so a validator checking in another order can
+   report a different reason on a vector that fails more than one check. Not
+   every negative fails exactly one: `duplicate_tip_identity` ships with an
+   empty signature and fails both the canonical and the signature check,
+   reporting `canonical` only because that check runs first. What the generator
+   asserts at `gen` time, in `checkNegativeExpectations`, is the invariant that
+   can be mechanically held: **every negative is rejected for exactly the
+   reason its `expect` field names, under this reference's check order**, so a
+   vector whose `expect` is wrong can never be published.
 7. **Surface to the SIG, not fixed here:** the signed object carries no version
    field *inside the signed bytes*. Production gets this right —
    `schema_version` is inside `checkpointForSigning`. `format_version` versions
@@ -281,7 +379,7 @@ a witness section.
 Both validators implement Tiers A and B and must agree, including on which rules
 are advisory and what a warning looks like.
 
-**New negatives:** `duplicate_stream_epoch_in_checkpoint` (A3),
+**New negatives:** `duplicate_tip_identity` (A3),
 `ill_formed_utf8_bytes` (A4, raw invalid UTF-8), `lone_surrogate_escape` (A4,
 well-formed bytes containing `\ud800`), `integer_out_of_range` (A5, `entry_count`
 of `2^53`), `seq_skip` (B1), `stream_recommitted_same_epoch` (B3),
@@ -329,7 +427,7 @@ record format regardless of checkpoints, and nobody in #2409 has raised it.
 
 1. `format_version` + `min_format_version` skip rule, pinned `cryptography`,
    pinned timestamp profile
-2. A3 + `duplicate_stream_epoch_in_checkpoint`. `gen` rejects a duplicate
+2. A3 + `duplicate_tip_identity`. `gen` rejects a duplicate
    `(stream_id, epoch)` **before signing**, so malformed input fails loudly
    rather than silently producing order-dependent bytes. Note that A3 forbids
    duplicate *pairs*, not duplicate `stream_id`s — repeated stream ids are legal

@@ -1,5 +1,6 @@
 # Go
 /go/bin/
+/go/checkpoint-vectors
 
 # Python
 __pycache__/
@@ -8,3 +9,6 @@ __pycache__/
 # scratch
 *.tmp
 regen.json
+
+# SDD scratch workspace (not part of the published artifact)
+.superpowers/
