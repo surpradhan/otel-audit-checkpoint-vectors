@@ -479,6 +479,18 @@ above.)
 - **A zero-tip checkpoint inside a chain.** `genesis_empty_tips` exercises an
   empty `tips` array, but only as a vector's own checkpoint, never as a
   `chain` prefix. A rule that mishandles an empty *prefix* is unexercised.
+- **`stream_id` ordering by code point vs. by length.** Every `stream_id` in
+  the suite is a 36-character UUID, so no published vector ever compares two
+  of different lengths. A validator that sorts by length first and only then
+  lexicographically reproduces every vector here exactly, and disagrees on the
+  signed bytes the moment a real deployment uses ids of mixed length — `"aa"`
+  precedes `"b"` under the published rule and follows it under that one. The
+  `a`/`a<NUL>` case does not separate them either: those two stand in a prefix
+  relationship, and prefix pairs order the same way under both.
+  `TestStreamIDSortsByCodePointNotLength` (`go/encoding_test.go`) and
+  `test_stream_id_sorts_by_code_point_not_length` (`py/test_validate.py`)
+  assert the discriminating pair in both references instead, over the same
+  expected canonical bytes.
 - **Unknown members, at the level of the published vectors.** Both references
   reject a member the schema does not define (above), but they describe it
   differently: Go fails the whole file while decoding, while Python reports the

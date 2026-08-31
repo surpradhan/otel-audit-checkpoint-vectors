@@ -576,3 +576,50 @@ func TestNullEpochMarshalPathDropsNoField(t *testing.T) {
 			n, len(want))
 	}
 }
+
+// wantShorterLaterCanonical is the canonical form of a checkpoint whose two
+// tips are "aa" and "b". The same literal appears in py/test_validate.py as
+// WANT_SHORTER_LATER_CANONICAL: the two references must agree on these exact
+// bytes, not merely each be internally consistent.
+const wantShorterLaterCanonical = `{"prev_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":[{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"aa","tip_hash":"aa"},{"entry_count":2,"epoch":0,"sequence_number":2,"stream_id":"b","tip_hash":"bb"}]}`
+
+// The published rule is "stream_id ascending by Unicode code point": "aa"
+// sorts BELOW "b" because the first code point decides, however much longer
+// "aa" is. An implementation that orders by length first and only then
+// lexicographically -- a natural shape if the key is built from a
+// length-prefixed or fixed-width encoding -- puts "b" first and produces
+// different signed bytes.
+//
+// Nothing in the published suite could tell the two apart. Every stream_id in
+// it is a 36-character UUID, so length never breaks a tie;
+// TestNULInStreamIDSortsByThePublishedRule does not discriminate either,
+// because "a" and "a\x00" stand in a prefix relationship and prefix pairs
+// order the same way under both rules -- as do all the other pairs the suite's
+// "not pinned" notes call out. This case needs a shorter, lexicographically
+// LATER id against a longer, lexicographically EARLIER one, which is the one
+// shape that separates them.
+//
+// Mirrors py/test_validate.py's
+// test_stream_id_sorts_by_code_point_not_length.
+func TestStreamIDSortsByCodePointNotLength(t *testing.T) {
+	lo := Tip{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "aa", TipHash: "aa"}
+	hi := Tip{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "b", TipHash: "bb"}
+	if !lessTip(lo, hi) {
+		t.Errorf("%q must sort below %q: the first code point decides, not the length",
+			lo.StreamID, hi.StreamID)
+	}
+	if lessTip(hi, lo) {
+		t.Errorf("%q must NOT sort below %q; the comparator is ordering by length",
+			hi.StreamID, lo.StreamID)
+	}
+	// Supplied in the wrong order, so the sort has to fix it -- and so the
+	// rule is pinned where it actually bites, in the signed bytes.
+	cb, err := canonical(Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z",
+		Tips: []Tip{hi, lo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cb) != wantShorterLaterCanonical {
+		t.Fatalf("canonical bytes:\n got:  %s\n want: %s", cb, wantShorterLaterCanonical)
+	}
+}

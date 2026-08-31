@@ -1474,6 +1474,50 @@ def test_nul_in_stream_id_sorts_by_the_published_rule():
         f"canonical bytes:\n got:  {got}\n want: {WANT_NUL_CANONICAL}"
 
 
+# The same literal appears in go/encoding_test.go as
+# wantShorterLaterCanonical: the two references must agree on these exact
+# bytes, not merely each be internally consistent.
+WANT_SHORTER_LATER_CANONICAL = (
+    '{"prev_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",'
+    '"seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":['
+    '{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"aa","tip_hash":"aa"},'
+    '{"entry_count":2,"epoch":0,"sequence_number":2,"stream_id":"b","tip_hash":"bb"}]}'
+)
+
+
+def test_stream_id_sorts_by_code_point_not_length():
+    """The published rule is "stream_id ascending by Unicode code point": "aa"
+    sorts BELOW "b" because the first code point decides, however much longer
+    "aa" is. An implementation that orders by length first and only then
+    lexicographically -- a natural shape if the key is built from a
+    length-prefixed or fixed-width encoding -- puts "b" first and signs
+    different bytes.
+
+    Nothing in the published suite could tell the two apart. Every stream_id in
+    it is a 36-character UUID, so length never breaks a tie;
+    test_nul_in_stream_id_sorts_by_the_published_rule does not discriminate
+    either, because "a" and "a<NUL>" stand in a prefix relationship and prefix
+    pairs order the same way under both rules. This case needs a shorter,
+    lexicographically LATER id against a longer, lexicographically EARLIER one,
+    which is the one shape that separates them. Mirrors
+    TestStreamIDSortsByCodePointNotLength."""
+    lo = {"entry_count": 1, "epoch": 0, "sequence_number": 1,
+          "stream_id": "aa", "tip_hash": "aa"}
+    hi = {"entry_count": 2, "epoch": 0, "sequence_number": 2,
+          "stream_id": "b", "tip_hash": "bb"}
+    assert validate.tip_identity(lo) < validate.tip_identity(hi), \
+        "'aa' must sort below 'b': the first code point decides, not the length"
+    assert not validate.tip_identity(hi) < validate.tip_identity(lo), \
+        "'b' must not sort below 'aa'; the key is ordering by length"
+    # Supplied in the wrong order, so the sort has to fix it -- and so the rule
+    # is pinned where it actually bites, in the signed bytes.
+    cp = _cp(1, "2026-01-01T00:00:00Z", [hi, lo],
+             prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    got = validate.canonical(cp).decode()
+    assert got == WANT_SHORTER_LATER_CANONICAL, \
+        f"canonical bytes:\n got:  {got}\n want: {WANT_SHORTER_LATER_CANONICAL}"
+
+
 def main():
     # Derived from the module, not hand-maintained. A list written out by hand
     # silently stops running any test nobody remembers to add to it -- a test

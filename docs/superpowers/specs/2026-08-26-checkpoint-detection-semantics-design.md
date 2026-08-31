@@ -209,7 +209,10 @@ suite starts at `seq: 1`, so a validator that compares `seq` against its
 position in the `chain` array rather than its absolute value is
 indistinguishable from a correct one on every vector here; no zero-tip
 checkpoint appears as a `chain` prefix (`genesis_empty_tips` supplies one only
-as a vector's own input); and an unknown member on a checkpoint, a tip, a
+as a vector's own input); every `stream_id` in the suite is a 36-character
+UUID, so no vector compares two of different lengths and a validator that sorts
+by length before code point is indistinguishable from a correct one here; and
+an unknown member on a checkpoint, a tip, a
 chain prefix or a prefix wrapper is rejected by both references — each by an
 explicit member-set rule, Go's decoder and Python's declared sets — but the two
 report it differently, so no vector can express it; the same is true of a
@@ -220,7 +223,10 @@ not defects in the rules.
 The tip-identity key is compared as a pair — a comparable struct in Go, a tuple
 in Python — rather than flattened into a single string, so the published sort
 rule holds for any `stream_id` rather than only for ones that avoid the
-separator byte a flattened encoding would need.
+separator byte a flattened encoding would need. Unit tests in both references
+hold the two orderings no published vector separates: `a` against `a<NUL>`,
+which a NUL-separated flattened key gets backwards, and `aa` against `b`, which
+a length-before-code-point comparator gets backwards.
 
 The two orderings belonging to the verifier's contract rather than to any
 single rule — the order of the warning list it reports and the order of the
