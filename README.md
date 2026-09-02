@@ -513,6 +513,27 @@ above.)
   `test_stream_id_sorts_by_code_point_not_length` (`py/test_validate.py`)
   assert the discriminating pair in both references instead, over the same
   expected canonical bytes.
+
+  That same `a`/`a<NUL>` pair is not wasted — it is the discriminator for a
+  **different** concern the `stream_id`/`epoch` composite identity raises:
+  every published `stream_id` is fixed-length, so no vector ever proves the
+  tip-identity comparator is *prefix-free*. An implementation that flattens
+  the pair into one string — `stream_id + separator + zero-padded epoch` —
+  reproduces the published order only as long as no `stream_id` can be
+  confused with whatever separator it picked; get the separator wrong (one
+  review round on this suite's design caught a `\x00` → `~` swap that passed
+  every other gate) and two DIFFERENT stream_ids standing in a prefix
+  relationship — differing lengths, one a strict prefix of the other — sort
+  the wrong way round, or worse, collide once epoch is folded in.
+  `TestNULInStreamIDSortsByThePublishedRule` (`go/encoding_test.go`) and
+  `test_nul_in_stream_id_sorts_by_the_published_rule` (`py/test_validate.py`)
+  assert both that the pair sorts correctly and that the two remain distinct
+  tip identities, using the most adversarial such pair available: a NUL is
+  the lowest possible byte, so it defeats every separator choice at once
+  rather than one at a time. `tipKey` (`go/main.go`) has no separator to
+  collide with — a comparable struct, not a flattened string — so these are
+  regression guards against reintroducing that encoding, not a live gap in
+  the current implementation.
 - **Unknown members, at the level of the published vectors.** Both references
   reject a member the schema does not define (above) and both refuse the whole
   file rather than reporting a per-vector verdict, so a suite file containing
