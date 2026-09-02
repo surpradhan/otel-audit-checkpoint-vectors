@@ -188,7 +188,7 @@ No published vector can express this — see [Not pinned](#rules-hold-at-every-p
 
 ## Positive vectors (a conformant validator MUST accept these)
 
-The 12 positive vectors, one line each:
+The 13 positive vectors, one line each:
 
 - `genesis_empty_tips` — the first checkpoint of the positives' own hash
   chain, with an empty `tips` array.
@@ -200,6 +200,10 @@ The 12 positive vectors, one line each:
   in its chain prefix; two B4 transitions — one cross-checkpoint (0→2) and
   one intra-checkpoint (2→10) — so the identical token is emitted twice.
   See "Why epoch exists" above.
+- `stream_id_prefix_pair` — two tips, `"abc"` and `"abc-1"`, whose stream_ids
+  stand in a proper prefix relationship, supplied out of sort order; proves
+  the tip-identity comparator is prefix-free (see the note above and "Rules
+  hold at every position" below).
 - `advisory_stream_recommitted_new_epoch` — the declared at-least-once path:
   a stream re-committed under a new epoch, accepted with one `B4` warning.
 - `advisory_timestamp_regression` — a timestamp regression against the
@@ -514,26 +518,27 @@ above.)
   assert the discriminating pair in both references instead, over the same
   expected canonical bytes.
 
-  That same `a`/`a<NUL>` pair is not wasted — it is the discriminator for a
-  **different** concern the `stream_id`/`epoch` composite identity raises:
-  every published `stream_id` is fixed-length, so no vector ever proves the
-  tip-identity comparator is *prefix-free*. An implementation that flattens
-  the pair into one string — `stream_id + separator + zero-padded epoch` —
-  reproduces the published order only as long as no `stream_id` can be
-  confused with whatever separator it picked; get the separator wrong (one
-  review round on this suite's design caught a `\x00` → `~` swap that passed
-  every other gate) and two DIFFERENT stream_ids standing in a prefix
-  relationship — differing lengths, one a strict prefix of the other — sort
-  the wrong way round, or worse, collide once epoch is folded in.
-  `TestNULInStreamIDSortsByThePublishedRule` (`go/encoding_test.go`) and
-  `test_nul_in_stream_id_sorts_by_the_published_rule` (`py/test_validate.py`)
-  assert both that the pair sorts correctly and that the two remain distinct
-  tip identities, using the most adversarial such pair available: a NUL is
-  the lowest possible byte, so it defeats every separator choice at once
-  rather than one at a time. `tipKey` (`go/main.go`) has no separator to
-  collide with — a comparable struct, not a flattened string — so these are
-  regression guards against reintroducing that encoding, not a live gap in
-  the current implementation.
+  That same `a`/`a<NUL>` pair is the discriminator for a **different**
+  concern, and one that *is* pinned at the published-vector level:
+  `stream_id_prefix_pair` (below) is a real, additive vector proving the
+  tip-identity comparator is *prefix-free* — that two DIFFERENT stream_ids
+  standing in a prefix relationship (`"abc"` and `"abc-1"`, differing
+  lengths, one a strict prefix of the other) produce distinct tip identities
+  and sort correctly, which an implementation that flattens the composite
+  key into one string (`stream_id + separator + zero-padded epoch`) gets
+  wrong the moment its chosen separator can be confused with a byte the
+  stream_id itself might contain — the specific `\x00` → `~` swap that took
+  five review rounds on Task 3 to surface. `TestNULInStreamIDSortsByThePublishedRule`
+  (`go/encoding_test.go`) and `test_nul_in_stream_id_sorts_by_the_published_rule`
+  (`py/test_validate.py`) assert the same property against this repo's own
+  two reference implementations with the most adversarial such pair
+  available — a NUL is the lowest possible byte, so it defeats every
+  separator choice at once rather than one at a time, and would also catch a
+  flattened key colliding outright for some other pair in the same defect
+  class. `tipKey` (`go/main.go`) has no separator to collide with — a
+  comparable struct, not a flattened string — so none of this can fail
+  today; the vector and the two tests are conformance proof and regression
+  guards respectively, not evidence of a live gap.
 - **Unknown members, at the level of the published vectors.** Both references
   reject a member the schema does not define (above) and both refuse the whole
   file rather than reporting a per-vector verdict, so a suite file containing

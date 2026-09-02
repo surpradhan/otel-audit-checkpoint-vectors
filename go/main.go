@@ -664,6 +664,48 @@ func genTierB(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 		MinFormatVersion: 2,
 	})
 
+	// R4: the OTHER half of the composite key -- multi_epoch_same_stream above
+	// pins the epoch half. Two DIFFERENT stream_ids standing in a proper
+	// prefix relationship ("abc" is a strict prefix of "abc-1") at the same
+	// epoch. Nothing else in the suite exercises this: every other stream_id
+	// is a fixed-length UUID, so no two vectors here ever compare at different
+	// lengths. A composite key built by flattening stream_id and epoch into
+	// one string via a separator reproduces the published order only as long
+	// as no stream_id can be confused with the separator that follows it; get
+	// the separator wrong -- the specific \x00 -> ~ swap that took five review
+	// rounds on Task 3 to surface -- and this exact pair sorts the wrong way
+	// round, or, for other pairs in the same defect class, collides once
+	// epoch is folded in.
+	//
+	// tipKey (a comparable struct, not a flattened string) has no separator to
+	// collide with, so this cannot fail today. It is the third-party-facing
+	// conformance proof that TestNULInStreamIDSortsByThePublishedRule /
+	// test_nul_in_stream_id_sorts_by_the_published_rule cannot be: those pin
+	// the same property against this repo's own two reference implementations
+	// with the maximally adversarial pair "a"/"a\x00": a NUL is the lowest
+	// possible byte, so it defeats every separator choice a flattened key
+	// could make, not merely some of them. Only what is published here,
+	// though, is what an independent third-party implementation actually
+	// validates against.
+	ppPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:20Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "0f0f0f0f-0000-4000-8000-00000000000f", TipHash: "0f" + strings.Repeat("00", 31)},
+	}}
+	// Given in the wrong order, so the sort has to fix it.
+	ppTail := Checkpoint{PrevHash: cpHash(ppPrefix), Seq: 2, Timestamp: "2026-01-01T00:00:25Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "abc-1", TipHash: "1b" + strings.Repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "abc", TipHash: "1a" + strings.Repeat("00", 31)},
+	}}
+	ppCanon := mustCanonical(ppTail, "stream_id_prefix_pair")
+	vectors = append(vectors, Vector{
+		Name:             "stream_id_prefix_pair",
+		Input:            ppTail,
+		Canonical:        string(ppCanon),
+		SHA256:           mustSum(ppCanon),
+		Signature:        signB64(priv, ppCanon),
+		Chain:            []SignedCheckpoint{signCP(priv, ppPrefix)},
+		MinFormatVersion: 2,
+	})
+
 	// Tier B, all at format_version 2. Each carries one preceding checkpoint.
 	tbBase := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
 		{EntryCount: 7, Epoch: ptr(0), SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + strings.Repeat("00", 31)},
