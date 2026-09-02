@@ -1467,13 +1467,30 @@ def test_nul_in_stream_id_sorts_by_the_published_rule():
     epoch, which reproduces the rule only while no stream_id contains a NUL:
     with tips "a" and "a<NUL>" at the same epoch the flattened key ordered them
     the other way round, so the two references disagreed on signed bytes.
+
+    "a" and "a<NUL>" stand in a proper prefix relationship (differing
+    stream_id lengths, one a prefix of the other): a NUL is the lowest
+    possible byte, so it sorts at or below ANY separator a flattened key might
+    pick, not only \\x00 -- this one pair catches the whole mutation class,
+    including the \\x00 -> ~ swap that took five review rounds on Task 3 to
+    surface. The tuple key has no separator to collide with, so this is a
+    regression guard, not a live ambiguity today.
+
     Mirrors TestNULInStreamIDSortsByThePublishedRule."""
     lo = {"entry_count": 1, "epoch": 0, "sequence_number": 1,
           "stream_id": "a", "tip_hash": "aa"}
     hi = {"entry_count": 2, "epoch": 0, "sequence_number": 2,
           "stream_id": "a" + chr(0), "tip_hash": "bb"}
+    # Two DIFFERENT stream_ids standing in a prefix relationship must still be
+    # two DISTINCT tip identities -- the concern a flattened separator-based
+    # key put at risk, since a poorly chosen separator can make two distinct
+    # stream_ids collide once epoch is folded in.
+    assert validate.tip_identity(lo) != validate.tip_identity(hi), \
+        "'a' and 'a<NUL>' must be distinct tip identities: they are different stream_ids"
     assert validate.tip_identity(lo) < validate.tip_identity(hi), \
         "'a' must sort below 'a<NUL>' by Unicode code point"
+    assert not validate.tip_identity(hi) < validate.tip_identity(lo), \
+        "'a<NUL>' must NOT sort below 'a'"
     # Supplied in the wrong order, so the sort has to fix it.
     cp = _cp(1, "2026-01-01T00:00:00Z", [hi, lo],
              prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")

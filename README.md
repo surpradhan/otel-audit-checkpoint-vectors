@@ -188,7 +188,7 @@ No published vector can express this — see [Not pinned](#rules-hold-at-every-p
 
 ## Positive vectors (a conformant validator MUST accept these)
 
-The 12 positive vectors, one line each:
+The 13 positive vectors, one line each:
 
 - `genesis_empty_tips` — the first checkpoint of the positives' own hash
   chain, with an empty `tips` array.
@@ -200,6 +200,10 @@ The 12 positive vectors, one line each:
   in its chain prefix; two B4 transitions — one cross-checkpoint (0→2) and
   one intra-checkpoint (2→10) — so the identical token is emitted twice.
   See "Why epoch exists" above.
+- `stream_id_prefix_pair` — two tips, `"abc"` and `"abc-1"`, whose stream_ids
+  stand in a proper prefix relationship, supplied out of sort order; proves
+  the tip-identity comparator is prefix-free (see "Rules hold at every
+  position" below).
 - `advisory_stream_recommitted_new_epoch` — the declared at-least-once path:
   a stream re-committed under a new epoch, accepted with one `B4` warning.
 - `advisory_timestamp_regression` — a timestamp regression against the
@@ -492,6 +496,28 @@ case has a narrower guarantee at the level of the published vectors themselves
 — see [Warning ordering](#warning-ordering-is-a-stated-requirement-not-a-vector-enforced-one)
 above.)
 
+The tip-identity comparator's *prefix-freeness* is pinned the same way, at
+both levels. `stream_id_prefix_pair` is a real, additive vector proving that
+two DIFFERENT stream_ids standing in a prefix relationship (`"abc"` and
+`"abc-1"`, differing lengths, one a strict prefix of the other) produce
+distinct tip identities and sort correctly — something an implementation that
+flattens the composite key into one string (`stream_id + separator +
+zero-padded epoch`) gets wrong the moment its chosen separator can be
+confused with a byte the stream_id itself might contain, which is exactly the
+`\x00` → `~` swap that took five review rounds on Task 3 to surface.
+`TestNULInStreamIDSortsByThePublishedRule` (`go/encoding_test.go`) and
+`test_nul_in_stream_id_sorts_by_the_published_rule` (`py/test_validate.py`)
+assert the same property against this repo's own two reference
+implementations with the most adversarial such pair available — the
+`a`/`a<NUL>` pair mentioned in the "not pinned" note just below, which does
+*not* help there but is exactly the right tool here: a NUL is the lowest
+possible byte, so it defeats every separator choice at once rather than one
+at a time, and would also catch a flattened key colliding outright for some
+other pair in the same defect class. `tipKey` (`go/main.go`) has no separator
+to collide with — a comparable struct, not a flattened string — so none of
+this can fail today; the vector and the two tests are conformance proof and
+regression guards respectively, not evidence of a live gap.
+
 **Not pinned**, stated plainly rather than left to be discovered:
 
 - **Sequence-number absolute value vs. array index.** Every chain in the
@@ -577,7 +603,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 12 positive (9 through Tier B) + 29 negative
+checked: 13 positive (10 through Tier B) + 29 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.

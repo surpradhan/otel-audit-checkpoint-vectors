@@ -367,11 +367,34 @@ const wantNULCanonical = `{"prev_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4
 // flattened key compares 0x00 against the '0' of the padding and orders them
 // the OTHER WAY ROUND from the rule -- and from Python's tuple compare, which
 // is exactly the disagreement on signed bytes this repo exists to rule out.
+//
+// "a" and "a\x00" stand in a proper prefix relationship (differing stream_id
+// LENGTHS, one a prefix of the other), which is what makes this pair the
+// discriminator: a NUL is the lowest possible byte, so it sorts at or below
+// ANY separator byte a flattened key might choose -- not only \x00 -- so this
+// one pair catches the whole mutation class in one shot, including the
+// specific \x00 -> ~ swap that took five review rounds on Task 3 to surface
+// (docs/superpowers/specs/2026-08-26-checkpoint-detection-semantics-design.md).
+// tipKey has no separator to collide with, so this is a regression guard
+// against reintroducing the flattened encoding, not a live ambiguity today.
+//
+// Mirrors py/test_validate.py's
+// test_nul_in_stream_id_sorts_by_the_published_rule.
 func TestNULInStreamIDSortsByThePublishedRule(t *testing.T) {
 	lo := Tip{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "a", TipHash: "aa"}
 	hi := Tip{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "a\x00", TipHash: "bb"}
+	// Two DIFFERENT stream_ids standing in a prefix relationship must still be
+	// two DISTINCT tip identities -- the concern a flattened separator-based
+	// key put at risk, since a poorly chosen separator can make two distinct
+	// stream_ids collide once epoch is folded in.
+	if tipIdentity(lo) == tipIdentity(hi) {
+		t.Fatalf("%q and %q must be distinct tip identities: they are different stream_ids", lo.StreamID, hi.StreamID)
+	}
 	if !lessTip(lo, hi) {
-		t.Fatalf("%q must sort below %q by Unicode code point", lo.StreamID, hi.StreamID)
+		t.Errorf("%q must sort below %q by Unicode code point", lo.StreamID, hi.StreamID)
+	}
+	if lessTip(hi, lo) {
+		t.Errorf("%q must NOT sort below %q", hi.StreamID, lo.StreamID)
 	}
 	// Supplied in the wrong order, so the sort has to fix it.
 	cb, err := canonical(Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z",
