@@ -1885,6 +1885,29 @@ def test_chain_or_expect_warnings_wrong_type_rejects_cleanly():
         assert rc == 0, f"{field}=None must be accepted like an absent {field}\n{output}"
 
 
+def test_null_expect_warnings_matches_empty_warnings_on_a_chained_vector():
+    """expect_warnings: null must be treated exactly like an absent one --
+    "no warnings expected" -- even on a vector that actually carries chain
+    context and reaches the Tier B warnings comparison. Pre-fix, `warns !=
+    v.get("expect_warnings", [])` compared the real (empty) warns list
+    against None and wrongly failed an otherwise-valid, warning-free chained
+    vector -- a correctness bug, not just a crash. The type-gate tests added
+    alongside that fix only ever exercise a CHAINLESS vector, so the
+    comparison line itself was never actually reached by any committed
+    test."""
+    import hashlib as _h
+    genesis = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    priv = _priv()
+    prefix = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")], prev=genesis)
+    tail = dict(_cp(2, _pos_ts(110), [_tip(_pos_stream(2), 0, 2, 2, "bb")]),
+                prev_hash=_h.sha256(validate.canonical(prefix)).hexdigest())
+    v = _positive(tail, chain=[_sign(priv, prefix)])
+    v["expect_warnings"] = None
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+    assert rc == 0, \
+        f"a chained vector with expect_warnings=null and no real warnings must pass\n{output}"
+
+
 def main():
     # Derived from the module, not hand-maintained. A list written out by hand
     # silently stops running any test nobody remembers to add to it -- a test
