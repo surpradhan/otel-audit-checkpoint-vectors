@@ -564,6 +564,34 @@ def test_b1_checked_on_every_transition():
         "B1 must hold at every transition")
 
 
+def test_b1_accepts_chain_not_starting_at_seq_one():
+    """B1 checks seq's RELATIVE delta between adjacent checkpoints, never its
+    absolute value against the checkpoint's position in the chain array. A
+    real verifier holding a mid-chain window, with no genesis in view, must
+    accept a correctly incrementing chain that does not start at seq 1."""
+    chain = _link(
+        _cp(400, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")]),
+        _cp(401, "2026-01-01T00:00:05Z", [_tip("s2", 0, 2, 2, "bb")]))
+    err, _ = validate.check_tier_b(chain)
+    assert err is None, (
+        f"check_tier_b rejected a correctly incrementing chain that does not start at seq 1: {err}")
+
+
+def test_zero_tip_checkpoint_accepted_mid_chain():
+    """A mid-chain checkpoint with zero tips is legitimate under the delta
+    model: an idle interval commits nothing new, but still advances seq and
+    prev_hash. It must not disrupt B1/B2 on either side of it, and the tip
+    walk (B3/B4) must run zero iterations for it rather than mishandling the
+    empty list."""
+    chain = _link(
+        _cp(1, "2026-01-01T00:00:00Z", [_tip("s1", 0, 1, 1, "aa")]),
+        _cp(2, "2026-01-01T00:00:05Z", []),
+        _cp(3, "2026-01-01T00:00:10Z", [_tip("s2", 0, 2, 2, "bb")]))
+    err, warns = validate.check_tier_b(chain)
+    assert err is None, f"check_tier_b rejected a chain with a mid-chain zero-tip checkpoint: {err}"
+    assert warns == [], f"warnings = {warns}, want none"
+
+
 def test_warning_order_is_part_of_the_contract():
     """expect_warnings is an ORDERED contract. No published vector can catch a
     comparison weakened to a multiset, because every vector's expectation is

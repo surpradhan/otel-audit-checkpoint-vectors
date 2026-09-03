@@ -452,6 +452,95 @@
       "min_format_version": 2
     },
     {
+      "name": "mid_chain_window_no_genesis",
+      "input": {
+        "prev_hash": "f9b2eaff66f0416dc8d2ba03e7c888f46f05b081cee22be39db44f8695d81cbc",
+        "seq": 401,
+        "timestamp": "2026-12-01T00:00:05Z",
+        "tips": [
+          {
+            "entry_count": 2,
+            "epoch": 0,
+            "sequence_number": 2,
+            "stream_id": "41414141-0000-4000-8000-000000000401",
+            "tip_hash": "4100000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"f9b2eaff66f0416dc8d2ba03e7c888f46f05b081cee22be39db44f8695d81cbc\",\"seq\":401,\"timestamp\":\"2026-12-01T00:00:05Z\",\"tips\":[{\"entry_count\":2,\"epoch\":0,\"sequence_number\":2,\"stream_id\":\"41414141-0000-4000-8000-000000000401\",\"tip_hash\":\"4100000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "e5544fe7ef6fa380fc4fe3a7caeba92ade1a0cd6e32b5f3800b15e0a6ae928d3",
+      "signature": "TTz0a6M5KTuDwX5jpXqm3QKDYO/pJHTwtrEsqVgNxiYKvRp7iaM5E2YEquxHGEzSOEZypcwXYI1IqsvHQesSBQ==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "4040404040404040404040404040404040404040404040404040404040404040",
+            "seq": 400,
+            "timestamp": "2026-12-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "40404040-0000-4000-8000-000000000400",
+                "tip_hash": "4000000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "VkgxAJrcj6LeZlcWkGYlBQvpK8uqIswmedcrTBprWyuKy0p7YOR37J7DXLWcqLi6Y9rRD/ueyqq59xMfWbLEBA=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
+      "name": "mid_chain_zero_tip_checkpoint",
+      "input": {
+        "prev_hash": "102a894f1a6ecefed252814627f30365f98af32d22376df577812cd77c0d19e5",
+        "seq": 3,
+        "timestamp": "2026-12-02T00:00:10Z",
+        "tips": [
+          {
+            "entry_count": 2,
+            "epoch": 0,
+            "sequence_number": 2,
+            "stream_id": "61616161-0000-4000-8000-000000000061",
+            "tip_hash": "6100000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"102a894f1a6ecefed252814627f30365f98af32d22376df577812cd77c0d19e5\",\"seq\":3,\"timestamp\":\"2026-12-02T00:00:10Z\",\"tips\":[{\"entry_count\":2,\"epoch\":0,\"sequence_number\":2,\"stream_id\":\"61616161-0000-4000-8000-000000000061\",\"tip_hash\":\"6100000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "e9af08b647f76489b9118b1d50990d10e7475f0232df7fd022f23d3fe75bf62c",
+      "signature": "o3/aH0BCGJ5TZEzeib1xAFMj6m2A1YAxNvGPo3n1O4+EdmAwqB5xr2oyYOv7OiN5Hi7P6UU3/bxZvfpwe1CRAg==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-12-02T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "60606060-0000-4000-8000-000000000060",
+                "tip_hash": "6000000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "dLalNCAMLct3sipIrDmif1Rc7oADlcMWNR/rvHxHnql4xw/fKEMhh+rANvH5tVLGnhbGy6yWJOvy8gCg0z5LAw=="
+        },
+        {
+          "input": {
+            "prev_hash": "1de9468e8b26ded9576b9431c68d0f765bce496de57b457469aeff063c24c9b9",
+            "seq": 2,
+            "timestamp": "2026-12-02T00:00:05Z",
+            "tips": []
+          },
+          "signature": "j9IOnuws+fp66GX2P01hcsqfy8oqi84Hs2WiBH/6pJR/Tv9gJxHw1fvpr301li6ltq8T+RkoKaxh5XxYbl4nDQ=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
       "name": "advisory_middle_chain_unsorted_prefix_tips",
       "input": {
         "prev_hash": "d417002f633250d806eecb1bfba141629606606de9e9a3158853d7ec4e2cc636",
