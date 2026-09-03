@@ -1739,7 +1739,7 @@ func validate(path string) error {
 	}
 	pub, err := hex.DecodeString(suite.PublicKeyHex)
 	if err != nil {
-		return err
+		return fmt.Errorf("public_key_hex is invalid: %w", err)
 	}
 	// Checked here, unconditionally, rather than left for whichever call site
 	// first hands pub to ed25519.Verify: Verify PANICS (does not error) on a

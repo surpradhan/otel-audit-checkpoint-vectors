@@ -455,19 +455,30 @@ func TestTrailingDataAfterSuiteIsRejected(t *testing.T) {
 // needed the key at all. Mirrors py/test_validate.py's
 // test_malformed_public_key_hex_rejects_cleanly, which pins the same property
 // against Python's own (already-eager) public_key_hex handling.
+//
+// non_string is included for the same reason Python includes it -- it names
+// the same JSON shape -- but it does NOT exercise the new check: a bare
+// number for a string-typed field fails strict decoding of the envelope
+// itself (dec.Decode(&suite), above) before public_key_hex is ever looked at.
+// Its wantErr pins that distinct, pre-existing failure specifically, so this
+// subtest cannot pass by way of the wrong check firing.
 func TestMalformedPublicKeyHexRejectsCleanly(t *testing.T) {
-	mutations := map[string]func(map[string]json.RawMessage){
-		"missing":      func(m map[string]json.RawMessage) { delete(m, "public_key_hex") },
-		"null":         func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage("null") },
-		"wrong_length": func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage(`"abcd"`) },
-		"non_string":   func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage("12345") },
+	mutations := []struct {
+		name    string
+		mutate  func(map[string]json.RawMessage)
+		wantErr string
+	}{
+		{"missing", func(m map[string]json.RawMessage) { delete(m, "public_key_hex") }, "public_key_hex is invalid"},
+		{"null", func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage("null") }, "public_key_hex is invalid"},
+		{"wrong_length", func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage(`"abcd"`) }, "public_key_hex is invalid"},
+		{"non_string", func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage("12345") }, "cannot unmarshal"},
 	}
 
-	suiteAsMap := func(t *testing.T, vectors []Vector) map[string]json.RawMessage {
+	suiteAsMap := func(t *testing.T, vectors []Vector, negatives []NegativeVector) map[string]json.RawMessage {
 		t.Helper()
 		s := gen()
 		s.Vectors = vectors
-		s.Negatives = nil
+		s.Negatives = negatives
 		raw, err := json.Marshal(s)
 		if err != nil {
 			t.Fatal(err)
@@ -492,28 +503,56 @@ func TestMalformedPublicKeyHexRejectsCleanly(t *testing.T) {
 		return validate(path)
 	}
 
+	check := func(t *testing.T, m map[string]json.RawMessage, name, wantErr string) {
+		t.Helper()
+		err := writeAndValidate(t, m)
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Fatalf("public_key_hex %s: want an error containing %q, got %v", name, wantErr, err)
+		}
+	}
+
 	// An otherwise-empty suite: the bad key alone must still fail it cleanly,
 	// with nothing that would ever have reached ed25519.Verify.
-	for name, mutate := range mutations {
-		t.Run("empty suite/"+name, func(t *testing.T) {
-			m := suiteAsMap(t, nil)
-			mutate(m)
-			if err := writeAndValidate(t, m); err == nil {
-				t.Fatalf("public_key_hex %s was accepted with nothing to verify", name)
-			}
+	for _, tc := range mutations {
+		t.Run("empty suite/"+tc.name, func(t *testing.T) {
+			m := suiteAsMap(t, nil, nil)
+			tc.mutate(m)
+			check(t, m, tc.name, tc.wantErr)
 		})
 	}
 
 	// A real vector present changes nothing about how the key itself fails --
-	// this is the shape that used to panic instead of erroring.
+	// this is the shape that used to panic in the positive-vector loop's own
+	// direct ed25519.Verify call, and the exact shape issue #12 reported.
 	firstVector := gen().Vectors[:1]
-	for name, mutate := range mutations {
-		t.Run("with a real vector/"+name, func(t *testing.T) {
-			m := suiteAsMap(t, firstVector)
-			mutate(m)
-			if err := writeAndValidate(t, m); err == nil {
-				t.Fatalf("public_key_hex %s did not reject a suite with a real vector to verify", name)
-			}
+	for _, tc := range mutations {
+		t.Run("with a real vector/"+tc.name, func(t *testing.T) {
+			m := suiteAsMap(t, firstVector, nil)
+			tc.mutate(m)
+			check(t, m, tc.name, tc.wantErr)
+		})
+	}
+
+	// A real NEGATIVE present exercises the other reachable ed25519.Verify
+	// call site, rejectReason -- which panicked at a DIFFERENT line than the
+	// one in issue #12's own trace on pre-fix code. Picked by Expect ==
+	// "signature" specifically: a schema-rejected negative never reaches
+	// Verify regardless of the key, so it would not have caught this bug.
+	var sigRejectedNegative NegativeVector
+	for _, nv := range gen().Negatives {
+		if nv.Expect == "signature" {
+			sigRejectedNegative = nv
+			break
+		}
+	}
+	if sigRejectedNegative.Name == "" {
+		t.Fatal(`no generated negative vector has Expect == "signature"; needed one that reaches ed25519.Verify`)
+	}
+	for _, tc := range mutations {
+		t.Run("with a real negative/"+tc.name, func(t *testing.T) {
+			m := suiteAsMap(t, nil, []NegativeVector{sigRejectedNegative})
+			tc.mutate(m)
+			check(t, m, tc.name, tc.wantErr)
 		})
 	}
 }
