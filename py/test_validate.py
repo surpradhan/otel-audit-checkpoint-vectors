@@ -1936,6 +1936,70 @@ def test_null_expect_warnings_matches_empty_warnings_on_a_chained_vector():
         f"a chained vector with expect_warnings=null and no real warnings must pass\n{output}"
 
 
+# --- Wrong-typed "name" must reject the whole file (issue #14) -------------
+#
+# check_entries already type-gated min_format_version before the skip
+# decision -- the decision itself reads that member, so it has to be typed
+# first -- but had no equivalent gate for "name". A non-string, non-null name
+# reached entry_name()'s str() fallback and validated normally, printed in an
+# "ok" line as its Python repr. Go's entryHeader{Name string} is unmarshaled
+# for every entry, skipped or not, to make that same skip decision, so the
+# identical input already failed the whole file there, before anything was
+# printed (checked directly against `go run . validate`, not just read off
+# the struct tag). No Go change and no Go mirror test: entryHeader's decode
+# strictness is unchanged, and -- like this gate's min_format_version sibling,
+# which has no Go-side pin either -- Go's static typing is the pin; this only
+# closes a Python gap against behavior Go already had.
+
+
+def test_wrong_typed_name_rejects_the_whole_file():
+    """A non-string, non-null name -- on an otherwise-valid, must-accept
+    vector or must-reject negative -- fails the whole suite before a single
+    report line is printed, not a per-entry mismatch and not a silently
+    accepted entry with a stringified name in its "ok" line."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    bad_names = ([1, 2], {"a": 1}, 42, 1.0, True, False)
+
+    for bad in bad_names:
+        v = dict(_positive(cp), name=bad)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+        assert rc != 0, f"vector name={bad!r} was accepted\n{output}"
+        assert "name" in output, f"vector name={bad!r} rejected, but not by name:\n{output}"
+        assert "ok " not in output, (
+            f"vector name={bad!r} produced a report line; it must reject "
+            f"before printing one\n{output}")
+
+    nv_base = {"input": dict(cp, tips=None), "expect": "schema", "min_format_version": 2}
+    for bad in bad_names:
+        nv = dict(nv_base, name=bad)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+        assert rc != 0, f"negative name={bad!r} was accepted\n{output}"
+        assert "name" in output, f"negative name={bad!r} rejected, but not by name:\n{output}"
+
+    # The premise: an ordinary string name is unaffected.
+    v = dict(_positive(cp), name="probe")
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+    assert rc == 0, f"a string name must stay legal\n{output}"
+
+
+def test_wrong_typed_name_rejects_even_on_an_entry_that_would_be_skipped():
+    """The gate runs BEFORE the skip decision, matching Go: entryHeader is
+    unmarshaled for every entry, skipped or not, because the skip decision is
+    what reads it. A non-string name on an entry whose min_format_version
+    exceeds SUPPORTED_FORMAT_VERSION must still fail the whole file rather
+    than being silently let through as a skip -- the one verdict this rule
+    must never produce for it."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    v = dict(_positive(cp), name=[1, 2],
+             min_format_version=validate.SUPPORTED_FORMAT_VERSION + 1)
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+    assert rc != 0, f"a would-be-skipped vector with a bad-typed name was accepted\n{output}"
+    assert "skip" not in output, (
+        "a bad-typed name on a would-be-skipped entry produced a skip line; "
+        f"it must fail the whole file instead\n{output}")
+    assert "name" in output, f"rejected, but not by name:\n{output}"
+
+
 def main():
     # Derived from the module, not hand-maintained. A list written out by hand
     # silently stops running any test nobody remembers to add to it -- a test
