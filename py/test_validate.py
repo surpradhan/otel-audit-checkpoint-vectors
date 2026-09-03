@@ -1964,9 +1964,17 @@ def test_wrong_typed_name_rejects_the_whole_file():
         v = dict(_positive(cp), name=bad)
         rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
         assert rc != 0, f"vector name={bad!r} was accepted\n{output}"
-        assert "name" in output, f"vector name={bad!r} rejected, but not by name:\n{output}"
+        # The specific diagnosis, not just that SOMETHING rejected it: a bare
+        # "name" in output" would also pass if some other, unrelated check
+        # happened to fire first and merely mention the word.
+        assert f"got {type(bad).__name__}" in output, (
+            f"vector name={bad!r} rejected, but not with the expected "
+            f"diagnosis:\n{output}")
         assert "ok " not in output, (
             f"vector name={bad!r} produced a report line; it must reject "
+            f"before printing one\n{output}")
+        assert "skip" not in output, (
+            f"vector name={bad!r} produced a skip line; it must reject "
             f"before printing one\n{output}")
 
     nv_base = {"input": dict(cp, tips=None), "expect": "schema", "min_format_version": 2}
@@ -1974,7 +1982,15 @@ def test_wrong_typed_name_rejects_the_whole_file():
         nv = dict(nv_base, name=bad)
         rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
         assert rc != 0, f"negative name={bad!r} was accepted\n{output}"
-        assert "name" in output, f"negative name={bad!r} rejected, but not by name:\n{output}"
+        assert f"got {type(bad).__name__}" in output, (
+            f"negative name={bad!r} rejected, but not with the expected "
+            f"diagnosis:\n{output}")
+        assert "ok " not in output, (
+            f"negative name={bad!r} produced a report line; it must reject "
+            f"before printing one\n{output}")
+        assert "skip" not in output, (
+            f"negative name={bad!r} produced a skip line; it must reject "
+            f"before printing one\n{output}")
 
     # The premise: an ordinary string name is unaffected.
     v = dict(_positive(cp), name="probe")

@@ -256,6 +256,16 @@ def check_entries(suite):
             # name unmarshals into Go's zero string "" without error (JSON
             # null into a non-pointer field is a no-op), so null must stay
             # legal here the same way a missing name already is.
+            # Checked after min_format_version, so an entry with BOTH fields
+            # wrong-typed is diagnosed by min_format_version here. Go's
+            # entryHeader unmarshal instead reports whichever field the JSON
+            # text happens to list first, since a decoder is a stream over
+            # the document as written -- an order this reference cannot
+            # reproduce without parsing raw key order, and the two would
+            # still only ever agree by coincidence of input order. Neither
+            # verdict is what disagrees, only which reason is printed for an
+            # entry malformed in two ways at once, so this is left as a fixed
+            # pick rather than chased.
             name = e.get("name")
             if name is not None and not isinstance(name, str):
                 return (f"name on {named} must be a string, got "

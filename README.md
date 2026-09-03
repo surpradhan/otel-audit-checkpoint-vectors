@@ -587,6 +587,21 @@ walk on the checkpoint itself.
   until this was written down, because `bool` is an `int` subclass and a float
   compares fine against `0`.)
 
+- **Wrong-typed scalars, at the level of a vector/negative's own header.**
+  `"name": [1, 2]` (or any non-string, non-null value) is rejected by both
+  references, and — unlike the per-tip case above — by the *same shape* of
+  mechanism on both sides: Go's `entryHeader{Name string}` is unmarshaled for
+  every entry, skipped or not, to make the skip decision itself, so a
+  non-string name refuses the whole file at load; Python's `check_entries`
+  gates it in the identical position, before the skip decision, for the
+  identical reason. So no vector or negative can carry one.
+  `TestWrongTypedNameIsRejectedWhileDecoding` (`go/encoding_test.go`) and
+  `test_wrong_typed_name_rejects_the_whole_file` /
+  `test_wrong_typed_name_rejects_even_on_an_entry_that_would_be_skipped`
+  (`py/test_validate.py`) assert both directions instead. (Not hypothetical
+  here either: a non-string name validated normally in the Python reference —
+  printed in an "ok" line via its `repr()` — until this was written down.)
+
 - **The version-1-carrying-`epoch` direction.** A version-2 tip missing
   `epoch` is published as a vector (`missing_epoch_in_v2`); the mirror-image
   case — a version-1 vector that *carries* an `epoch` — is not, and cannot be.
