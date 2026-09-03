@@ -2013,7 +2013,10 @@ def test_wrong_typed_name_rejects_even_on_an_entry_that_would_be_skipped():
     assert "skip" not in output, (
         "a bad-typed name on a would-be-skipped entry produced a skip line; "
         f"it must fail the whole file instead\n{output}")
-    assert "name" in output, f"rejected, but not by name:\n{output}"
+    # The specific diagnosis, matching the sibling test above -- a bare
+    # "name" in output" would also pass on a wrong diagnosis, as long as
+    # something happened to mention the word.
+    assert "got list" in output, f"rejected, but not with the expected diagnosis:\n{output}"
 
 
 def main():
