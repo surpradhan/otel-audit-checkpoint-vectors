@@ -1670,6 +1670,244 @@ def test_member_sets_match_the_committed_suite():
             f"declared but never emitted {sorted(set(declared) - seen)}")
 
 
+# --- Uncaught-exception hardening (issue: malformed/null input must reject
+# --- cleanly, never crash) -------------------------------------------------
+#
+# Every case below reproduces a traceback this reference used to raise on
+# third-party input that Go already handles without one. None of them needs a
+# Go mirror test: in each case Go's struct decoding already zero-values the
+# missing/null member and either proceeds (a bare string field) or reports a
+# normal verdict (a nil slice ranges as empty) -- there is no Go behavior to
+# pin, only a Python reporting/construction path that skipped a `.get()` Go's
+# decode gets for free.
+
+
+def test_malformed_public_key_hex_rejects_cleanly():
+    """public_key_hex missing, null, wrong-typed, or the wrong length must not
+    crash main(): a missing key used to raise KeyError, a non-string one
+    TypeError out of bytes.fromhex, and a bad-length or non-hex one ValueError
+    out of the key constructor -- all before a single vector was considered.
+
+    This reference validates the key unconditionally, up front, so a bad key
+    fails the whole suite even with nothing in it that would have needed the
+    key at all. That is a deliberate divergence from Go, not an oversight: Go
+    stores the key as a plain byte slice and only discovers a bad length if a
+    signature actually gets verified against it -- and then panics rather
+    than erroring (a Go-side gap, tracked separately and out of scope for this
+    Python-only issue) -- so Go's laziness here is not a property worth
+    reproducing. Silently accepting an unusable signing key merely because no
+    vector happened to need it yet is a footgun, not a feature."""
+    mutations = (
+        ("missing", lambda s: s.pop("public_key_hex", None)),
+        ("null", lambda s: s.__setitem__("public_key_hex", None)),
+        ("wrong_length", lambda s: s.__setitem__("public_key_hex", "abcd")),
+        ("non_string", lambda s: s.__setitem__("public_key_hex", 12345)),
+    )
+    # An otherwise-empty suite: the bad key alone must still fail it cleanly.
+    for name, mutate in mutations:
+        suite = _synthetic_suite()
+        mutate(suite)
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc != 0, f"public_key_hex {name} must be rejected even with nothing to verify\n{output}"
+        assert "FAIL: public_key_hex" in output, \
+            f"public_key_hex {name} rejected, but not by name:\n{output}"
+
+    # A real vector present changes nothing about how the key itself fails.
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    v = _positive(cp)
+    for name, mutate in mutations:
+        suite = _synthetic_suite(vectors=[v])
+        mutate(suite)
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc != 0, f"public_key_hex {name} must not verify a real vector\n{output}"
+        assert "FAIL: public_key_hex" in output, \
+            f"public_key_hex {name} rejected, but not by name:\n{output}"
+
+
+def test_null_or_missing_vectors_and_negatives_pass_cleanly():
+    """"vectors"/"negatives" absent or explicitly null must read as zero
+    entries of that kind, exactly like Go's nil-slice decode of a missing or
+    null JSON array. check_envelope already folds null to [] before its
+    array-type check, so an untouched suite passes there either way -- but
+    main()'s own loops read `suite["vectors"]` and `suite.get("negatives",
+    [])` directly, neither of which applies that same fallback, so a null
+    value raised TypeError ranging over it and a missing "vectors" key raised
+    KeyError outright."""
+    real = _load_real_suite()
+    mutations = (
+        ("vectors missing", lambda s: s.pop("vectors", None)),
+        ("vectors null", lambda s: s.__setitem__("vectors", None)),
+        ("negatives missing", lambda s: s.pop("negatives", None)),
+        ("negatives null", lambda s: s.__setitem__("negatives", None)),
+        ("both missing", lambda s: (s.pop("vectors", None), s.pop("negatives", None))),
+        ("both null", lambda s: (s.__setitem__("vectors", None),
+                                 s.__setitem__("negatives", None))),
+    )
+    for name, mutate in mutations:
+        suite = copy.deepcopy(real)
+        mutate(suite)
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc == 0, f"a suite with {name} must still pass, as zero entries of that kind\n{output}"
+
+
+def test_skipped_vector_with_missing_or_null_name_reports_cleanly():
+    """A skipped vector's report line pads the name to a column with
+    f"{name:<34}". object.__format__ rejects any non-empty format spec for
+    anything but a str or number, so a present-but-null name raised TypeError
+    there, one line after an absent name raised KeyError at the `v['name']`
+    subscript itself."""
+    base = {"input": {}, "min_format_version": 99}
+    for label, entry in (("missing", dict(base)), ("null", dict(base, name=None))):
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[entry]))
+        assert rc == 0, f"a skipped vector with a {label} name must not fail the suite\n{output}"
+        assert "skip" in output, f"a skipped vector with a {label} name produced no skip line\n{output}"
+
+
+def test_skipped_negative_with_missing_or_null_name_reports_cleanly():
+    """As above, for a skipped negative's report line."""
+    base = {"input": {}, "expect": "schema", "min_format_version": 99}
+    for label, entry in (("missing", dict(base)), ("null", dict(base, name=None))):
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[entry]))
+        assert rc == 0, f"a skipped negative with a {label} name must not fail the suite\n{output}"
+        assert "skip" in output, f"a skipped negative with a {label} name produced no skip line\n{output}"
+
+
+def test_accepted_vector_with_missing_or_null_name_reports_cleanly():
+    """An accepted (must-pass) vector's "ok" line pads the name the same way
+    the skip line does, and is reached only after every real check on the
+    vector's data already passed -- so a missing/null name here is purely a
+    reporting-path defect, not a validation one."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    v = _positive(cp)
+    for label, mutate in (("missing", lambda e: e.pop("name", None)),
+                          ("null", lambda e: e.__setitem__("name", None))):
+        entry = dict(v)
+        mutate(entry)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[entry]))
+        assert rc == 0, f"an otherwise-valid vector with a {label} name must still be accepted\n{output}"
+        assert "  ok " in output, f"an accepted vector with a {label} name produced no ok line\n{output}"
+
+
+def test_accepted_negative_with_missing_or_null_name_reports_cleanly():
+    """As above, for a correctly-rejected negative's "ok" line."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    base = {"input": dict(cp, tips=None), "expect": "schema", "min_format_version": 2}
+    for label, mutate in (("missing", lambda e: e.pop("name", None)),
+                          ("null", lambda e: e.__setitem__("name", None))):
+        entry = dict(base)
+        mutate(entry)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[entry]))
+        assert rc == 0, f"a correctly-rejected negative with a {label} name must still pass\n{output}"
+        assert "  ok " in output, f"a rejected negative with a {label} name produced no ok line\n{output}"
+
+
+def test_accepted_vector_survives_missing_canonical_sha256_or_signature():
+    """A vector missing "canonical", "sha256", or "signature" outright raised
+    KeyError before, on the very subscript the corresponding check needs.
+    Each is now read with a default equal to Go's zero value for that field
+    (an empty string), so the vector fails its ordinary mismatch check with a
+    clean FAIL line -- never a crash -- exactly as if the field had been
+    present but wrong."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    v = _positive(cp)
+    for field in ("canonical", "sha256", "signature"):
+        entry = dict(v)
+        del entry[field]
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[entry]))
+        assert rc != 0, f"a vector missing {field!r} was accepted\n{output}"
+        assert "FAIL [probe]" in output, \
+            f"a vector missing {field!r} was rejected, but not with a clean FAIL line\n{output}"
+
+
+def test_accepted_vector_survives_missing_input():
+    """A vector missing "input" entirely reads as Go's zero Checkpoint, whose
+    absent tips check_schema already rejects as "schema" -- not a KeyError on
+    the bare `v["input"]` subscript this used to be, reached from four
+    separate call sites in the positive-vector loop."""
+    v = {"name": "no_input", "min_format_version": 2}
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+    assert rc != 0, f"a vector with no input at all was accepted\n{output}"
+    assert "FAIL [no_input]" in output, f"rejected, but not cleanly\n{output}"
+
+
+def test_rejected_negative_survives_missing_expect():
+    """A negative missing "expect" reads as Go's zero string "", so it can
+    only match a rejection reason of "" -- which reject_reason never returns
+    for genuinely malformed input -- and reports a clean mismatch rather than
+    raising on the bare `nv["expect"]` subscript this used to be."""
+    cp = _cp(1, _pos_ts(100), None)
+    nv = {"name": "no_expect", "input": cp, "signature": "", "min_format_version": 2}
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+    assert rc != 0, f"a negative missing 'expect' was accepted\n{output}"
+    assert "FAIL [no_expect]" in output, f"rejected, but not cleanly\n{output}"
+
+
+def test_suite_format_version_wrong_type_rejects_cleanly():
+    """A non-integer top-level format_version (a string, or explicitly null)
+    raised TypeError comparing it against SUPPORTED_FORMAT_VERSION with `>`,
+    uncaught. min_format_version already gets this type-gate in check_entries;
+    format_version needs the identical one at its own point of use."""
+    for label, bad in (("string", "not-a-number"), ("null", None), ("bool", True)):
+        suite = _synthetic_suite()
+        suite["format_version"] = bad
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc != 0, f"format_version {label} ({bad!r}) was accepted\n{output}"
+        assert "format_version" in output, \
+            f"format_version {label} rejected, but not by name:\n{output}"
+    # The premise: an ordinary integer format_version still passes.
+    suite = _synthetic_suite()
+    rc, output = _run_main_capturing_stdout(suite)
+    assert rc == 0, f"an untouched empty suite must still pass\n{output}"
+
+
+def test_chain_or_expect_warnings_wrong_type_rejects_cleanly():
+    """"chain" or "expect_warnings" present as a non-list, non-null value (a
+    number, a string) raised TypeError out of len() or a `for` loop
+    downstream in main() -- check_entries let a wrong-typed value through
+    with a comment claiming the verdict belonged to a check that, in fact,
+    never runs it. Explicitly null must still pass through untouched (Go's
+    nil slice, legal), so this also checks the negative: null is not rejected
+    here, only a present non-list value is."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    v = _positive(cp)
+    for field in ("chain", "expect_warnings"):
+        for bad in (5, "not-a-list", {"a": 1}):
+            entry = dict(v)
+            entry[field] = bad
+            rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[entry]))
+            assert rc != 0, f"{field}={bad!r} was accepted\n{output}"
+            assert field in output, f"{field}={bad!r} rejected, but not by name:\n{output}"
+        # The negative: explicitly null must NOT be rejected by the type gate
+        # -- it is legal and must reach ordinary (chainless) validation.
+        entry = dict(v)
+        entry[field] = None
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[entry]))
+        assert rc == 0, f"{field}=None must be accepted like an absent {field}\n{output}"
+
+
+def test_null_expect_warnings_matches_empty_warnings_on_a_chained_vector():
+    """expect_warnings: null must be treated exactly like an absent one --
+    "no warnings expected" -- even on a vector that actually carries chain
+    context and reaches the Tier B warnings comparison. Pre-fix, `warns !=
+    v.get("expect_warnings", [])` compared the real (empty) warns list
+    against None and wrongly failed an otherwise-valid, warning-free chained
+    vector -- a correctness bug, not just a crash. The type-gate tests added
+    alongside that fix only ever exercise a CHAINLESS vector, so the
+    comparison line itself was never actually reached by any committed
+    test."""
+    import hashlib as _h
+    genesis = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    priv = _priv()
+    prefix = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")], prev=genesis)
+    tail = dict(_cp(2, _pos_ts(110), [_tip(_pos_stream(2), 0, 2, 2, "bb")]),
+                prev_hash=_h.sha256(validate.canonical(prefix)).hexdigest())
+    v = _positive(tail, chain=[_sign(priv, prefix)])
+    v["expect_warnings"] = None
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+    assert rc == 0, \
+        f"a chained vector with expect_warnings=null and no real warnings must pass\n{output}"
+
+
 def main():
     # Derived from the module, not hand-maintained. A list written out by hand
     # silently stops running any test nobody remembers to add to it -- a test
