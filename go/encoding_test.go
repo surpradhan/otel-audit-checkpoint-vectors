@@ -445,6 +445,79 @@ func TestTrailingDataAfterSuiteIsRejected(t *testing.T) {
 	}
 }
 
+// public_key_hex missing, null, wrong-typed, or the wrong length must not
+// crash validate(): decoding leaves the Go string field at its zero value for
+// a missing or null member, and hex.DecodeString happily returns a short (or
+// empty) byte slice for "abcd" or "" -- ed25519.Verify then panics on
+// anything but exactly 32 bytes, rather than erroring, the moment a signature
+// actually needs checking. Checked unconditionally right after the decode, so
+// a bad key fails the whole suite even with nothing in it that would have
+// needed the key at all. Mirrors py/test_validate.py's
+// test_malformed_public_key_hex_rejects_cleanly, which pins the same property
+// against Python's own (already-eager) public_key_hex handling.
+func TestMalformedPublicKeyHexRejectsCleanly(t *testing.T) {
+	mutations := map[string]func(map[string]json.RawMessage){
+		"missing":      func(m map[string]json.RawMessage) { delete(m, "public_key_hex") },
+		"null":         func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage("null") },
+		"wrong_length": func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage(`"abcd"`) },
+		"non_string":   func(m map[string]json.RawMessage) { m["public_key_hex"] = json.RawMessage("12345") },
+	}
+
+	suiteAsMap := func(t *testing.T, vectors []Vector) map[string]json.RawMessage {
+		t.Helper()
+		s := gen()
+		s.Vectors = vectors
+		s.Negatives = nil
+		raw, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	writeAndValidate := func(t *testing.T, m map[string]json.RawMessage) error {
+		t.Helper()
+		raw, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "suite.json")
+		if err := os.WriteFile(path, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return validate(path)
+	}
+
+	// An otherwise-empty suite: the bad key alone must still fail it cleanly,
+	// with nothing that would ever have reached ed25519.Verify.
+	for name, mutate := range mutations {
+		t.Run("empty suite/"+name, func(t *testing.T) {
+			m := suiteAsMap(t, nil)
+			mutate(m)
+			if err := writeAndValidate(t, m); err == nil {
+				t.Fatalf("public_key_hex %s was accepted with nothing to verify", name)
+			}
+		})
+	}
+
+	// A real vector present changes nothing about how the key itself fails --
+	// this is the shape that used to panic instead of erroring.
+	firstVector := gen().Vectors[:1]
+	for name, mutate := range mutations {
+		t.Run("with a real vector/"+name, func(t *testing.T) {
+			m := suiteAsMap(t, firstVector)
+			mutate(m)
+			if err := writeAndValidate(t, m); err == nil {
+				t.Fatalf("public_key_hex %s did not reject a suite with a real vector to verify", name)
+			}
+		})
+	}
+}
+
 // The third decode site: the positive path in validate(). rejectReason and
 // verifyPrefixes are covered above, but a must-accept vector's own signature
 // is decoded separately, and a strict decode in two places out of three leaves

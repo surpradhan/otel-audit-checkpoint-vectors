@@ -1718,13 +1718,13 @@ def test_malformed_public_key_hex_rejects_cleanly():
 
     This reference validates the key unconditionally, up front, so a bad key
     fails the whole suite even with nothing in it that would have needed the
-    key at all. That is a deliberate divergence from Go, not an oversight: Go
-    stores the key as a plain byte slice and only discovers a bad length if a
-    signature actually gets verified against it -- and then panics rather
-    than erroring (a Go-side gap, tracked separately and out of scope for this
-    Python-only issue) -- so Go's laziness here is not a property worth
-    reproducing. Silently accepting an unusable signing key merely because no
-    vector happened to need it yet is a footgun, not a feature."""
+    key at all. Go now agrees: #12 moved its length check to right after
+    public_key_hex is decoded, before any vector is considered, closing what
+    used to be a deliberate divergence -- Go stored the key as a plain byte
+    slice and only discovered a bad length if a signature actually got
+    verified against it, then panicked rather than erroring. Silently
+    accepting an unusable signing key merely because no vector happened to
+    need it yet is a footgun, not a feature."""
     mutations = (
         ("missing", lambda s: s.pop("public_key_hex", None)),
         ("null", lambda s: s.__setitem__("public_key_hex", None)),

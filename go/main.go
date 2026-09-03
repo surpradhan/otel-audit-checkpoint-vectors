@@ -1741,6 +1741,15 @@ func validate(path string) error {
 	if err != nil {
 		return err
 	}
+	// Checked here, unconditionally, rather than left for whichever call site
+	// first hands pub to ed25519.Verify: Verify PANICS (does not error) on a
+	// key that isn't exactly 32 bytes, and a suite with nothing that needs a
+	// real verification would otherwise carry a bad key all the way through
+	// undetected. Matches py/validate.py's public_key_hex handling, which
+	// already rejects a bad-length key up front for the same reason.
+	if len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("public_key_hex is invalid: got %d bytes, want %d", len(pub), ed25519.PublicKeySize)
+	}
 	// How many entries MUST be checked, computed in a pre-pass that is
 	// textually separate from the loops that do the checking. The rules cannot
 	// fix a harness that silently skips vectors: a loop truncated to its first
