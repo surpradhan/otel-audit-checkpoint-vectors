@@ -1036,6 +1036,61 @@ func genTierB(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 		MinFormatVersion: 2,
 	})
 
+	// "Not pinned" gap (README): every OTHER chain in the suite starts at
+	// seq 1, so a validator that compares seq against its POSITION in the
+	// chain array -- rather than against seq's own absolute value, which is
+	// what B1 (seq[i+1] == seq[i]+1) actually checks -- is indistinguishable
+	// from a correct one on every vector above. A real verifier holding a
+	// mid-chain window, e.g. seq 400..401 with no genesis in view, would
+	// expose that immediately. farPrefix's prev_hash is an arbitrary
+	// placeholder for a checkpoint this window never saw -- deliberately not
+	// sha256Empty, so nothing about the fixture claims to be genesis -- and
+	// it must still be accepted.
+	farPrefix := Checkpoint{PrevHash: "40" + strings.Repeat("40", 31), Seq: 400, Timestamp: "2026-12-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "40404040-0000-4000-8000-000000000400", TipHash: "40" + strings.Repeat("00", 31)},
+	}}
+	farTail := Checkpoint{PrevHash: cpHash(farPrefix), Seq: 401, Timestamp: "2026-12-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "41414141-0000-4000-8000-000000000401", TipHash: "41" + strings.Repeat("00", 31)},
+	}}
+	farCanon := mustCanonical(farTail, "mid_chain_window_no_genesis")
+	vectors = append(vectors, Vector{
+		Name:             "mid_chain_window_no_genesis",
+		Input:            farTail,
+		Canonical:        string(farCanon),
+		SHA256:           mustSum(farCanon),
+		Signature:        signB64(priv, farCanon),
+		Chain:            []SignedCheckpoint{signCP(priv, farPrefix)},
+		MinFormatVersion: 2,
+	})
+
+	// "Not pinned" gap (README): genesis_empty_tips exercises an empty tips
+	// array, but only as a vector's own checkpoint, never as a chain PREFIX --
+	// so checkTierB's tip walk (for _, t := range sortedTips(cp)) has never
+	// run zero iterations for a checkpoint it did not stop at. A mid-chain
+	// checkpoint can legitimately have no tips: the delta model commits only
+	// streams sealed since the previous checkpoint, and an idle interval with
+	// nothing newly sealed still advances seq and prev_hash. zeroMid sits at
+	// chain index 1 -- neither first nor last -- so B1/B2 must hold on both
+	// the transition into it and the transition out of it, with no tip
+	// identity for B3/B4 to walk on the checkpoint itself.
+	zeroP1 := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-12-02T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "60606060-0000-4000-8000-000000000060", TipHash: "60" + strings.Repeat("00", 31)},
+	}}
+	zeroMid := Checkpoint{PrevHash: cpHash(zeroP1), Seq: 2, Timestamp: "2026-12-02T00:00:05Z", Tips: []Tip{}}
+	zeroTail := Checkpoint{PrevHash: cpHash(zeroMid), Seq: 3, Timestamp: "2026-12-02T00:00:10Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "61616161-0000-4000-8000-000000000061", TipHash: "61" + strings.Repeat("00", 31)},
+	}}
+	zeroCanon := mustCanonical(zeroTail, "mid_chain_zero_tip_checkpoint")
+	vectors = append(vectors, Vector{
+		Name:             "mid_chain_zero_tip_checkpoint",
+		Input:            zeroTail,
+		Canonical:        string(zeroCanon),
+		SHA256:           mustSum(zeroCanon),
+		Signature:        signB64(priv, zeroCanon),
+		Chain:            []SignedCheckpoint{signCP(priv, zeroP1), signCP(priv, zeroMid)},
+		MinFormatVersion: 2,
+	})
+
 	return vectors, negatives
 }
 

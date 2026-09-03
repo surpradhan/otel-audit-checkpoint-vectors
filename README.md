@@ -188,7 +188,7 @@ No published vector can express this — see [Not pinned](#rules-hold-at-every-p
 
 ## Positive vectors (a conformant validator MUST accept these)
 
-The 13 positive vectors, one line each:
+The 15 positive vectors, one line each:
 
 - `genesis_empty_tips` — the first checkpoint of the positives' own hash
   chain, with an empty `tips` array.
@@ -218,6 +218,15 @@ The 13 positive vectors, one line each:
   whose expected warning list is deliberately not in sorted order.
 - `advisory_epoch_regression` — a stream re-committed under an *older* epoch,
   the rollback-shaped case B4 exists to catch and B3 does not.
+- `mid_chain_window_no_genesis` — a chain prefix that opens at `seq: 400`
+  instead of 1, with an arbitrary `prev_hash` standing in for a checkpoint the
+  verifier never saw; proves B1 checks `seq`'s relative delta, not its
+  position in the `chain` array (see "Rules hold at every position" below).
+- `mid_chain_zero_tip_checkpoint` — a three-checkpoint chain whose *middle*
+  checkpoint has an empty `tips` array; proves a zero-tip checkpoint is
+  accepted, and that B1/B2 hold on both transitions around it, when it is a
+  `chain` prefix rather than a vector's own input (see "Rules hold at every
+  position" below).
 - `advisory_middle_chain_unsorted_prefix_tips` — must-accept over a
   three-prefix chain, with the *middle* prefix's tips supplied out of
   identity order and warnings landing at middle/final/interior positions.
@@ -518,15 +527,30 @@ to collide with — a comparable struct, not a flattened string — so none of
 this can fail today; the vector and the two tests are conformance proof and
 regression guards respectively, not evidence of a live gap.
 
+Two more gaps from that list are pinned the same way now, with real vectors
+rather than an argument for why one is not needed. Every OTHER chain in the
+suite starts at `seq: 1`, so nothing before `mid_chain_window_no_genesis`
+could separate a validator that checks B1's actual rule (`seq[i+1] ==
+seq[i]+1`) from one that checks `seq[i]` against its own position in the
+`chain` array — the two agree whenever the window happens to start at 1. The
+vector's chain prefix opens at `seq: 400` with an arbitrary `prev_hash`
+standing in for a checkpoint the verifier never saw — deliberately not
+`sha256Empty`, so nothing about the fixture claims to be genesis — and it
+must still be accepted: exactly the mid-chain window a real verifier holds
+once it stops keeping every checkpoint back to genesis.
+`mid_chain_zero_tip_checkpoint` closes the other: `genesis_empty_tips`
+exercises an empty `tips` array, but only as a vector's own checkpoint, never
+as a `chain` *prefix*, so the cross-checkpoint tip walk had never run zero
+iterations for a checkpoint it did not stop at. The delta model makes this a
+real case, not a boundary curiosity: a checkpoint commits only the streams
+sealed since the one before it, so an idle interval with nothing newly sealed
+still advances `seq` and `prev_hash` with an empty `tips`. The vector's
+*middle* checkpoint does exactly that, so B1/B2 must hold on both the
+transition into it and the transition out of it, with nothing for B3/B4 to
+walk on the checkpoint itself.
+
 **Not pinned**, stated plainly rather than left to be discovered:
 
-- **Sequence-number absolute value vs. array index.** Every chain in the
-  suite starts at `seq: 1`. A validator that compares `seq` against its
-  position in the `chain` array, rather than against `seq`'s own absolute
-  value, is indistinguishable from a correct one on every vector here.
-- **A zero-tip checkpoint inside a chain.** `genesis_empty_tips` exercises an
-  empty `tips` array, but only as a vector's own checkpoint, never as a
-  `chain` prefix. A rule that mishandles an empty *prefix* is unexercised.
 - **`stream_id` ordering by code point vs. by length.** Every `stream_id` in
   the suite is a 36-character UUID, so no published vector ever compares two
   of different lengths. A validator that sorts by length first and only then
@@ -603,7 +627,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 13 positive (10 through Tier B) + 29 negative
+checked: 15 positive (12 through Tier B) + 29 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.

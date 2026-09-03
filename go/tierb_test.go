@@ -446,6 +446,37 @@ func TestB1CheckedOnEveryTransition(t *testing.T) {
 	}
 }
 
+// B1 checks seq's RELATIVE delta between adjacent checkpoints, never its
+// absolute value against the checkpoint's position in the chain array. A real
+// verifier holding a mid-chain window, with no genesis in view, must accept a
+// correctly incrementing chain that does not start at seq 1.
+func TestB1AcceptsChainNotStartingAtSeqOne(t *testing.T) {
+	chain := linkChain(t,
+		Checkpoint{Seq: 400, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		Checkpoint{Seq: 401, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{mkTip("s2", 0, 2, 2, "bb")}})
+	if _, err := checkTierB(chain); err != nil {
+		t.Fatalf("checkTierB rejected a correctly incrementing chain that does not start at seq 1: %v", err)
+	}
+}
+
+// A mid-chain checkpoint with zero tips is legitimate under the delta model:
+// an idle interval commits nothing new, but still advances seq and prev_hash.
+// It must not disrupt B1/B2 on either side of it, and the tip walk (B3/B4)
+// must run zero iterations for it rather than mishandling the empty slice.
+func TestZeroTipCheckpointAcceptedMidChain(t *testing.T) {
+	chain := linkChain(t,
+		Checkpoint{Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{mkTip("s1", 0, 1, 1, "aa")}},
+		Checkpoint{Seq: 2, Timestamp: "2026-01-01T00:00:05Z", Tips: []Tip{}},
+		Checkpoint{Seq: 3, Timestamp: "2026-01-01T00:00:10Z", Tips: []Tip{mkTip("s2", 0, 2, 2, "bb")}})
+	warns, err := checkTierB(chain)
+	if err != nil {
+		t.Fatalf("checkTierB rejected a chain with a mid-chain zero-tip checkpoint: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("warnings = %v, want none", warns)
+	}
+}
+
 // expect_warnings is an ORDERED contract. No published vector can catch a
 // comparison weakened to a multiset, because every vector's expectation is
 // correct and a looser comparison never fails on correct data -- only feeding a
