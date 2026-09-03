@@ -1946,10 +1946,12 @@ def test_null_expect_warnings_matches_empty_warnings_on_a_chained_vector():
 # for every entry, skipped or not, to make that same skip decision, so the
 # identical input already failed the whole file there, before anything was
 # printed (checked directly against `go run . validate`, not just read off
-# the struct tag). No Go change and no Go mirror test: entryHeader's decode
-# strictness is unchanged, and -- like this gate's min_format_version sibling,
-# which has no Go-side pin either -- Go's static typing is the pin; this only
-# closes a Python gap against behavior Go already had.
+# the struct tag). entryHeader's decode strictness itself is unchanged --
+# Go already rejected this, so this closes a Python gap against behavior Go
+# already had -- but review asked for a Go-side pin anyway, despite this
+# gate's min_format_version sibling having none: see
+# TestWrongTypedNameIsRejectedWhileDecoding (go/encoding_test.go) and the
+# matching README.md bullet, both added later in this PR.
 
 
 def test_wrong_typed_name_rejects_the_whole_file():
