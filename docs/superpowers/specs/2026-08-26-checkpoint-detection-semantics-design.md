@@ -178,7 +178,9 @@ vector in the suite, the warnings a correct validator emits are already in the
 expected order — that is what makes the vector correct — so a validator that
 compares warnings as an unordered multiset also passes the entire suite. No
 vector can force the ordered comparison; it has to be stated as a requirement,
-same as here.
+same as here. (`advisory_chain_b5_then_b4` — a three-checkpoint chain raising
+B5 then B4, expected list deliberately not in sorted order — is the vector
+that most exercises this stated requirement.)
 
 A cross-epoch re-commit carrying a lower `entry_count` is advisory, not a hard
 reject. That is not a detection regression: forging a cross-epoch checkpoint
