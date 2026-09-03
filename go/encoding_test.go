@@ -655,6 +655,37 @@ func TestWrongTypedEpochIsRejectedWhileDecoding(t *testing.T) {
 	}
 }
 
+// TestWrongTypedNameIsRejectedWhileDecoding pins entryHeader's decode
+// strictness for "name" -- the same policy README.md's "Wrong-typed scalars"
+// section already states for epoch, just one level up: entryHeader is
+// unmarshaled for every entry, skipped or not, to make the skip decision
+// itself, so a non-string name refuses the whole file at load. Mirrors
+// TestWrongTypedEpochIsRejectedWhileDecoding, and pairs with Python's
+// test_wrong_typed_name_rejects_the_whole_file.
+func TestWrongTypedNameIsRejectedWhileDecoding(t *testing.T) {
+	for _, raw := range []string{`[1,2]`, `{"a":1}`, `42`, `1.0`, `true`, `false`} {
+		var h entryHeader
+		body := `{"name":` + raw + `,"min_format_version":0}`
+		if err := json.Unmarshal([]byte(body), &h); err == nil {
+			t.Errorf("name %s was accepted; name must be a string", raw)
+		}
+	}
+	// The contrast: an ordinary string name, and an absent or explicitly
+	// null one -- JSON null into a non-pointer field is a documented no-op,
+	// not an error -- must all still decode.
+	for _, raw := range []string{`"probe"`, `null`} {
+		var h entryHeader
+		body := `{"name":` + raw + `,"min_format_version":0}`
+		if err := json.Unmarshal([]byte(body), &h); err != nil {
+			t.Errorf("name %s must decode without error, got: %v", raw, err)
+		}
+	}
+	var absent entryHeader
+	if err := json.Unmarshal([]byte(`{"min_format_version":0}`), &absent); err != nil {
+		t.Errorf("an absent name must decode without error, got: %v", err)
+	}
+}
+
 // The two marshal paths must agree on EVERY member except `epoch`. The null
 // path used to re-declare all five fields in a parallel anonymous struct, so a
 // sixth field added to Tip would appear in the signed bytes of an ordinary tip
