@@ -460,6 +460,20 @@ def check_tier_b(chain: list) -> tuple:
     return (None, warns)
 
 
+def entry_name(e: dict) -> str:
+    """A safe display name for a vector/negative entry in a report line.
+
+    `name` is not a required member (Go's Name field zero-values to "" when
+    it is absent or null, and never errors), but a bare `e['name']` raises
+    KeyError on absence, and even `e.get('name')` fed to an aligned format
+    spec like `f"{n:<34}"` raises TypeError for None or for any non-str,
+    non-number value -- object.__format__ only accepts an empty spec. Both
+    are third-party input like any other, so this reference must return a
+    string, never raise."""
+    name = e.get("name", "")
+    return name if isinstance(name, str) else str(name)
+
+
 def reject_reason(pub, nv):
     """Return the check that rejects a negative vector, or "" if it is
     (wrongly) accepted. At module scope, mirroring Go's top-level
@@ -521,7 +535,18 @@ def main() -> int:
     if suite.get("format_version", 1) > SUPPORTED_FORMAT_VERSION:
         print(f"  note: suite format_version={suite['format_version']} exceeds "
               f"supported={SUPPORTED_FORMAT_VERSION}; unsupported vectors will be skipped")
-    pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(suite["public_key_hex"]))
+    # A missing public_key_hex reads as "" here, matching Go's zero-valued
+    # string field -- but Python's key constructor, unlike a raw Go byte
+    # slice, validates length eagerly and raises on anything but exactly 32
+    # bytes. Third-party data of the wrong type or length must produce a
+    # clean top-level FAIL, not a traceback, so the construction is guarded
+    # the same way the envelope and JSON-decode failures above it are.
+    try:
+        pub = Ed25519PublicKey.from_public_bytes(
+            bytes.fromhex(suite.get("public_key_hex", "")))
+    except (TypeError, ValueError) as e:
+        print(f"FAIL: public_key_hex is invalid: {e}")
+        return 1
 
     # How many entries MUST be checked, computed in a pre-pass that is
     # textually separate from the loops that do the checking. The rules cannot
@@ -532,52 +557,61 @@ def main() -> int:
     # class; test_validate_checks_every_vector_and_negative and its Go mirror
     # recount the committed file independently and catch it too.
     want_positives = want_tier_b = want_negatives = 0
-    for v in suite["vectors"]:
+    # `or []`, not suite["vectors"]/suite.get(key, []): a missing OR explicitly
+    # null "vectors"/"negatives" both read as Go's nil slice -- zero entries,
+    # not an error -- and check_envelope has already rejected any non-null
+    # value that is not an array of objects, so by this point either form is
+    # safe to iterate.
+    for v in suite.get("vectors") or []:
         if skip_vector(v.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
             continue
         want_positives += 1
         if len(v.get("chain", [])) != 0 or len(v.get("expect_warnings", [])) != 0:
             want_tier_b += 1
-    for nv in suite.get("negatives", []):
+    for nv in suite.get("negatives") or []:
         if not skip_vector(nv.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
             want_negatives += 1
     got_positives = got_tier_b = got_negatives = 0
 
     prev_expected = None
-    for i, v in enumerate(suite["vectors"]):
+    for i, v in enumerate(suite.get("vectors") or []):
         if skip_vector(v.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
-            print(f"  skip {v['name']:<34} requires format_version {v['min_format_version']}")
+            print(f"  skip {entry_name(v):<34} requires format_version {v['min_format_version']}")
             prev_expected = None
             continue
+        # `or {}`: a present-but-null "input" is not an absent one, and both
+        # decode to Go's zero Checkpoint, whose nil tips check_schema rejects
+        # as "schema" rather than raising on the None fed to it here.
+        cp_input = v.get("input") or {}
         # Same check order as Go's positive path -- schema boundary first,
         # then canonical bytes, hash, signature. Both negative paths already
         # agree on that order; this one lagged, and a check order a third party
         # can observe is part of what the two references must share.
-        err = check_schema(v["input"], v.get("min_format_version", 0))
+        err = check_schema(cp_input, v.get("min_format_version", 0))
         if err:
-            print(f"FAIL [{v['name']}] {err}")
+            print(f"FAIL [{entry_name(v)}] {err}")
             return 1
         # A must-accept vector is third-party data like any other: Go prints a
         # clean "FAIL:" line for a malformed one, so raising here would make
         # the same input a traceback in one reference and a diagnosis in the
         # other.
         try:
-            cb = canonical(v["input"])
+            cb = canonical(cp_input)
         except ValueError as e:
-            print(f"FAIL [{v['name']}] canonical: {e}")
+            print(f"FAIL [{entry_name(v)}] canonical: {e}")
             return 1
-        if cb.decode("utf-8") != v["canonical"]:
-            print(f"FAIL [{v['name']}] canonical mismatch")
+        if cb.decode("utf-8") != v.get("canonical", ""):
+            print(f"FAIL [{entry_name(v)}] canonical mismatch")
             print(f"  got:  {cb.decode('utf-8')}")
-            print(f"  want: {v['canonical']}")
+            print(f"  want: {v.get('canonical', '')}")
             return 1
-        if hashlib.sha256(cb).hexdigest() != v["sha256"]:
-            print(f"FAIL [{v['name']}] sha256 mismatch")
+        if hashlib.sha256(cb).hexdigest() != v.get("sha256", ""):
+            print(f"FAIL [{entry_name(v)}] sha256 mismatch")
             return 1
         try:
-            pub.verify(decode_signature(v["signature"]), cb)
+            pub.verify(decode_signature(v.get("signature", "")), cb)
         except (InvalidSignature, ValueError, TypeError):
-            print(f"FAIL [{v['name']}] signature does not verify")
+            print(f"FAIL [{entry_name(v)}] signature does not verify")
             return 1
         if v.get("chain") or v.get("expect_warnings"):
             # A must-accept vector's prefixes are verified exactly as a
@@ -585,45 +619,45 @@ def main() -> int:
             prefixes, reason = verify_prefixes(
                 pub, v.get("chain", []), v.get("min_format_version", 0))
             if reason:
-                print(f"FAIL [{v['name']}] must be accepted, but its chain "
+                print(f"FAIL [{entry_name(v)}] must be accepted, but its chain "
                       f"context was rejected ({reason})")
                 return 1
-            full = prefixes + [v["input"]]
+            full = prefixes + [cp_input]
             tb_err, warns = check_tier_b(full)
             if tb_err:
-                print(f"FAIL [{v['name']}] must be accepted, but Tier B rejected it: {tb_err}")
+                print(f"FAIL [{entry_name(v)}] must be accepted, but Tier B rejected it: {tb_err}")
                 return 1
             if warns != v.get("expect_warnings", []):
-                print(f"FAIL [{v['name']}] warnings {warns}, want {v.get('expect_warnings', [])}")
+                print(f"FAIL [{entry_name(v)}] warnings {warns}, want {v.get('expect_warnings', [])}")
                 return 1
             got_tier_b += 1
         # A vector carrying its own chain context is not part of the positives'
         # own hash chain, so prev_expected does not apply to it.
         if (i > 0 and prev_expected is not None and not v.get("chain")
-                and v["input"].get("prev_hash", "") != prev_expected):
-            print(f"FAIL [{v['name']}] chain break")
+                and cp_input.get("prev_hash", "") != prev_expected):
+            print(f"FAIL [{entry_name(v)}] chain break")
             return 1
         if not v.get("chain"):
             # Only vectors in the positives' own hash chain advance it; a
             # chain-carrying vector must not become the next one's expected
             # predecessor.
-            prev_expected = v["sha256"]
+            prev_expected = v.get("sha256", "")
         got_positives += 1
-        print(f"  ok  {v['name']:<34} sha256={v['sha256'][:16]}…")
+        print(f"  ok  {entry_name(v):<34} sha256={v.get('sha256', '')[:16]}…")
 
-    for nv in suite.get("negatives", []):
+    for nv in suite.get("negatives") or []:
         if skip_vector(nv.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
-            print(f"  skip {nv['name']:<34} requires format_version {nv['min_format_version']}")
+            print(f"  skip {entry_name(nv):<34} requires format_version {nv['min_format_version']}")
             continue
         got = reject_reason(pub, nv)
         if got == "":
-            print(f"FAIL [{nv['name']}] accepted, but must be rejected")
+            print(f"FAIL [{entry_name(nv)}] accepted, but must be rejected")
             return 1
-        if got != nv["expect"]:
-            print(f"FAIL [{nv['name']}] rejected for {got!r}, expected {nv['expect']!r}")
+        if got != nv.get("expect", ""):
+            print(f"FAIL [{entry_name(nv)}] rejected for {got!r}, expected {nv.get('expect', '')!r}")
             return 1
         got_negatives += 1
-        print(f"  ok  {nv['name']:<34} rejected ({got})")
+        print(f"  ok  {entry_name(nv):<34} rejected ({got})")
 
     if got_positives != want_positives:
         print(f"FAIL harness: validated {got_positives} of {want_positives} positive vectors")
