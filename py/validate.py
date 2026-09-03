@@ -256,6 +256,17 @@ def check_entries(suite):
                                            f"the checkpoint of {named}")
             if err:
                 return err
+            # Type-gate "chain" and "expect_warnings" before either is read
+            # as a list downstream: absent OR explicitly null is Go's nil
+            # slice -- legal, zero entries -- but a PRESENT non-list value
+            # (a number, a string, an object) is a defect Go's strict decode
+            # would fail the whole file on, and main()'s `len()`/iteration
+            # over it raised TypeError uncaught rather than reporting it.
+            for field in ("chain", "expect_warnings"):
+                val = e.get(field)
+                if val is not None and not isinstance(val, list):
+                    return (f"{field} on {named} must be an array, got "
+                            f"{type(val).__name__}")
             chain = e.get("chain")
             if not isinstance(chain, list):
                 continue
@@ -532,8 +543,15 @@ def main() -> int:
     if err:
         print(f"FAIL: {err}")
         return 1
-    if suite.get("format_version", 1) > SUPPORTED_FORMAT_VERSION:
-        print(f"  note: suite format_version={suite['format_version']} exceeds "
+    # Type-gate before comparing, for the same reason check_entries gates
+    # min_format_version: `>` against a str or None raises TypeError, which is
+    # a traceback here and a clean decode error in Go.
+    fv = suite.get("format_version", 1)
+    if isinstance(fv, bool) or not isinstance(fv, int):
+        print(f"FAIL: format_version must be an integer, got {type(fv).__name__}")
+        return 1
+    if fv > SUPPORTED_FORMAT_VERSION:
+        print(f"  note: suite format_version={fv} exceeds "
               f"supported={SUPPORTED_FORMAT_VERSION}; unsupported vectors will be skipped")
     # A missing public_key_hex reads as "" here, matching Go's zero-valued
     # string field -- but Python's key constructor, unlike a raw Go byte
@@ -566,7 +584,10 @@ def main() -> int:
         if skip_vector(v.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
             continue
         want_positives += 1
-        if len(v.get("chain", [])) != 0 or len(v.get("expect_warnings", [])) != 0:
+        # `or []`: check_entries allows "chain"/"expect_warnings" to be
+        # explicitly null (Go's nil slice), so `.get(key, [])`'s default does
+        # not apply and `len(None)` would raise here without this.
+        if len(v.get("chain") or []) != 0 or len(v.get("expect_warnings") or []) != 0:
             want_tier_b += 1
     for nv in suite.get("negatives") or []:
         if not skip_vector(nv.get("min_format_version", 0), SUPPORTED_FORMAT_VERSION):
@@ -615,9 +636,10 @@ def main() -> int:
             return 1
         if v.get("chain") or v.get("expect_warnings"):
             # A must-accept vector's prefixes are verified exactly as a
-            # negative's are: same helper, same MUST.
+            # negative's are: same helper, same MUST. `or []`: an explicitly
+            # null chain is legal (see check_entries) but not iterable.
             prefixes, reason = verify_prefixes(
-                pub, v.get("chain", []), v.get("min_format_version", 0))
+                pub, v.get("chain") or [], v.get("min_format_version", 0))
             if reason:
                 print(f"FAIL [{entry_name(v)}] must be accepted, but its chain "
                       f"context was rejected ({reason})")
@@ -627,8 +649,11 @@ def main() -> int:
             if tb_err:
                 print(f"FAIL [{entry_name(v)}] must be accepted, but Tier B rejected it: {tb_err}")
                 return 1
-            if warns != v.get("expect_warnings", []):
-                print(f"FAIL [{entry_name(v)}] warnings {warns}, want {v.get('expect_warnings', [])}")
+            # `or []`: an explicitly null expect_warnings means "none
+            # expected", the same as an absent one -- not a mismatch against
+            # whatever warns computed to, and not a `len(None)` crash above.
+            if warns != (v.get("expect_warnings") or []):
+                print(f"FAIL [{entry_name(v)}] warnings {warns}, want {v.get('expect_warnings') or []}")
                 return 1
             got_tier_b += 1
         # A vector carrying its own chain context is not part of the positives'

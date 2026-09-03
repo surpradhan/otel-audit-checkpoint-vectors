@@ -1801,6 +1801,90 @@ def test_accepted_negative_with_missing_or_null_name_reports_cleanly():
         assert "  ok " in output, f"a rejected negative with a {label} name produced no ok line\n{output}"
 
 
+def test_accepted_vector_survives_missing_canonical_sha256_or_signature():
+    """A vector missing "canonical", "sha256", or "signature" outright raised
+    KeyError before, on the very subscript the corresponding check needs.
+    Each is now read with a default equal to Go's zero value for that field
+    (an empty string), so the vector fails its ordinary mismatch check with a
+    clean FAIL line -- never a crash -- exactly as if the field had been
+    present but wrong."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    v = _positive(cp)
+    for field in ("canonical", "sha256", "signature"):
+        entry = dict(v)
+        del entry[field]
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[entry]))
+        assert rc != 0, f"a vector missing {field!r} was accepted\n{output}"
+        assert "FAIL [probe]" in output, \
+            f"a vector missing {field!r} was rejected, but not with a clean FAIL line\n{output}"
+
+
+def test_accepted_vector_survives_missing_input():
+    """A vector missing "input" entirely reads as Go's zero Checkpoint, whose
+    absent tips check_schema already rejects as "schema" -- not a KeyError on
+    the bare `v["input"]` subscript this used to be, reached from four
+    separate call sites in the positive-vector loop."""
+    v = {"name": "no_input", "min_format_version": 2}
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+    assert rc != 0, f"a vector with no input at all was accepted\n{output}"
+    assert "FAIL [no_input]" in output, f"rejected, but not cleanly\n{output}"
+
+
+def test_rejected_negative_survives_missing_expect():
+    """A negative missing "expect" reads as Go's zero string "", so it can
+    only match a rejection reason of "" -- which reject_reason never returns
+    for genuinely malformed input -- and reports a clean mismatch rather than
+    raising on the bare `nv["expect"]` subscript this used to be."""
+    cp = _cp(1, _pos_ts(100), None)
+    nv = {"name": "no_expect", "input": cp, "signature": "", "min_format_version": 2}
+    rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+    assert rc != 0, f"a negative missing 'expect' was accepted\n{output}"
+    assert "FAIL [no_expect]" in output, f"rejected, but not cleanly\n{output}"
+
+
+def test_suite_format_version_wrong_type_rejects_cleanly():
+    """A non-integer top-level format_version (a string, or explicitly null)
+    raised TypeError comparing it against SUPPORTED_FORMAT_VERSION with `>`,
+    uncaught. min_format_version already gets this type-gate in check_entries;
+    format_version needs the identical one at its own point of use."""
+    for label, bad in (("string", "not-a-number"), ("null", None), ("bool", True)):
+        suite = _synthetic_suite()
+        suite["format_version"] = bad
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc != 0, f"format_version {label} ({bad!r}) was accepted\n{output}"
+        assert "format_version" in output, \
+            f"format_version {label} rejected, but not by name:\n{output}"
+    # The premise: an ordinary integer format_version still passes.
+    suite = _synthetic_suite()
+    rc, output = _run_main_capturing_stdout(suite)
+    assert rc == 0, f"an untouched empty suite must still pass\n{output}"
+
+
+def test_chain_or_expect_warnings_wrong_type_rejects_cleanly():
+    """"chain" or "expect_warnings" present as a non-list, non-null value (a
+    number, a string) raised TypeError out of len() or a `for` loop
+    downstream in main() -- check_entries let a wrong-typed value through
+    with a comment claiming the verdict belonged to a check that, in fact,
+    never runs it. Explicitly null must still pass through untouched (Go's
+    nil slice, legal), so this also checks the negative: null is not rejected
+    here, only a present non-list value is."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    v = _positive(cp)
+    for field in ("chain", "expect_warnings"):
+        for bad in (5, "not-a-list", {"a": 1}):
+            entry = dict(v)
+            entry[field] = bad
+            rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[entry]))
+            assert rc != 0, f"{field}={bad!r} was accepted\n{output}"
+            assert field in output, f"{field}={bad!r} rejected, but not by name:\n{output}"
+        # The negative: explicitly null must NOT be rejected by the type gate
+        # -- it is legal and must reach ordinary (chainless) validation.
+        entry = dict(v)
+        entry[field] = None
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[entry]))
+        assert rc == 0, f"{field}=None must be accepted like an absent {field}\n{output}"
+
+
 def main():
     # Derived from the module, not hand-maintained. A list written out by hand
     # silently stops running any test nobody remembers to add to it -- a test
