@@ -1751,6 +1751,32 @@ def test_malformed_public_key_hex_rejects_cleanly():
         assert "FAIL: public_key_hex" in output, \
             f"public_key_hex {name} rejected, but not by name:\n{output}"
 
+    # A real NEGATIVE present: this reference validates the key up front
+    # regardless of suite content, so it is not a live bug here the way it
+    # was for Go's rejectReason call site pre-#12 -- but nothing before this
+    # exercised a negatives-only suite against the mutated key, so a future
+    # change that made the check conditional per-entry instead of eager could
+    # regress on exactly this shape with no test catching it. Picked by
+    # "expect" == "signature" specifically: were the check ever made lazy, a
+    # schema-rejected negative would still never reach signature
+    # verification regardless of the key, so only a signature-rejected one
+    # would actually exercise the path such a regression would need covered.
+    # Mirrors go/encoding_test.go's "with a real negative" subtest (added by
+    # #17 for the same reason on the Go side).
+    real_negatives = _load_real_suite()["negatives"]
+    sig_rejected_negative = next(
+        (nv for nv in real_negatives if nv.get("expect") == "signature"), None)
+    assert sig_rejected_negative is not None, (
+        'no committed negative vector has expect == "signature"; needed one '
+        'that reaches real signature verification')
+    for name, mutate in mutations:
+        suite = _synthetic_suite(negatives=[sig_rejected_negative])
+        mutate(suite)
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc != 0, f"public_key_hex {name} must not verify a real negative\n{output}"
+        assert "FAIL: public_key_hex" in output, \
+            f"public_key_hex {name} rejected, but not by name:\n{output}"
+
 
 def test_null_or_missing_vectors_and_negatives_pass_cleanly():
     """"vectors"/"negatives" absent or explicitly null must read as zero
