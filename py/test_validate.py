@@ -1757,10 +1757,12 @@ def test_malformed_public_key_hex_rejects_cleanly():
     # exercised a negatives-only suite against the mutated key, so a future
     # change that made the check conditional per-entry instead of eager could
     # regress on exactly this shape with no test catching it. Picked by
-    # "expect" == "signature" specifically: a schema-rejected negative never
-    # reaches signature verification regardless of the key, so it would not
-    # exercise this path. Mirrors go/encoding_test.go's "with a real
-    # negative" subtest (added by #17 for the same reason on the Go side).
+    # "expect" == "signature" specifically: were the check ever made lazy, a
+    # schema-rejected negative would still never reach signature
+    # verification regardless of the key, so only a signature-rejected one
+    # would actually exercise the path such a regression would need covered.
+    # Mirrors go/encoding_test.go's "with a real negative" subtest (added by
+    # #17 for the same reason on the Go side).
     real_negatives = _load_real_suite()["negatives"]
     sig_rejected_negative = next(
         (nv for nv in real_negatives if nv.get("expect") == "signature"), None)
