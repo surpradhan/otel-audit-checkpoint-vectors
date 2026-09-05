@@ -637,6 +637,31 @@ walk on the checkpoint itself.
   `test_wrong_typed_negative_body_fields_ignored_when_the_entry_is_skipped`
   (`py/test_validate.py`) assert all of this instead.
 
+- **Wrong-typed scalars, on a checkpoint's own body.** `seq`, `timestamp` and
+  `prev_hash` are `Checkpoint`'s members besides `tips`. A wrong-typed `seq`
+  or `timestamp` used to reach unguarded Tier B arithmetic/comparison in the
+  Python reference — B1's `prev_seq + 1` and B5's `<` — and crash with an
+  uncaught `TypeError` instead of a clean rejection; `prev_hash` never reached
+  an unsafe operation (B2 compares it with `!=`, which never raises across
+  Python types) but is gated the same way for the same reason the fields
+  above are. Rejected by both references, by the same shape of mechanism as
+  the header/envelope/negative-body cases above: Go's `Checkpoint` strict-
+  decodes all three eagerly, so a wrong type refuses the whole file at load;
+  Python's `check_schema` now gates the same three fields before `tips` is
+  even examined. A *null* value for any of the three stays legal in both —
+  none of `Checkpoint`'s fields are pointers, so JSON null is a documented
+  no-op leaving the zero value — but null still needed its own fix in the
+  Python reference: `check_tier_b`'s own reads used to default only for an
+  *absent* key (`.get("seq", 0)`), so a *present* null reached B1/B5 as `None`
+  and crashed exactly like a wrong type. `cp_seq`/`cp_timestamp` fold a
+  present null to the zero value the same way `tip_epoch` already does for
+  epoch. `TestWrongTypedCheckpointBodyScalarsAreRejectedWhileDecoding`
+  (`go/encoding_test.go`),
+  `test_wrong_typed_checkpoint_body_scalars_returns_a_reason`,
+  `test_null_checkpoint_body_scalars_fold_to_zero_value_in_tier_b` and
+  `test_wrong_typed_checkpoint_body_scalars_reject_cleanly_through_the_validator`
+  (`py/test_validate.py`) assert all of this instead.
+
 - **The version-1-carrying-`epoch` direction.** A version-2 tip missing
   `epoch` is published as a vector (`missing_epoch_in_v2`); the mirror-image
   case — a version-1 vector that *carries* an `epoch` — is not, and cannot be.

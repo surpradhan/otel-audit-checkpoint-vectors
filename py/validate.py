@@ -27,6 +27,28 @@ def tip_epoch(t: dict) -> int:
     return 0 if ep is None else ep
 
 
+def cp_seq(cp: dict) -> int:
+    """A checkpoint's seq, treating a present null the same as absent: 0.
+
+    `.get("seq", 0)` at a use site only supplies 0 when the key is ABSENT; a
+    PRESENT null still reads back as None and would reach B1's `prev_seq + 1`
+    unguarded. Go's non-pointer `Seq int` field decodes JSON null as a
+    documented no-op, leaving the zero value (verified directly: decoding
+    `{"seq":null,...}` yields `Seq == 0`). Mirrors tip_epoch's fold, for the
+    same reason and the same shape of bug."""
+    seq = cp.get("seq")
+    return 0 if seq is None else seq
+
+
+def cp_timestamp(cp: dict) -> str:
+    """A checkpoint's timestamp, treating a present null the same as absent:
+    "". Same reasoning as cp_seq, guarding B5's `<` against Go's non-pointer
+    `Timestamp string` field, which decodes JSON null the same documented-no-op
+    way."""
+    ts = cp.get("timestamp")
+    return "" if ts is None else ts
+
+
 def tip_identity(t: dict) -> tuple:
     """Uniqueness and sort key (spec R4). Epoch is part of the identity: two
     tips for one stream at different epochs are legal in a single checkpoint,
@@ -350,7 +372,8 @@ def unknown_members(obj, allowed, what: str):
 
 def check_schema(cp, min_ver: int):
     """Structural rules a checkpoint must satisfy before any byte-level check:
-    it is an object, it carries no member the schema does not define, `tips` is
+    it is an object, it carries no member the schema does not define, its
+    scalar members (seq, timestamp, prev_hash) are correctly typed, `tips` is
     present as an array of objects, and every tip satisfies the epoch rules for
     the vector's format_version. Mirrors Go's checkSchema; both report a failure
     as "schema".
@@ -370,6 +393,27 @@ def check_schema(cp, min_ver: int):
     err = unknown_members(cp, _CP_MEMBERS, "a checkpoint")
     if err:
         return err
+    # Type-gate before Tier B ever touches these: B1's prev_seq + 1 raises
+    # TypeError for a wrong-typed seq, and B5's `<` raises for a
+    # non-comparable timestamp -- a traceback here where Go's strict
+    # `Seq int` / `Timestamp string` decode gives a clean rejection.
+    # prev_hash never reaches an unsafe operation (B2 compares it with `!=`,
+    # which never raises across Python types) but is gated the same way for
+    # the same reason description/algorithm/reason/prev_sha256 already are:
+    # Go's `PrevHash string` rejects a wrong type at decode regardless of
+    # whether anything reads it unsafely. One gate, in one place, rather than
+    # a defence at every comparison below -- the same shape as the epoch gate
+    # just below. None/absent stay legal: a non-pointer Go field decodes JSON
+    # null into its zero value as a documented no-op, matching seq's existing
+    # `.get("seq", 0)` and timestamp/prev_hash's `.get(field, "")` defaults
+    # elsewhere in this file.
+    seq = cp.get("seq")
+    if seq is not None and (isinstance(seq, bool) or not isinstance(seq, int)):
+        return f"seq on a checkpoint must be an integer, got {type(seq).__name__}"
+    for field in ("timestamp", "prev_hash"):
+        val = cp.get(field)
+        if val is not None and not isinstance(val, str):
+            return f"{field} on a checkpoint must be a string, got {type(val).__name__}"
     tips = cp.get("tips")
     if not isinstance(tips, list) or not all(isinstance(t, dict) for t in tips):
         return ("tips is required and must be an array of objects; null and "
@@ -468,7 +512,20 @@ def check_tier_b(chain: list) -> tuple:
     """Cross-checkpoint rules. Returns (error_or_None, warnings). B4 and B5 are
     advisory: reported as stable tokens, never rejected. The tokens are
     machine-comparable so the Go and Python validators can be checked for
-    agreement rather than eyeballed."""
+    agreement rather than eyeballed.
+
+    A null seq/timestamp is folded to its zero value by cp_seq/cp_timestamp
+    below, so this function never raises on one by itself. A wrong-TYPED one
+    (a string, a list, ...) is a different matter: every caller in this file
+    (main(), reject_reason(), verify_prefixes()) runs check_schema on a
+    checkpoint before it ever reaches here, and that is the only thing
+    rejecting a wrong type -- this function does not re-check it. Go has no
+    equivalent of calling this function directly with a wrong-typed seq at
+    all: its Checkpoint struct cannot hold one, by construction, before
+    decode-time strict typing already ran. A caller that skips check_schema
+    and invokes this function directly on unchecked third-party data forfeits
+    that protection, the same as it would by skipping check_schema before
+    reading epoch."""
     warns = []
     seen_identity = {}
     last_epoch = {}
@@ -479,10 +536,20 @@ def check_tier_b(chain: list) -> tuple:
     # would raise KeyError instead, so the two reference implementations would
     # disagree on third-party input. Whether a malformed checkpoint is rejected
     # must not depend on which reference you ran.
+    #
+    # seq and timestamp specifically go through cp_seq/cp_timestamp, not a
+    # bare `.get(field, default)`: that default only covers an ABSENT key, and
+    # a PRESENT null -- legal, since Go's non-pointer Seq/Timestamp fields
+    # decode null as the same zero value -- would otherwise reach this
+    # function's own arithmetic (B1's `prev_seq + 1`) or comparison (B5's `<`)
+    # as None and raise. check_schema only gates wrong TYPES; folding null to
+    # the zero value is this function's own job, same as tip_epoch's fold for
+    # epoch. prev_hash keeps the bare `.get`: B2 compares it with `!=`, which
+    # never raises for None or for any wrong type either.
     for i, cp in enumerate(chain):
-        seq = cp.get("seq", 0)
+        seq = cp_seq(cp)
         if i > 0:
-            prev_seq = chain[i - 1].get("seq", 0)
+            prev_seq = cp_seq(chain[i - 1])
             if seq != prev_seq + 1:
                 return (f"B1: checkpoint seq {seq} follows {prev_seq}", warns)
             # B2 across the assembled chain. The vector-level prev_sha256 field
@@ -520,7 +587,7 @@ def check_tier_b(chain: list) -> tuple:
             last_epoch[sid] = tip_epoch(t)
         # B5 is a plain string comparison: the pinned YYYY-MM-DDTHH:MM:SSZ
         # profile sorts chronologically, so no date parsing is needed.
-        if i > 0 and cp.get("timestamp", "") < chain[i - 1].get("timestamp", ""):
+        if i > 0 and cp_timestamp(cp) < cp_timestamp(chain[i - 1]):
             warns.append(f"B5:{seq}")
     return (None, warns)
 

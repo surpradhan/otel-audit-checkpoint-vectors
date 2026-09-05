@@ -752,6 +752,63 @@ func TestWrongTypedNegativeBodyFieldsAreRejectedWhileDecoding(t *testing.T) {
 	}
 }
 
+// TestWrongTypedCheckpointBodyScalarsAreRejectedWhileDecoding pins strict
+// decoding for seq, timestamp and prev_hash -- the three Checkpoint members
+// besides tips. A wrong-typed seq or timestamp used to reach unguarded Tier B
+// arithmetic/comparison in the Python reference (B1's prev_seq + 1, B5's `<`)
+// and crash with an uncaught TypeError instead of a clean rejection;
+// prev_hash never reached an unsafe operation there (B2 compares it with
+// `!=`, which never raises across Python types) but is gated the same way
+// Go already rejects it at decode. A null value for any of the three still
+// decodes -- Checkpoint has no pointer fields, so JSON null is a documented
+// no-op leaving the zero value, and the Python reference's cp_seq/cp_timestamp
+// fold null to that same zero value rather than rejecting it. Mirrors
+// README.md's "Wrong-typed scalars" bullets above and Python's
+// test_wrong_typed_checkpoint_body_scalars_returns_a_reason.
+func TestWrongTypedCheckpointBodyScalarsAreRejectedWhileDecoding(t *testing.T) {
+	for _, raw := range []string{`"1"`, `[1]`, `true`, `1.0`, `{"a":1}`} {
+		var cp Checkpoint
+		body := `{"seq":` + raw + `,"timestamp":"2026-01-01T00:00:00Z","prev_hash":"","tips":[]}`
+		if err := json.Unmarshal([]byte(body), &cp); err == nil {
+			t.Errorf("seq %s was accepted; seq must be an integer", raw)
+		}
+	}
+	for _, field := range []string{"timestamp", "prev_hash"} {
+		for _, raw := range []string{`[1,2]`, `{"a":1}`, `42`, `1.0`, `true`, `false`} {
+			var cp Checkpoint
+			body := `{"seq":1,"tips":[],"` + field + `":` + raw + `}`
+			if err := json.Unmarshal([]byte(body), &cp); err == nil {
+				t.Errorf("%s %s was accepted; %s must be a string", field, raw, field)
+			}
+		}
+	}
+	// The contrast: ordinary values, and an explicitly null seq, timestamp or
+	// prev_hash, all decode cleanly into the zero value -- none of Checkpoint's
+	// fields are pointers, so JSON null is a documented no-op for each.
+	for _, raw := range []string{`0`, `1`, `null`} {
+		var cp Checkpoint
+		body := `{"seq":` + raw + `,"timestamp":"2026-01-01T00:00:00Z","prev_hash":"","tips":[]}`
+		if err := json.Unmarshal([]byte(body), &cp); err != nil {
+			t.Errorf("seq %s must decode without error, got: %v", raw, err)
+		}
+	}
+	for _, field := range []string{"timestamp", "prev_hash"} {
+		for _, raw := range []string{`"x"`, `null`} {
+			var cp Checkpoint
+			body := `{"seq":1,"tips":[],"` + field + `":` + raw + `}`
+			if err := json.Unmarshal([]byte(body), &cp); err != nil {
+				t.Errorf("%s %s must decode without error, got: %v", field, raw, err)
+			}
+		}
+	}
+	var zero Checkpoint
+	if err := json.Unmarshal([]byte(`{"seq":null,"timestamp":null,"prev_hash":null,"tips":[]}`), &zero); err != nil {
+		t.Errorf("all three fields null at once must decode without error, got: %v", err)
+	} else if zero.Seq != 0 || zero.Timestamp != "" || zero.PrevHash != "" {
+		t.Errorf("null seq/timestamp/prev_hash must decode to the zero value, got: %+v", zero)
+	}
+}
+
 // The two marshal paths must agree on EVERY member except `epoch`. The null
 // path used to re-declare all five fields in a parallel anonymous struct, so a
 // sixth field added to Tip would appear in the signed bytes of an ordinary tip
