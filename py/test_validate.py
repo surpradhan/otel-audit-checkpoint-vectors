@@ -1295,6 +1295,120 @@ def test_wrong_typed_epoch_returns_a_reason():
         "an integer epoch must stay legal"
 
 
+def test_wrong_typed_checkpoint_body_scalars_returns_a_reason():
+    """check_schema must return a reason, never raise, for a wrong-typed seq,
+    timestamp or prev_hash -- the three Checkpoint members besides tips. A
+    wrong-typed seq or timestamp used to reach unguarded Tier B
+    arithmetic/comparison (B1's `prev_seq + 1`, B5's `<`) and crash with an
+    uncaught TypeError instead of a clean rejection; prev_hash never reached
+    an unsafe operation (B2 compares it with `!=`, which never raises across
+    Python types) but is gated the same way Go's `PrevHash string` already
+    rejects it at decode. Mirrors
+    TestWrongTypedCheckpointBodyScalarsAreRejectedWhileDecoding."""
+    tips = [_tip(_pos_stream(1), 0, 1, 1, "aa")]
+
+    def assert_rejected(field, value, cp):
+        try:
+            err = validate.check_schema(cp, 2)
+        except Exception as e:  # noqa: BLE001 -- a raise IS the failure here
+            raise AssertionError(
+                f"{field}={value!r}: raised {type(e).__name__}; "
+                "this path must return a reason, never raise") from e
+        assert err is not None, f"{field}={value!r} was accepted; {field} is wrong-typed"
+
+    for seq in ("1", [1], True, False, 1.0, {"a": 1}):
+        assert_rejected("seq", seq, _cp(seq, _pos_ts(100), tips))
+    for ts in ([1], {"a": 1}, 123, True, False):
+        assert_rejected("timestamp", ts, _cp(1, ts, tips))
+    for ph in (12345, [1], {"a": 1}, True):
+        assert_rejected("prev_hash", ph, _cp(1, _pos_ts(100), tips, prev=ph))
+
+    # The contrast: an ordinary checkpoint, and an explicitly null seq,
+    # timestamp or prev_hash, all stay legal -- Go's non-pointer fields decode
+    # JSON null as their zero value, a documented no-op, not a rejection.
+    ok = _cp(1, _pos_ts(100), tips)
+    assert validate.check_schema(ok, 2) is None, "an ordinary checkpoint must stay legal"
+    for field in ("seq", "timestamp", "prev_hash"):
+        null_variant = dict(ok)
+        null_variant[field] = None
+        assert validate.check_schema(null_variant, 2) is None, \
+            f"a null {field} must stay legal, matching Go's non-pointer zero-value no-op"
+
+
+def test_null_checkpoint_body_scalars_fold_to_zero_value_in_tier_b():
+    """A null seq or timestamp must behave EXACTLY as its zero value (0, "")
+    inside check_tier_b, not merely avoid crashing -- Go's non-pointer
+    Seq/Timestamp fields decode JSON null into that same zero value (verified
+    directly against the real decoder), so the two references must reach the
+    same B-rule verdict for a null field as for an explicit zero one.
+    cp_seq/cp_timestamp fold null this way; a bare `.get(field, default)`
+    would not, since that default only applies to an ABSENT key.
+
+    Each pair of checkpoints below uses two DIFFERENT streams (tip_a, tip_b),
+    not the same stream repeated: repeating one stream's (stream_id, epoch)
+    across both checkpoints trips B3 first, which would make the zero/null
+    comparison pass vacuously regardless of whether B1/B5 folding works at
+    all -- the explicit rule-identity asserts below exist so a regression
+    that breaks the fold cannot hide behind that kind of accidental pass."""
+    tip_a = [_tip(_pos_stream(1), 0, 1, 1, "aa")]
+    tip_b = [_tip(_pos_stream(2), 0, 1, 1, "bb")]
+
+    # seq: a null-seq checkpoint must be treated as "seq 0" for B1, exactly
+    # like an explicit 0 -- both accept a following seq 1 and reject a
+    # following seq 2, with the identical B1 message (same folded prev_seq).
+    for seq2 in (1, 2):
+        second = _cp(seq2, _pos_ts(10), tip_b)
+        zero_chain = _link(_cp(0, _pos_ts(0), tip_a), second)
+        null_chain = _link(_cp(None, _pos_ts(0), tip_a), second)
+        zero_result = validate.check_tier_b(zero_chain)
+        null_result = validate.check_tier_b(null_chain)
+        assert zero_result == null_result, (
+            f"seq2={seq2}: null seq must verdict identically to explicit seq 0: "
+            f"null={null_result}, zero={zero_result}")
+        if seq2 == 1:
+            assert zero_result[0] is None, f"seq2=1 must pass B1: got {zero_result}"
+        else:
+            assert zero_result[0] is not None and zero_result[0].startswith("B1:"), \
+                f"seq2=2 must fail B1 specifically: got {zero_result}"
+
+    # timestamp: a null timestamp on the LATER checkpoint must be treated as
+    # "" for B5, exactly like an explicit "" -- both are a regression against
+    # a real earlier timestamp and must fire the identical B5 warning.
+    first = _cp(1, _pos_ts(100), tip_a)
+    empty_result = validate.check_tier_b(_link(first, _cp(2, "", tip_b)))
+    null_result = validate.check_tier_b(_link(first, _cp(2, None, tip_b)))
+    assert empty_result == null_result == (None, ["B5:2"]), (
+        f"null timestamp must verdict identically to explicit \"\", firing B5: "
+        f"got null={null_result}, empty={empty_result}")
+
+
+def test_wrong_typed_checkpoint_body_scalars_reject_cleanly_through_the_validator():
+    """A wrong-typed seq, timestamp or prev_hash must be rejected as "schema"
+    through every path the real validator actually uses -- a vector's own
+    input (reject_reason) and a signed chain prefix (verify_prefixes) -- both
+    of which run check_schema before anything else, so Tier B's own
+    arithmetic/comparison never sees the bad value. check_tier_b itself is NOT
+    re-tested here with a bad type: per its own docstring, it depends on
+    check_schema having already run, exactly as it already does for epoch, and
+    calling it directly on unchecked data is out of scope the same way Go has
+    no way to construct the equivalent malformed Checkpoint at all. Mirrors
+    test_null_members_reject_cleanly_on_every_path's shape, for wrong types
+    instead of null."""
+    pub, priv = _pub(), _priv()
+    tips = [_tip(_pos_stream(1), 0, 1, 1, "aa")]
+    cases = {
+        "wrong_typed_seq": _cp("1", _pos_ts(100), tips),
+        "wrong_typed_timestamp": _cp(1, ["not", "a", "string"], tips),
+        "wrong_typed_prev_hash": _cp(1, _pos_ts(100), tips, prev=12345),
+    }
+    for name, cp in cases.items():
+        nv = {"input": cp, "signature": "", "min_format_version": 2}
+        assert validate.reject_reason(pub, nv) == "schema", \
+            f"{name} as a vector's own input: want 'schema'"
+        _, reason = validate.verify_prefixes(pub, [_sign(priv, cp)], 2)
+        assert reason == "schema", f"{name} as a chain prefix: reason={reason!r}, want 'schema'"
+
+
 def test_null_tips_rejected():
     """A present-but-null tips member is not an empty array: canonicalization
     normalizes it to [], so one signature would cover two distinct documents,
