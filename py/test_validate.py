@@ -2126,19 +2126,37 @@ def test_wrong_typed_negative_body_fields_ignored_when_the_entry_is_skipped():
     loadEntries only strict-decodes a NegativeVector for an entry it does NOT
     skip. A bad-typed reason/prev_sha256 on a would-be-skipped negative must
     therefore be silently skipped, not rejected -- the one verdict the name
-    gate above must never produce, and the one this gate must."""
+    gate above must never produce, and the one this gate must.
+
+    The control, and the reason the skip assertion is not vacuous: nothing
+    placed after an unconditional `continue` is reachable for a skipped
+    entry, so a validator with NO gate at all would pass that assertion
+    just as happily. The SAME bad-typed value, on the SAME entry shape, at a
+    version this build DOES support, must instead be rejected -- proving the
+    field is genuinely gated, and that skipping it is a deliberate branch
+    rather than a check that was never written. Mirrors
+    test_future_format_entry_is_skipped_not_strict_decoded's own control."""
     cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
     for field in ("reason", "prev_sha256"):
-        nv = {"name": "probe", "input": dict(cp, tips=None), "expect": "schema",
-              field: [1, 2],
-              "min_format_version": validate.SUPPORTED_FORMAT_VERSION + 1}
-        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+        nv_skipped = {"name": "probe", "input": dict(cp, tips=None), "expect": "schema",
+                      field: [1, 2],
+                      "min_format_version": validate.SUPPORTED_FORMAT_VERSION + 1}
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv_skipped]))
         assert rc == 0, (
             f"a would-be-skipped negative with a bad-typed {field} was "
             f"rejected\n{output}")
         assert "skip" in output, (
             f"a would-be-skipped negative with a bad-typed {field} did not "
             f"produce a skip line\n{output}")
+
+        nv_checked = dict(nv_skipped, min_format_version=2)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv_checked]))
+        assert rc != 0, (
+            f"the SAME bad-typed {field}, at a supported version, was "
+            f"accepted; the skip assertion above proves nothing\n{output}")
+        assert "got list" in output, (
+            f"the SAME bad-typed {field} at a supported version was "
+            f"rejected, but not with the expected diagnosis:\n{output}")
 
 
 def main():
