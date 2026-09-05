@@ -175,6 +175,14 @@ def check_envelope(suite):
     err = unknown_members(suite, _SUITE_MEMBERS, "the suite")
     if err:
         return err
+    # description/algorithm/signing_seed_hex are never read for any check --
+    # unknown_members above only gates member NAMES, never types -- so a
+    # wrong-typed value here reached no comparison and the suite validated
+    # normally.
+    for field in ("description", "algorithm", "signing_seed_hex"):
+        val = suite.get(field)
+        if val is not None and not isinstance(val, str):
+            return f"{field} on the suite must be a string, got {type(val).__name__}"
     for key, what in (("vectors", "a vector"), ("negatives", "a negative")):
         entries = suite.get(key) or []
         if not isinstance(entries, list):
@@ -275,6 +283,29 @@ def check_entries(suite):
             err = unknown_members(e, allowed, named)
             if err:
                 return err
+            # reason and prev_sha256 are members of the full NegativeVector,
+            # not of the header the skip decision above already read -- Go
+            # only strict-decodes a NegativeVector for an entry it did NOT
+            # skip, so these must be gated here rather than alongside
+            # min_format_version/name. reason is pure documentation, read
+            # nowhere; prev_sha256 used to be read only inside
+            # reject_reason's `if nv.get("prev_sha256") and ...`, whose `!=`
+            # never raises across Python types -- a truthy wrong type (e.g.
+            # a list) coincidentally reproduced the "chain" token a real
+            # linkage defect returns, and a falsy one ([], 0, {}) no-opped
+            # past the truthy check same as an absent field. Gating the type
+            # here, unconditionally, fails the whole file for every wrong
+            # type alike, matching Go's plain `string` field instead of a
+            # per-entry verdict that depended on the value's truthiness.
+            if key == "negatives":
+                reason = e.get("reason")
+                if reason is not None and not isinstance(reason, str):
+                    return (f"reason on {named} must be a string, got "
+                            f"{type(reason).__name__}")
+                prev_sha256 = e.get("prev_sha256")
+                if prev_sha256 is not None and not isinstance(prev_sha256, str):
+                    return (f"prev_sha256 on {named} must be a string, got "
+                            f"{type(prev_sha256).__name__}")
             err = check_checkpoint_members(e.get("input"),
                                            f"the checkpoint of {named}")
             if err:

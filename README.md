@@ -602,6 +602,41 @@ walk on the checkpoint itself.
   here either: a non-string name validated normally in the Python reference —
   printed in an "ok" line via its `repr()` — until this was written down.)
 
+- **Wrong-typed scalars, at the level of the suite envelope.** `description`,
+  `algorithm` and `signing_seed_hex` are the suite's own scalar members —
+  `unknown_members` only gates which member *names* the envelope may carry,
+  never their types, and none of the three is read for any comparison, so a
+  wrong-typed value there reached nothing that could catch it. Rejected by
+  both references, by the same shape of mechanism as the header case above:
+  Go's `suiteFile` strict-decodes the envelope eagerly for every suite, so a
+  wrong type there refuses the whole file at load; Python's `check_envelope`
+  now gates the same three fields before anything else is read. So no suite
+  can carry a wrong-typed envelope member.
+  `TestWrongTypedEnvelopeStringsAreRejectedWhileDecoding`
+  (`go/encoding_test.go`) and
+  `test_wrong_typed_envelope_strings_reject_the_whole_file`
+  (`py/test_validate.py`) assert both directions instead.
+
+- **Wrong-typed scalars, on a negative's own body.** `reason` and
+  `prev_sha256` are members of the full `NegativeVector`, not of the header
+  the skip decision itself reads, so — unlike `name` above — Go only
+  strict-decodes them for a negative that will actually be checked; a wrong
+  type on a would-be-skipped entry is never reached and must stay legal.
+  `reason` is pure documentation, read nowhere; `prev_sha256` previously
+  reached a `!=` comparison in `reject_reason` that never raises across
+  Python types, so a *falsy* wrong type (`[]`, `{}`, `0`) no-opped past the
+  check the same as an absent field, while a *truthy* one (`[1, 2]`)
+  coincidentally reproduced the `"chain"` token a real linkage defect
+  returns — accepting a file Go refuses to load either way. Gated in
+  `check_entries` now, in the same position as the unknown-member check and
+  for the same reason: failing the whole file there matches Go's verdict for
+  every wrong type, not only the truthy ones a per-entry comparison happened
+  to catch. `TestWrongTypedNegativeBodyFieldsAreRejectedWhileDecoding`
+  (`go/encoding_test.go`),
+  `test_wrong_typed_negative_body_fields_reject_the_whole_file` and
+  `test_wrong_typed_negative_body_fields_ignored_when_the_entry_is_skipped`
+  (`py/test_validate.py`) assert all of this instead.
+
 - **The version-1-carrying-`epoch` direction.** A version-2 tip missing
   `epoch` is published as a vector (`missing_epoch_in_v2`); the mirror-image
   case — a version-1 vector that *carries* an `epoch` — is not, and cannot be.

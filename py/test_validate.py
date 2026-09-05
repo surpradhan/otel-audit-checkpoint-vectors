@@ -2047,6 +2047,118 @@ def test_wrong_typed_name_rejects_even_on_an_entry_that_would_be_skipped():
     assert "got list" in output, f"rejected, but not with the expected diagnosis:\n{output}"
 
 
+# --- Wrong-typed envelope/negative-body scalars must reject the whole file
+# (issue #20) -------------------------------------------------------------
+#
+# description, algorithm and signing_seed_hex are the suite's own scalar
+# members, and unknown_members only gates member NAMES -- never types -- so a
+# wrong-typed value there reached no comparison and the suite validated
+# normally. reason (negatives only) is the same story one level down: pure
+# documentation, never read anywhere. prev_sha256 (negatives only) was worse
+# than merely unread -- it reached a `!=` comparison in reject_reason that
+# never raises across Python types, so a *truthy* wrong type ([1, 2])
+# coincidentally reproduced the "chain" token a real linkage defect returns,
+# and the suite validated normally believing it had genuinely checked the
+# link. All three are now gated in the same position as the pre-existing
+# unknown-member/name/min_format_version checks, so a third party sees the
+# whole file refused -- matching Go's decoder refusing it at load, not a
+# per-entry mismatch and, for prev_sha256, not a per-entry (wrong) accept.
+
+
+def test_wrong_typed_envelope_strings_reject_the_whole_file():
+    """A non-string, non-null description/algorithm/signing_seed_hex fails
+    the whole suite before a single report line is printed. A real,
+    otherwise-valid vector is present so this is actually exercised, not
+    true merely because there was nothing to report."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    v = _positive(cp)
+    bad_values = ([1, 2], {"a": 1}, 42, 1.0, True, False)
+
+    for field in ("description", "algorithm", "signing_seed_hex"):
+        for bad in bad_values:
+            suite = dict(_synthetic_suite(vectors=[v]), **{field: bad})
+            rc, output = _run_main_capturing_stdout(suite)
+            assert rc != 0, f"{field}={bad!r} was accepted\n{output}"
+            assert f"got {type(bad).__name__}" in output, (
+                f"{field}={bad!r} rejected, but not with the expected "
+                f"diagnosis:\n{output}")
+            assert "ok " not in output, (
+                f"{field}={bad!r} produced a report line; it must reject "
+                f"before printing one\n{output}")
+
+        # The premise: an ordinary string value is unaffected.
+        suite = dict(_synthetic_suite(vectors=[v]), **{field: "probe"})
+        rc, output = _run_main_capturing_stdout(suite)
+        assert rc == 0, f"an ordinary string {field} must stay legal\n{output}"
+
+
+def test_wrong_typed_negative_body_fields_reject_the_whole_file():
+    """A non-string, non-null reason/prev_sha256 -- on an otherwise-valid
+    negative -- fails the whole suite before a single report line is
+    printed, not a per-entry mismatch and, for prev_sha256, not a silent
+    (wrong) accept."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    nv_base = {"name": "probe", "input": dict(cp, tips=None), "expect": "schema",
+               "min_format_version": 2}
+    bad_values = ([1, 2], {"a": 1}, 42, 1.0, True, False)
+
+    for field in ("reason", "prev_sha256"):
+        for bad in bad_values:
+            nv = dict(nv_base, **{field: bad})
+            rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+            assert rc != 0, f"negative {field}={bad!r} was accepted\n{output}"
+            assert f"got {type(bad).__name__}" in output, (
+                f"negative {field}={bad!r} rejected, but not with the "
+                f"expected diagnosis:\n{output}")
+            assert "ok " not in output, (
+                f"negative {field}={bad!r} produced a report line; it must "
+                f"reject before printing one\n{output}")
+
+        # The premise: an ordinary string value is unaffected.
+        nv = dict(nv_base, **{field: "probe"})
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+        assert rc == 0, f"an ordinary string {field} must stay legal\n{output}"
+
+
+def test_wrong_typed_negative_body_fields_ignored_when_the_entry_is_skipped():
+    """Unlike name, reason and prev_sha256 are members of the full
+    NegativeVector, not of the header the skip decision itself reads -- Go's
+    loadEntries only strict-decodes a NegativeVector for an entry it does NOT
+    skip. A bad-typed reason/prev_sha256 on a would-be-skipped negative must
+    therefore be silently skipped, not rejected -- the one verdict the name
+    gate above must never produce, and the one this gate must.
+
+    The control, and the reason the skip assertion is not vacuous: nothing
+    placed after an unconditional `continue` is reachable for a skipped
+    entry, so a validator with NO gate at all would pass that assertion
+    just as happily. The SAME bad-typed value, on the SAME entry shape, at a
+    version this build DOES support, must instead be rejected -- proving the
+    field is genuinely gated, and that skipping it is a deliberate branch
+    rather than a check that was never written. Mirrors
+    test_future_format_entry_is_skipped_not_strict_decoded's own control."""
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    for field in ("reason", "prev_sha256"):
+        nv_skipped = {"name": "probe", "input": dict(cp, tips=None), "expect": "schema",
+                      field: [1, 2],
+                      "min_format_version": validate.SUPPORTED_FORMAT_VERSION + 1}
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv_skipped]))
+        assert rc == 0, (
+            f"a would-be-skipped negative with a bad-typed {field} was "
+            f"rejected\n{output}")
+        assert "skip" in output, (
+            f"a would-be-skipped negative with a bad-typed {field} did not "
+            f"produce a skip line\n{output}")
+
+        nv_checked = dict(nv_skipped, min_format_version=2)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv_checked]))
+        assert rc != 0, (
+            f"the SAME bad-typed {field}, at a supported version, was "
+            f"accepted; the skip assertion above proves nothing\n{output}")
+        assert "got list" in output, (
+            f"the SAME bad-typed {field} at a supported version was "
+            f"rejected, but not with the expected diagnosis:\n{output}")
+
+
 def main():
     # Derived from the module, not hand-maintained. A list written out by hand
     # silently stops running any test nobody remembers to add to it -- a test
