@@ -686,6 +686,72 @@ func TestWrongTypedNameIsRejectedWhileDecoding(t *testing.T) {
 	}
 }
 
+// TestWrongTypedEnvelopeStringsAreRejectedWhileDecoding pins strict decoding
+// for the three envelope-level string members neither reference reads for
+// any comparison: description, algorithm and signing_seed_hex. Unlike name
+// above, nothing here has a skip decision to sit before -- the envelope
+// decodes eagerly for every suite -- so a wrong type on any one of them
+// already refused the whole file at load, matching README.md's "Wrong-typed
+// scalars, at the level of the suite envelope" bullet and pairing with
+// Python's test_wrong_typed_envelope_strings_reject_the_whole_file.
+func TestWrongTypedEnvelopeStringsAreRejectedWhileDecoding(t *testing.T) {
+	for _, field := range []string{"description", "algorithm", "signing_seed_hex"} {
+		for _, raw := range []string{`[1,2]`, `{"a":1}`, `42`, `1.0`, `true`, `false`} {
+			var s suiteFile
+			body := `{"` + field + `":` + raw + `}`
+			if err := json.Unmarshal([]byte(body), &s); err == nil {
+				t.Errorf("%s %s was accepted; %s must be a string", field, raw, field)
+			}
+		}
+		// The contrast: an ordinary string, and an absent or explicitly null
+		// one -- JSON null into a non-pointer field is a documented no-op --
+		// must all still decode.
+		for _, raw := range []string{`"x"`, `null`} {
+			var s suiteFile
+			body := `{"` + field + `":` + raw + `}`
+			if err := json.Unmarshal([]byte(body), &s); err != nil {
+				t.Errorf("%s %s must decode without error, got: %v", field, raw, err)
+			}
+		}
+	}
+	var absent suiteFile
+	if err := json.Unmarshal([]byte(`{}`), &absent); err != nil {
+		t.Errorf("an envelope with no description/algorithm/signing_seed_hex must decode without error, got: %v", err)
+	}
+}
+
+// TestWrongTypedNegativeBodyFieldsAreRejectedWhileDecoding pins strict
+// decoding for reason and prev_sha256, both members of the full
+// NegativeVector rather than of entryHeader -- so, unlike name above, Go
+// only reaches this decode for a negative loadEntries did NOT skip. reason
+// is never read for any comparison; prev_sha256 used to reach a Python `!=`
+// comparison that never raises across types, so this pins the two
+// references agreeing on a wrong type before either does anything else.
+// Mirrors README.md's "Wrong-typed scalars, on a negative's own body" and
+// Python's test_wrong_typed_negative_body_fields_reject_the_whole_file.
+func TestWrongTypedNegativeBodyFieldsAreRejectedWhileDecoding(t *testing.T) {
+	for _, field := range []string{"reason", "prev_sha256"} {
+		for _, raw := range []string{`[1,2]`, `{"a":1}`, `42`, `1.0`, `true`, `false`} {
+			var nv NegativeVector
+			body := `{"` + field + `":` + raw + `}`
+			if err := json.Unmarshal([]byte(body), &nv); err == nil {
+				t.Errorf("%s %s was accepted; %s must be a string", field, raw, field)
+			}
+		}
+		for _, raw := range []string{`"x"`, `null`} {
+			var nv NegativeVector
+			body := `{"` + field + `":` + raw + `}`
+			if err := json.Unmarshal([]byte(body), &nv); err != nil {
+				t.Errorf("%s %s must decode without error, got: %v", field, raw, err)
+			}
+		}
+	}
+	var absent NegativeVector
+	if err := json.Unmarshal([]byte(`{}`), &absent); err != nil {
+		t.Errorf("a negative with no reason/prev_sha256 must decode without error, got: %v", err)
+	}
+}
+
 // The two marshal paths must agree on EVERY member except `epoch`. The null
 // path used to re-declare all five fields in a parallel anonymous struct, so a
 // sixth field added to Tip would appear in the signed bytes of an ordinary tip
