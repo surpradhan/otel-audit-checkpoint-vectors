@@ -522,7 +522,7 @@ def check_tier_b(chain: list) -> tuple:
     checkpoint ever reaches here -- that is the only thing rejecting a wrong
     type -- this function does not re-check it. Go has no
     equivalent of calling this function directly with a wrong-typed seq at
-    all: its Checkpoint struct cannot hold one, by construction, before
+    all: its Checkpoint struct cannot hold one, by construction, because
     decode-time strict typing already ran. A caller that skips check_schema
     and invokes this function directly on unchecked third-party data forfeits
     that protection, the same as it would by skipping check_schema before
