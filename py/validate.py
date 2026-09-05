@@ -516,10 +516,11 @@ def check_tier_b(chain: list) -> tuple:
 
     A null seq/timestamp is folded to its zero value by cp_seq/cp_timestamp
     below, so this function never raises on one by itself. A wrong-TYPED one
-    (a string, a list, ...) is a different matter: every caller in this file
-    (main(), reject_reason(), verify_prefixes()) runs check_schema on a
-    checkpoint before it ever reaches here, and that is the only thing
-    rejecting a wrong type -- this function does not re-check it. Go has no
+    (a string, a list, ...) is a different matter: every caller of this
+    function (main(), reject_reason()) runs check_schema directly on its own
+    input, and indirectly via verify_prefixes on each chain prefix, before a
+    checkpoint ever reaches here -- that is the only thing rejecting a wrong
+    type, this function does not re-check it. Go has no
     equivalent of calling this function directly with a wrong-typed seq at
     all: its Checkpoint struct cannot hold one, by construction, before
     decode-time strict typing already ran. A caller that skips check_schema
