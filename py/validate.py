@@ -520,7 +520,7 @@ def check_tier_b(chain: list) -> tuple:
     function (main(), reject_reason()) runs check_schema directly on its own
     input, and indirectly via verify_prefixes on each chain prefix, before a
     checkpoint ever reaches here -- that is the only thing rejecting a wrong
-    type, this function does not re-check it. Go has no
+    type -- this function does not re-check it. Go has no
     equivalent of calling this function directly with a wrong-typed seq at
     all: its Checkpoint struct cannot hold one, by construction, before
     decode-time strict typing already ran. A caller that skips check_schema
