@@ -1479,6 +1479,75 @@ def test_wrong_typed_checkpoint_body_scalars_returns_a_reason():
             f"a null {field} must stay legal, matching Go's non-pointer zero-value no-op"
 
 
+def test_wrong_typed_entry_count_and_sequence_number_reject_while_decoding():
+    """entry_count and sequence_number reached check_schema completely
+    unvalidated before A5 (#28): `_TIP_MEMBERS` only declared the member NAME
+    as allowed, and canonical() serialized whatever value was present without
+    inspecting it, so a wrong-typed value here validated normally where Go's
+    `EntryCount`/`SequenceNumber int` struct fields already refuse the whole
+    file at decode. Mirrors TestWrongTypedTipScalarsAreRejectedWhileDecoding."""
+    for field in ("entry_count", "sequence_number"):
+        for bad in ("1", [1], True, False, 1.0, {"a": 1}):
+            tip = _tip(_pos_stream(1), 0, 1, 1, "aa")
+            tip[field] = bad
+            cp = _cp(1, _pos_ts(100), [tip])
+            err = validate.check_schema(cp, 2)
+            assert err is not None, f"{field}={bad!r} was accepted; {field} must be an integer"
+        # The contrast: an ordinary value and an explicit null both stay
+        # legal, matching Go's non-pointer zero-value no-op.
+        for ok_val in (0, 1, None):
+            tip = _tip(_pos_stream(1), 0, 1, 1, "aa")
+            tip[field] = ok_val
+            cp = _cp(1, _pos_ts(100), [tip])
+            assert validate.check_schema(cp, 2) is None, \
+                f"{field}={ok_val!r} must stay legal"
+
+
+# --- check_integer_range (A5): every integer field must fall within I-JSON's
+# safe range. Mirrors go/integerrange_test.go.
+
+def test_check_integer_range_accepts_the_boundary_values():
+    tip = _tip(_pos_stream(1), validate._MIN_SAFE_INT, validate._MIN_SAFE_INT,
+                validate._MAX_SAFE_INT, "aa")
+    cp = _cp(validate._MAX_SAFE_INT, _pos_ts(100), [tip])
+    assert validate.check_integer_range(cp, 3) is None
+
+
+def test_check_integer_range_rejects_entry_count_one_over_max():
+    tip = _tip(_pos_stream(1), 0, 1, validate._MAX_SAFE_INT + 1, "aa")
+    cp = _cp(1, _pos_ts(100), [tip])
+    assert validate.check_integer_range(cp, 3) is not None
+
+
+def test_check_integer_range_rejects_sequence_number_one_under_min():
+    tip = _tip(_pos_stream(1), 0, validate._MIN_SAFE_INT - 1, 1, "aa")
+    cp = _cp(1, _pos_ts(100), [tip])
+    assert validate.check_integer_range(cp, 3) is not None
+
+
+def test_check_integer_range_rejects_epoch_over_max():
+    tip = _tip(_pos_stream(1), validate._MAX_SAFE_INT + 1, 1, 1, "aa")
+    cp = _cp(1, _pos_ts(100), [tip])
+    assert validate.check_integer_range(cp, 3) is not None
+
+
+def test_check_integer_range_rejects_seq_over_max():
+    tip = _tip(_pos_stream(1), 0, 1, 1, "aa")
+    cp = _cp(validate._MAX_SAFE_INT + 1, _pos_ts(100), [tip])
+    assert validate.check_integer_range(cp, 3) is not None
+
+
+def test_check_integer_range_is_gated_by_min_ver():
+    """The published integer_out_of_range vector only exercises the v3 side;
+    nothing published pins that an older-labeled vector is left alone."""
+    tip = _tip(_pos_stream(1), 0, 1, validate._MAX_SAFE_INT + 1, "aa")
+    cp = _cp(1, _pos_ts(100), [tip])
+    assert validate.check_integer_range(cp, 2) is None, \
+        "an out-of-range entry_count was rejected below format_version 3"
+    assert validate.check_integer_range(cp, 3) is not None, \
+        "an out-of-range entry_count was accepted at format_version 3"
+
+
 def test_null_checkpoint_body_scalars_fold_to_zero_value_in_tier_b():
     """A null seq or timestamp must behave EXACTLY as its zero value (0, "")
     inside check_tier_b, not merely avoid crashing -- Go's non-pointer

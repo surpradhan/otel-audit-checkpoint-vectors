@@ -229,7 +229,7 @@ No published vector can express this — see [Not pinned](#rules-hold-at-every-p
 
 ## Positive vectors (a conformant validator MUST accept these)
 
-The 17 positive vectors, one line each:
+The 18 positive vectors, one line each:
 
 - `genesis_empty_tips` — the first checkpoint of the positives' own hash
   chain, with an empty `tips` array.
@@ -289,6 +289,12 @@ The 17 positive vectors, one line each:
   it an implementation could pass this suite by rejecting every `\ud`
   escape wholesale, which is over-rejection, not conformance. The only
   vector that exercises `input_raw_hex`'s accept path at all.
+- `max_safe_integer_entry_count` — a tip's `entry_count` is `2^53 − 1`, the
+  I-JSON boundary itself, one below `integer_out_of_range`'s value. The
+  positive control for A5: it establishes that ordinary, unmodified integer
+  decoding doesn't over-reject a large-but-in-range value, which is why it
+  stays at `min_format_version: 2` rather than 3 — accepting it depends on
+  nothing the new check added.
 
 ## Negative vectors (a conformant validator MUST reject these)
 
@@ -435,6 +441,13 @@ The last group leaves the position axis behind and pins what a validator reads
   cover two distinct documents. The signature published with this vector is
   valid over exactly those bytes, so nothing but the schema check rejects it.
   Rejected: schema.
+- `integer_out_of_range` — a tip's `entry_count` is `2^53`, one past the
+  largest integer RFC 7493 (I-JSON) §2.2 allows without precision loss on an
+  IEEE 754 double. This repo's own canonical form (RFC 8785 JCS) places no
+  limit on integer magnitude at all — the restriction is I-JSON's, protecting
+  a third implementation that parses JSON numbers as `float64` (JavaScript's
+  `Number`, for one), not either reference here: both round-trip far past
+  this boundary exactly. Rejected: schema.
 - `signature_with_stray_character` — the signature is not valid base64: a stray
   `!` is spliced into the middle of an otherwise valid 88-character encoding.
   Every other signature negative carries well-formed base64 whose *bytes* are
@@ -775,7 +788,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 17 positive (13 through Tier B) + 31 negative
+checked: 18 positive (14 through Tier B) + 32 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.

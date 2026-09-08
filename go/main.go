@@ -526,6 +526,7 @@ func gen() Suite {
 		genPositional,
 		genCrossProduct,
 		genMemberShapeAndEncoding,
+		genIntegerRange,
 	} {
 		vs, ns := group(priv)
 		suite.Vectors = append(suite.Vectors, vs...)
@@ -1574,6 +1575,57 @@ func genMemberShapeAndEncoding(priv ed25519.PrivateKey) ([]Vector, []NegativeVec
 	return vectors, negatives
 }
 
+// genIntegerRange builds A5's two vectors (spec §4, §7): entry_count at the
+// boundary I-JSON (RFC 7493 §2.2) allows without precision loss, 2^53-1, must
+// be accepted; one past it, 2^53, must be rejected. The value-RANGE
+// restriction is I-JSON's, not this repo's own canonical form (RFC 8785
+// JCS), which places no limit on integer magnitude at all -- see
+// checkIntegerRange's own comment for why the boundary matters regardless.
+//
+// The positive stays at min_format_version 2, not 3: it establishes that an
+// EXISTING, unmodified code path -- ordinary JSON integer decoding, in both
+// languages -- does not over-reject a large-but-in-range value. Nothing
+// about accepting it depends on the new check existing at all; confirmed
+// directly (both references round-trip this exact value exactly, with
+// identical text on re-serialization) before writing this vector, not
+// assumed. The negative needs min_format_version 3, same reasoning as the
+// genesis vectors: a v2 validator without checkIntegerRange would wrongly
+// accept it.
+func genIntegerRange(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
+	var vectors []Vector
+	var negatives []NegativeVector
+
+	boundaryPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2027-02-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "dededede-dede-4ded-8ded-dededededede", TipHash: "de" + strings.Repeat("00", 31)},
+	}}
+	boundaryTail := Checkpoint{PrevHash: cpHash(boundaryPrefix), Seq: 2, Timestamp: "2027-02-01T00:00:05Z", Tips: []Tip{
+		{EntryCount: maxSafeInt, Epoch: ptr(0), SequenceNumber: 1, StreamID: "5f5f5f5f-5f5f-4f5f-8f5f-5f5f5f5f5f5f", TipHash: "5f" + strings.Repeat("00", 31)},
+	}}
+	boundaryCanon := mustCanonical(boundaryTail, "max_safe_integer_entry_count")
+	vectors = append(vectors, Vector{
+		Name:             "max_safe_integer_entry_count",
+		Input:            boundaryTail,
+		Canonical:        string(boundaryCanon),
+		SHA256:           mustSum(boundaryCanon),
+		Signature:        signB64(priv, boundaryCanon),
+		Chain:            []SignedCheckpoint{signCP(priv, boundaryPrefix)},
+		MinFormatVersion: 2,
+	})
+
+	overCP := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2027-02-01T00:00:10Z", Tips: []Tip{
+		{EntryCount: maxSafeInt + 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "60606060-6060-4060-8060-606060606060", TipHash: "60" + strings.Repeat("00", 31)},
+	}}
+	negatives = append(negatives, NegativeVector{
+		Name: "integer_out_of_range", Expect: "schema",
+		Reason:           fmt.Sprintf("a tip's entry_count is %d, one past the largest integer I-JSON (RFC 7493 §2.2) allows without precision loss on an IEEE 754 double", maxSafeInt+1),
+		Input:            overCP,
+		Signature:        signCP(priv, overCP).Signature,
+		MinFormatVersion: 3,
+	})
+
+	return vectors, negatives
+}
+
 // genA4 builds the three input_raw_hex vectors for A4 (spec §7): two
 // negatives that a typed Checkpoint cannot express at all -- an invalid
 // UTF-8 byte, and a lone surrogate escape -- plus the one positive that
@@ -1798,6 +1850,58 @@ func checkEpochPresence(cp Checkpoint, minVer int) error {
 	return nil
 }
 
+// maxSafeInt is RFC 7493 (I-JSON) §2.2's stated integer range: the largest
+// magnitude an IEEE 754 double represents exactly, 2^53-1. This repo's own
+// canonical form is RFC 8785 JCS, which defers entirely to whatever range a
+// schema declares -- the restriction enforced here is I-JSON's, not JCS's,
+// and exists to protect a THIRD implementation that parses JSON numbers as
+// float64 (JavaScript's Number, for one), not because Go or Python have any
+// trouble with a larger value themselves: both round-trip far past this
+// boundary exactly (Go's int64, Python's arbitrary-precision int), confirmed
+// directly before this comment was written, not assumed. minSafeInt is its
+// negative mirror; RFC 7493 states the range symmetrically.
+const (
+	maxSafeInt = 1<<53 - 1
+	minSafeInt = -(1<<53 - 1)
+)
+
+// checkIntegerRange is A5 (spec §4, §7): every integer field on a checkpoint
+// -- seq, and each tip's entry_count, epoch and sequence_number -- must fall
+// within maxSafeInt/minSafeInt. Applied uniformly across all four fields
+// rather than only entry_count (the one field the spec names for the
+// published vector), because the interoperability risk this rule exists to
+// close applies equally to any of them; a check that only covered
+// entry_count would leave the other three silently unprotected. Epoch's own
+// non-negativity is checkEpochPresence's concern, a producer-contract rule
+// unrelated to wire-format interoperability; this is the same field checked
+// for a different property, not a duplicate of that check.
+//
+// Gated on minVer the same way checkEpochPresence gates its own rules: a
+// format_version 1 or 2 vector is never rejected by this rule, even though
+// nothing published at those versions carries a value anywhere near the
+// boundary today.
+func checkIntegerRange(cp Checkpoint, minVer int) error {
+	if minVer < 3 {
+		return nil
+	}
+	inRange := func(n int) bool { return n >= minSafeInt && n <= maxSafeInt }
+	if !inRange(cp.Seq) {
+		return fmt.Errorf("seq %d is outside the I-JSON-safe integer range [%d, %d]", cp.Seq, minSafeInt, maxSafeInt)
+	}
+	for _, t := range cp.Tips {
+		if !inRange(t.EntryCount) {
+			return fmt.Errorf("stream %q: entry_count %d is outside the I-JSON-safe integer range [%d, %d]", t.StreamID, t.EntryCount, minSafeInt, maxSafeInt)
+		}
+		if !inRange(t.SequenceNumber) {
+			return fmt.Errorf("stream %q: sequence_number %d is outside the I-JSON-safe integer range [%d, %d]", t.StreamID, t.SequenceNumber, minSafeInt, maxSafeInt)
+		}
+		if t.Epoch != nil && !inRange(*t.Epoch) {
+			return fmt.Errorf("stream %q: epoch %d is outside the I-JSON-safe integer range [%d, %d]", t.StreamID, *t.Epoch, minSafeInt, maxSafeInt)
+		}
+	}
+	return nil
+}
+
 // checkEncoding is A4's explicit validation step on raw bytes, run before any
 // JSON parsing -- never as an emergent property of the JSON stack, which is
 // exactly where the two references disagree (spec §1 defect 2): given
@@ -1926,7 +2030,10 @@ func checkSchema(cp Checkpoint, minVer int) error {
 	if cp.Tips == nil {
 		return fmt.Errorf("tips is required and must be an array; null and absent are not an empty array")
 	}
-	return checkEpochPresence(cp, minVer)
+	if err := checkEpochPresence(cp, minVer); err != nil {
+		return err
+	}
+	return checkIntegerRange(cp, minVer)
 }
 
 // verifyPrefixes checks a vector's preceding chain context and returns the

@@ -853,6 +853,37 @@ func TestWrongTypedCheckpointBodyScalarsAreRejectedWhileDecoding(t *testing.T) {
 	}
 }
 
+// TestWrongTypedTipScalarsAreRejectedWhileDecoding pins strict decoding for
+// entry_count and sequence_number -- free here, since EntryCount/
+// SequenceNumber are plain (non-pointer) int fields and Go's decoder already
+// refuses any non-number for them, the same way it already does for every
+// other scalar this file pins. Recorded as a permanent test regardless,
+// mirroring Python's test_check_integer_range_rejects_wrong_typed_entry_count_and_sequence_number
+// -- that reference had never read either field's value at all before A5,
+// so nothing there enforced this until now, and this is the Go side's half
+// of the same stated, tested contract.
+func TestWrongTypedTipScalarsAreRejectedWhileDecoding(t *testing.T) {
+	for _, field := range []string{"entry_count", "sequence_number"} {
+		for _, raw := range []string{`"1"`, `[1]`, `true`, `1.0`, `{"a":1}`} {
+			var tip Tip
+			body := `{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"s1","tip_hash":"aa","` + field + `":` + raw + `}`
+			if err := json.Unmarshal([]byte(body), &tip); err == nil {
+				t.Errorf("%s %s was accepted; %s must be an integer", field, raw, field)
+			}
+		}
+		// The contrast: an ordinary value and an explicit null both decode
+		// cleanly to the zero value -- neither field is a pointer, so null is
+		// a documented no-op, same as seq/timestamp/prev_hash above.
+		for _, raw := range []string{`0`, `1`, `null`} {
+			var tip Tip
+			body := `{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"s1","tip_hash":"aa","` + field + `":` + raw + `}`
+			if err := json.Unmarshal([]byte(body), &tip); err != nil {
+				t.Errorf("%s %s must decode without error, got: %v", field, raw, err)
+			}
+		}
+	}
+}
+
 // The two marshal paths must agree on EVERY member except `epoch`. The null
 // path used to re-declare all five fields in a parallel anonymous struct, so a
 // sixth field added to Tip would appear in the signed bytes of an ordinary tip
