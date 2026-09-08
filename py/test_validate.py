@@ -1832,6 +1832,43 @@ def test_trailing_data_after_the_suite_is_rejected():
             f"{tail!r} was rejected without a FAIL line; a traceback is not a verdict\n{output}"
 
 
+def test_whole_file_encoding_is_checked_before_parsing():
+    """A4's extension to the whole file (#36): a literal, unpaired surrogate
+    escape ANYWHERE in the suite -- not only inside input_raw_hex, and not
+    only inside a checkpoint payload -- must be rejected before json.loads
+    ever runs. Unlike Go, json.loads does not normalize a lone surrogate away
+    (the resulting str keeps the literal code point), so this reference could
+    in principle detect it after parsing -- but Go has no such option (its
+    decode already destroys the information irreversibly), so both references
+    check the same way, at the same point, rather than diverging on
+    mechanism. Mirrors TestWholeFileEncodingIsCheckedBeforeParsing."""
+    body = json.dumps(_load_real_suite())
+    # The premise: the same bytes unmodified pass, so the rejections below
+    # are about the spliced escape and nothing else.
+    rc, output = _run_main_on_raw(body)
+    assert rc == 0, f"the unmodified suite must validate\n{output}"
+    for label, anchor in (
+        # A checkpoint-payload field (the class #36 names explicitly) and an
+        # envelope field never subject to any per-vector check (description,
+        # which entry_name/#36's finding 2 is the report-line analogue of) --
+        # both must be caught by the SAME whole-file check, not only one.
+        ("stream_id", '"stream_id": "11111111'),
+        ("description", '"description": "Conformance'),
+    ):
+        assert anchor in body, f"test bug: anchor {anchor!r} not found in the real suite"
+        # A literal six-ASCII-character escape, \ud800, NOT the character it
+        # would decode to -- confirmed via the raw text actually spliced, not
+        # a visual read of this source.
+        escape_text = "\\" + "ud800"
+        assert escape_text.encode("ascii") == b"\\ud800", \
+            "test bug: escape_text is not the literal 6-character escape"
+        spliced = body.replace(anchor, anchor + escape_text, 1)
+        rc, output = _run_main_on_raw(spliced)
+        assert rc != 0, f"a suite with a lone surrogate escape spliced into {label} was accepted\n{output}"
+        assert "FAIL" in output, \
+            f"{label}: rejected without a FAIL line; a traceback is not a verdict\n{output}"
+
+
 # The same literal appears in go/encoding_test.go as wantNULCanonical: the two
 # references must agree on these exact bytes, not merely each be internally
 # consistent.

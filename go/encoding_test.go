@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"maps"
@@ -440,6 +441,68 @@ func TestTrailingDataAfterSuiteIsRejected(t *testing.T) {
 			}
 			if err := validate(path); err == nil {
 				t.Fatalf("a file with %q appended after the suite was accepted; it is not a single JSON document", tail)
+			}
+		})
+	}
+}
+
+// TestWholeFileEncodingIsCheckedBeforeParsing pins A4's extension to the
+// whole file (#36): a literal, unpaired surrogate escape ANYWHERE in the
+// suite -- not only inside input_raw_hex, and not only inside a checkpoint
+// payload -- must be rejected before any JSON parsing normalizes it away.
+// encoding/json's own decode silently substitutes U+FFFD for a lone
+// surrogate with no error, irreversibly: by the time a Go value exists, the
+// malformation is already gone. checkEncoding has to run on the raw bytes,
+// before that decode, or Go can never see this class of defect at all.
+// Mirrors py/test_validate.py's
+// test_whole_file_encoding_is_checked_before_parsing.
+func TestWholeFileEncodingIsCheckedBeforeParsing(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The premise: the same bytes unmodified validate, so the rejections
+	// below are about the spliced escape and nothing else.
+	dir := t.TempDir()
+	clean := filepath.Join(dir, "clean.json")
+	if err := os.WriteFile(clean, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(clean); err != nil {
+		t.Fatalf("the unmodified suite must validate: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		anchor string
+	}{
+		// A checkpoint-payload field (the class #36 names explicitly) and an
+		// envelope field never subject to any per-vector check (description,
+		// which entry_name/#36's finding 2 is the report-line analogue of) --
+		// both must be caught by the SAME whole-file check, not only one.
+		{"stream_id", `"stream_id":"11111111`},
+		{"description", `"description":"Conformance`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := bytes.Index(raw, []byte(tc.anchor))
+			if idx < 0 {
+				t.Fatalf("anchor %q not found in generated suite", tc.anchor)
+			}
+			// Splice immediately after the anchor's opening quote content
+			// begins: a literal six-ASCII-character escape, `\ud800`, NOT
+			// the character it would decode to -- confirmed below via the
+			// raw bytes actually written, not a visual read of this source.
+			insertAt := idx + len(tc.anchor)
+			spliced := append(append(append([]byte(nil), raw[:insertAt]...), []byte(`\ud800`)...), raw[insertAt:]...)
+			if !bytes.Contains(spliced, []byte{0x5c, 0x75, 0x64, 0x38, 0x30, 0x30}) {
+				t.Fatal("test bug: spliced bytes do not contain the literal escape text \\ud800")
+			}
+			path := filepath.Join(t.TempDir(), "malformed.json")
+			if err := os.WriteFile(path, spliced, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := validate(path)
+			if err == nil {
+				t.Fatalf("a suite with a lone surrogate escape spliced into %s was accepted", tc.name)
 			}
 		})
 	}

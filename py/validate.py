@@ -894,9 +894,23 @@ def entry_name(e: dict) -> str:
     spec like `f"{n:<34}"` raises TypeError for None or for any non-str,
     non-number value -- object.__format__ only accepts an empty spec. Both
     are third-party input like any other, so this reference must return a
-    string, never raise."""
+    string, never raise.
+
+    Safe in TYPE, but that alone is not enough: `name` is never itself
+    subject to check_encoding (only a checkpoint payload is), so it can
+    carry a raw, unpaired surrogate code point -- a str that IS type-safe
+    but is not valid UTF-8. Every call site formats this return value into
+    an f-string that eventually reaches print(), which encodes to real
+    stdout and raises UnicodeEncodeError on exactly that shape of string
+    -- invisible to this file's own tests, which capture output via
+    io.StringIO and never encode at all (#36). The replace-on-encode round
+    trip below closes that gap the same way Python's own `errors="replace"`
+    closes it anywhere else: never raise, same promise as the type contract
+    above, just for a different reason a caller cannot see from the return
+    type alone."""
     name = e.get("name", "")
-    return name if isinstance(name, str) else str(name)
+    name = name if isinstance(name, str) else str(name)
+    return name.encode("utf-8", "replace").decode("utf-8")
 
 
 def reject_reason(pub, nv):
@@ -938,14 +952,46 @@ def main() -> int:
     if len(sys.argv) < 2:
         print("usage: python3 validate.py <vectors.json>")
         return 2
-    # json.load already rejects a file carrying trailing data after the suite
-    # object ("Extra data") -- but as an uncaught traceback, which is not a
-    # verdict. Go now prints "FAIL: ..." and exits 1 for the same file, and a
-    # third party must not have to read a stack trace in one reference and a
-    # diagnosis in the other. Catching it here is the whole difference.
+    with open(sys.argv[1], "rb") as f:
+        raw = f.read()
+    # A4 (spec §7), over the WHOLE file, not only input_raw_hex payloads
+    # (#36). A typed input's string fields go through json.loads before
+    # anything here ever sees them -- unlike Go, that parse does NOT
+    # normalize a lone surrogate escape away (the resulting str keeps the
+    # literal code point, ord(s) == 0xd800), so THIS reference could in
+    # principle detect it after parsing. Checked here anyway, before
+    # parsing, for two reasons: it is the position both references
+    # actually agree on (Go has no post-parse option at all -- its decode
+    # already destroyed the information irreversibly by then, per the
+    # comment on the matching Go check), and this reference's own prior
+    # behavior for this exact input was already an accidental, mislabeled
+    # rejection (canonical()'s .encode("utf-8") raising, caught by a
+    # broad except ValueError and reported as "canonical") rather than a
+    # deliberate one -- worth replacing even though it happened to already
+    # reject in most cases. check_encoding is a byte-level scanner with no
+    # JSON-structure awareness, so it runs unmodified over the whole file
+    # the same way it already runs over one payload's bytes via
+    # resolve_input. A whole-file failure here, not a per-entry "encoding"
+    # reason -- no vector can pin this the way ill_formed_utf8_bytes and
+    # lone_surrogate_escape pin the input_raw_hex path, for the same reason
+    # an unknown member anywhere fails the whole file below rather than one
+    # entry. input_raw_hex's own value is always a plain hex string
+    # (0-9a-f), never itself containing a raw surrogate escape or invalid
+    # UTF-8 byte regardless of what it decodes to, so this cannot collide
+    # with ill_formed_utf8_bytes/lone_surrogate_escape's own published
+    # bytes.
+    if check_encoding(raw):
+        print(f"FAIL: {sys.argv[1]} is not valid UTF-8, or contains an "
+              "unpaired surrogate escape somewhere in a string literal")
+        return 1
+    # json.loads already rejects a file carrying trailing data after the
+    # suite object ("Extra data") -- but as an uncaught traceback, which is
+    # not a verdict. Go now prints "FAIL: ..." and exits 1 for the same
+    # file, and a third party must not have to read a stack trace in one
+    # reference and a diagnosis in the other. Catching it here is the whole
+    # difference.
     try:
-        with open(sys.argv[1], "rb") as f:
-            suite = json.load(f)
+        suite = json.loads(raw)
     except json.JSONDecodeError as e:
         print(f"FAIL: {sys.argv[1]} is not a single JSON document: {e}")
         return 1

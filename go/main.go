@@ -2211,6 +2211,31 @@ func validate(path string) error {
 	if err != nil {
 		return err
 	}
+	// A4 (spec §7), over the WHOLE file, not only input_raw_hex payloads (#36).
+	// A typed input's string fields go through encoding/json's own decode
+	// before anything here ever sees them, and that decode silently
+	// substitutes U+FFFD for a lone surrogate escape with no error --
+	// irreversibly: by the time a Checkpoint exists, the malformation is
+	// already gone, replaced by an ordinary, legitimate character
+	// indistinguishable from one a producer intended. The only point this
+	// reference can ever see the malformation at all is the raw bytes,
+	// before encoding/json touches them -- exactly A4's own premise for
+	// input_raw_hex, just not previously applied to anything else.
+	// checkEncoding is a byte-level scanner with no JSON-structure
+	// awareness (it tracks string-literal/escape state only), so it runs
+	// unmodified over the whole file the same way it already runs over one
+	// payload's bytes. A whole-file failure here, not a per-entry "encoding"
+	// reason: no vector can pin this the way ill_formed_utf8_bytes and
+	// lone_surrogate_escape pin the input_raw_hex path, for the same reason
+	// an unknown member anywhere fails the whole file below rather than one
+	// entry -- go/encoding_test.go and its Python mirror hold the property
+	// instead. input_raw_hex's own value is always a plain hex string
+	// (0-9a-f), never itself containing a raw surrogate escape or invalid
+	// UTF-8 byte regardless of what it decodes to, so this cannot collide
+	// with ill_formed_utf8_bytes/lone_surrogate_escape's own published bytes.
+	if reason := checkEncoding(data); reason != "" {
+		return fmt.Errorf("the suite file is not valid UTF-8, or contains an unpaired surrogate escape somewhere in a string literal")
+	}
 	// Strict decoding, in TWO stages: the envelope eagerly, the entries only
 	// after the skip rule has had its say. See suiteFile for why the order
 	// matters -- strict-decoding a vector of a newer format is exactly the
