@@ -863,22 +863,45 @@ func TestWrongTypedCheckpointBodyScalarsAreRejectedWhileDecoding(t *testing.T) {
 // so nothing there enforced this until now, and this is the Go side's half
 // of the same stated, tested contract.
 func TestWrongTypedTipScalarsAreRejectedWhileDecoding(t *testing.T) {
-	for _, field := range []string{"entry_count", "sequence_number"} {
+	// other is whichever of the two fields is NOT under test in this
+	// iteration, fixed at an ordinary value so the JSON object never
+	// contains the field-under-test's key twice -- a duplicate key plus a
+	// null value would otherwise be a false pass: an already-decoded
+	// non-pointer field is left untouched by a later null occurrence for
+	// the SAME key, so the null sub-case below would silently observe the
+	// other occurrence's value instead of testing null's own effect.
+	body := func(field, other, raw string) string {
+		return `{"epoch":0,"stream_id":"s1","tip_hash":"aa","` + other + `":1,"` + field + `":` + raw + `}`
+	}
+	fields := map[string]string{"entry_count": "sequence_number", "sequence_number": "entry_count"}
+	for field, other := range fields {
 		for _, raw := range []string{`"1"`, `[1]`, `true`, `1.0`, `{"a":1}`} {
 			var tip Tip
-			body := `{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"s1","tip_hash":"aa","` + field + `":` + raw + `}`
-			if err := json.Unmarshal([]byte(body), &tip); err == nil {
+			if err := json.Unmarshal([]byte(body(field, other, raw)), &tip); err == nil {
 				t.Errorf("%s %s was accepted; %s must be an integer", field, raw, field)
 			}
 		}
-		// The contrast: an ordinary value and an explicit null both decode
-		// cleanly to the zero value -- neither field is a pointer, so null is
-		// a documented no-op, same as seq/timestamp/prev_hash above.
-		for _, raw := range []string{`0`, `1`, `null`} {
+		// The contrast: an ordinary value decodes to itself, and an explicit
+		// null decodes to the zero value -- neither field is a pointer, so
+		// null is a documented no-op, same as seq/timestamp/prev_hash above.
+		// Asserted on the actual decoded value, not merely a nil error, so a
+		// duplicate-key regression like the one this test used to have would
+		// be caught rather than silently passing on "no error".
+		for _, tc := range []struct {
+			raw  string
+			want int
+		}{{`0`, 0}, {`1`, 1}, {`null`, 0}} {
 			var tip Tip
-			body := `{"entry_count":1,"epoch":0,"sequence_number":1,"stream_id":"s1","tip_hash":"aa","` + field + `":` + raw + `}`
-			if err := json.Unmarshal([]byte(body), &tip); err != nil {
-				t.Errorf("%s %s must decode without error, got: %v", field, raw, err)
+			if err := json.Unmarshal([]byte(body(field, other, tc.raw)), &tip); err != nil {
+				t.Errorf("%s %s must decode without error, got: %v", field, tc.raw, err)
+				continue
+			}
+			got := tip.EntryCount
+			if field == "sequence_number" {
+				got = tip.SequenceNumber
+			}
+			if got != tc.want {
+				t.Errorf("%s %s decoded to %d, want %d", field, tc.raw, got, tc.want)
 			}
 		}
 	}
