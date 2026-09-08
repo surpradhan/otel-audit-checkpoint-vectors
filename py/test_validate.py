@@ -2378,6 +2378,51 @@ def test_wrong_typed_negative_body_fields_reject_the_whole_file():
         assert rc == 0, f"an ordinary string {field} must stay legal\n{output}"
 
 
+def test_check_entries_rejects_wrong_typed_input_raw_hex():
+    """input_raw_hex is a member of the full Vector/NegativeVector, not of
+    the header the skip decision itself reads, and -- unlike reason/
+    prev_sha256 above -- it is shared by both entry kinds. Found in review:
+    resolve_input's own `len(s) % 2 == 0` read of it crashed uncaught
+    (TypeError: object of type 'int' has no len()) on any wrong type
+    without a length, rather than returning a reason; check_entries now
+    gates it explicitly, in the same position as the chain/expect_warnings
+    check just below it. Mirrors Go's
+    TestWrongTypedInputRawHexIsRejectedWhileDecoding."""
+    bad_values = ([1, 2], {"a": 1}, 42, 1.0, True, False)
+
+    nv_base = {"name": "probe", "expect": "schema", "min_format_version": 2}
+    for bad in bad_values:
+        nv = dict(nv_base, input_raw_hex=bad)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+        assert rc != 0, f"negative input_raw_hex={bad!r} was accepted, not rejected\n{output}"
+        assert "Traceback" not in output, (
+            f"negative input_raw_hex={bad!r} crashed instead of returning a "
+            f"clean reason:\n{output}")
+        assert f"got {type(bad).__name__}" in output, (
+            f"negative input_raw_hex={bad!r} rejected, but not with the "
+            f"expected diagnosis:\n{output}")
+
+    v_base = {"name": "probe", "min_format_version": 2}
+    for bad in bad_values:
+        v = dict(v_base, input_raw_hex=bad)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+        assert rc != 0, f"vector input_raw_hex={bad!r} was accepted, not rejected\n{output}"
+        assert "Traceback" not in output, (
+            f"vector input_raw_hex={bad!r} crashed instead of returning a "
+            f"clean reason:\n{output}")
+        assert f"got {type(bad).__name__}" in output, (
+            f"vector input_raw_hex={bad!r} rejected, but not with the "
+            f"expected diagnosis:\n{output}")
+
+    # The premise: an ordinary (well-formed) hex string is unaffected by
+    # this specific gate -- it still has to pass check_encoding and decode
+    # to something check_schema accepts, so this only proves the type gate
+    # itself doesn't reject good input, not that the whole entry validates.
+    good = dict(nv_base, input_raw_hex="aabb")
+    err = validate.check_entries(_synthetic_suite(negatives=[good]))
+    assert err is None, f"an ordinary hex string input_raw_hex must pass check_entries: {err}"
+
+
 def test_wrong_typed_negative_body_fields_ignored_when_the_entry_is_skipped():
     """Unlike name, reason and prev_sha256 are members of the full
     NegativeVector, not of the header the skip decision itself reads -- Go's
@@ -2415,6 +2460,168 @@ def test_wrong_typed_negative_body_fields_ignored_when_the_entry_is_skipped():
         assert "got list" in output, (
             f"the SAME bad-typed {field} at a supported version was "
             f"rejected, but not with the expected diagnosis:\n{output}")
+
+
+# --- A4: raw-byte encoding checks (issue #26) -------------------------------
+#
+# check_encoding's own tests pin the two properties spec §7 calls out by
+# name: an escaped backslash followed by literal "u..." text is not a \u
+# escape at all, and the four hex digits after a real \u escape are
+# case-insensitive, the same way int(x, 16) already treats them. Every
+# literal escape sequence below is written with an r"..." raw string, not an
+# ordinary string: an ordinary Python string literal would decode \ud800
+# itself at parse time (and fail outright, since a lone surrogate is not a
+# valid Python str character on its own) rather than leaving the six literal
+# ASCII characters `\`, `u`, `d`, `8`, `0`, `0` for check_encoding to scan --
+# exactly the raw-bytes-before-parsing distinction A4 exists to test.
+# Mirrors go/a4_test.go's TestCheckEncoding* functions.
+
+def test_check_encoding_accepts_ordinary_text():
+    assert validate.check_encoding(b'{"stream_id":"plain ascii, no escapes"}') == ""
+
+
+def test_check_encoding_rejects_invalid_utf8():
+    raw = b'{"stream_id":"' + b'\xff' + b'"}'
+    assert validate.check_encoding(raw) == "encoding"
+
+
+def test_check_encoding_rejects_lone_high_surrogate():
+    # \ud800 with nothing pairing it: no following escape at all.
+    assert validate.check_encoding(r'{"stream_id":"\ud800"}'.encode()) == "encoding"
+    # \ud800 followed by an ordinary (non-surrogate) escape, not a low surrogate.
+    assert validate.check_encoding(r'{"stream_id":"\ud800A"}'.encode()) == "encoding"
+    # \ud800 followed by another HIGH surrogate, not a low one: still not a pair.
+    assert validate.check_encoding(r'{"stream_id":"\ud800\ud801"}'.encode()) == "encoding"
+
+
+def test_check_encoding_rejects_lone_low_surrogate():
+    # \udc00 with nothing preceding it to pair with -- the scan only ever
+    # consumes a low surrogate as part of a pair started by a high one, so
+    # reaching one on its own means nothing claimed it.
+    assert validate.check_encoding(r'{"stream_id":"\udc00"}'.encode()) == "encoding"
+
+
+def test_check_encoding_accepts_valid_surrogate_pair():
+    # 😀 is U+1F600 (😀) correctly encoded as a high/low pair.
+    assert validate.check_encoding(r'{"stream_id":"\ud83d\ude00"}'.encode()) == ""
+
+
+def test_check_encoding_accepts_ordinary_escape():
+    # A is 'A', nowhere near the surrogate range -- must not be treated
+    # as one just because it starts with \u.
+    assert validate.check_encoding(r'{"stream_id":"A"}'.encode()) == ""
+
+
+def test_check_encoding_distinguishes_escaped_backslash_from_real_escape():
+    """Pins spec §7's own example: "an escaped backslash followed by ud800
+    is not an escape." Raw text `\\\\ud800` is an escaped backslash (one
+    literal `\\`) followed by the five plain characters `u`, `d`, `8`, `0`,
+    `0` -- NOT a `\\u` escape, because the backslash that would have started
+    it was already consumed pairing with the one before it. A scanner that
+    merely searched for the substring "\\u" without tracking escape pairing
+    would misfire on this and reject text that is not a surrogate escape at
+    all."""
+    # Raw text: "\\ud800" -- an escaped backslash, then literal "ud800".
+    assert validate.check_encoding(r'{"stream_id":"\\ud800"}'.encode()) == ""
+    # Contrast: one MORE backslash and it IS a real escape again -- three
+    # backslashes is an escaped backslash followed by the start of a real
+    # \u escape, which must still be caught as a lone surrogate.
+    assert validate.check_encoding(r'{"stream_id":"\\\ud800"}'.encode()) == "encoding"
+
+
+def test_check_encoding_is_case_insensitive_for_surrogate_hex_digits():
+    """Pins spec §7's "case variants": \\uD800 (uppercase hex digits) is the
+    same surrogate as \\ud800, and a validator that only matched the
+    lowercase form would miss it."""
+    assert validate.check_encoding(r'{"stream_id":"\uD800"}'.encode()) == "encoding"
+    assert validate.check_encoding(r'{"stream_id":"\uDC00"}'.encode()) == "encoding"
+    # A valid pair in uppercase, and one mixed-case, must both still be accepted.
+    assert validate.check_encoding(r'{"stream_id":"\uD83D\uDE00"}'.encode()) == ""
+    assert validate.check_encoding(r'{"stream_id":"\uD83d\udE00"}'.encode()) == ""
+
+
+def test_check_encoding_rejects_truncated_escape():
+    for raw in (
+        '{"stream_id":"' + "\\",      # backslash with nothing after it
+        r'{"stream_id":"\u12',        # \u with fewer than 4 hex digits before EOF
+        r'{"stream_id":"\uZZZZ"}',    # \u followed by non-hex characters
+    ):
+        assert validate.check_encoding(raw.encode()) == "encoding", raw
+
+
+def test_check_encoding_rejects_permissive_hex_digit_variants():
+    """Found in review: int(x, 16) is a permissive superset of what
+    _hex4_value (and Go's strconv.ParseUint, which this must match) accepts
+    for the \\uXXXX window -- it additionally allows a leading sign, `_`
+    digit-group separators, a `0x` prefix, and surrounding whitespace, any
+    of which consumes one of the 4 available bytes and so caps the value
+    int() could extract at 0xFFF, always below the surrogate range. Never
+    an accept/reject divergence on its own for that reason, but a real
+    reason-token divergence (Go/the fixed reference say "encoding") that
+    _hex4_value now closes at the source instead of relying on that
+    ceiling as an accident of the surrogate range's own numeric bounds."""
+    for raw in (
+        r'{"stream_id":"\u+800"}',   # leading sign
+        r'{"stream_id":"\uD_00"}',   # digit-group separator
+        r'{"stream_id":"\u-800"}',   # leading sign
+        r'{"stream_id":"\u 800"}',   # embedded whitespace
+        r'{"stream_id":"\u0x12"}',   # 0x prefix -- 'x' is not a hex digit at any position
+    ):
+        assert validate.check_encoding(raw.encode()) == "encoding", raw
+
+
+# resolve_input is what actually wires check_encoding into the pipeline;
+# these tests exercise it directly rather than only through a published
+# vector.
+
+def test_resolve_input_passes_through_when_no_raw_hex():
+    cp = _cp(1, "2026-01-01T00:00:00Z", [])
+    got, reason = validate.resolve_input(cp, "")
+    assert reason == ""
+    assert got is cp
+
+
+def test_resolve_input_rejects_invalid_hex():
+    _, reason = validate.resolve_input({}, "not valid hex!!")
+    assert reason == "schema"
+
+
+def test_resolve_input_rejects_whitespace_in_otherwise_valid_hex():
+    """Found in review: bytes.fromhex() silently ignores embedded ASCII
+    whitespace (documented CPython behavior), which Go's
+    encoding/hex.DecodeString does not -- a real accept/reject divergence,
+    proven against the actual committed valid_surrogate_pair vector's own
+    input_raw_hex with one space spliced in: Go's resolveInput rejected it
+    ("schema") while this function, pre-fix, decoded it to byte-identical
+    content and accepted it. Uses a synthetic hex string, not the real
+    vector's, so this stays meaningful even if valid_surrogate_pair's own
+    bytes ever change."""
+    raw = ('{"prev_hash":"' + validate.hashlib.sha256(b"").hexdigest() +
+           '","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":[]}').encode()
+    clean = raw.hex()
+    spaced = clean[:10] + " " + clean[10:]
+    _, clean_reason = validate.resolve_input({}, clean)
+    assert clean_reason == "", "test setup is broken: clean hex must resolve"
+    _, spaced_reason = validate.resolve_input({}, spaced)
+    assert spaced_reason == "schema"
+
+
+def test_resolve_input_rejects_encoding_failure_before_parsing():
+    raw = (r'{"prev_hash":"' + validate.hashlib.sha256(b"").hexdigest() +
+           r'","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":['
+           r'{"entry_count":1,"epoch":0,"sequence_number":1,'
+           r'"stream_id":"\ud800","tip_hash":"aa"}]}').encode()
+    _, reason = validate.resolve_input({}, raw.hex())
+    assert reason == "encoding"
+
+
+def test_resolve_input_parses_valid_raw_hex():
+    raw = ('{"prev_hash":"' + validate.hashlib.sha256(b"").hexdigest() +
+           '","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":[]}').encode()
+    got, reason = validate.resolve_input({}, raw.hex())
+    assert reason == ""
+    assert got["seq"] == 1
+    assert got["prev_hash"] == validate.hashlib.sha256(b"").hexdigest()
 
 
 def main():

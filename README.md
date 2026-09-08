@@ -27,7 +27,7 @@ concrete, deterministic, and independently verifiable, not to fix a vocabulary.
 
 ## Suite format
 
-`vectors.json` carries a `format_version` (integer, currently **2**). Individual
+`vectors.json` carries a `format_version` (integer, currently **3**). Individual
 vectors may carry `min_format_version`.
 
 **Validators MUST skip, with a warning, any vector whose `min_format_version`
@@ -78,6 +78,44 @@ optional fields appear on vectors that exercise them:
   two implementations can be checked for agreement rather than eyeballed.
   Without this an advisory rule is untestable: a validator that silently
   accepts would pass a must-accept vector without ever running the rule.
+
+**Version 3 changed no previously published bytes** either, the same way
+version 2 didn't: every earlier vector's fields are untouched, and the only
+change to an existing line is `format_version` itself.
+
+Version 3 adds one further optional field:
+
+- `input_raw_hex` — when present, the exact hex-encoded bytes to validate and
+  canonicalize, in place of `input`. A typed `input` object is round-tripped
+  through each language's own JSON parser before a validator ever sees it, so
+  it cannot express invalid UTF-8 at all — a parse would already have to
+  succeed to populate a typed field, and invalid UTF-8 can't produce a string
+  either language's JSON parser will accept. An unpaired surrogate escape is
+  a different case: it *is* expressible on the typed path, just inconsistently
+  — Go's `encoding/json` silently substitutes U+FFFD and keeps parsing, while
+  Python's `json.loads` keeps the literal (unencodable) surrogate — so the two
+  references currently diverge on checkpoints that carry one there instead of
+  agreeing via the check below. `input_raw_hex` exists so a vector pinning the
+  *raw-bytes* form of this malformation class can be published at all; it does
+  not by itself make the typed path agree. See
+  [#36](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36)
+  for the typed-path gap. A validator MUST run the encoding check below on
+  `input_raw_hex` bytes **before** attempting to parse them, exactly once, in
+  the same position both references do: first in the check order, ahead of
+  the schema check.
+
+  **Encoding check (A4).** The raw bytes must be valid UTF-8 outright, and no
+  `\uXXXX` escape inside a string literal may encode a surrogate
+  (U+D800–U+DFFF) that is not the correctly-ordered half of an adjacent pair.
+  Given `"\ud800\ud800"`, Go's `encoding/json` silently decodes it to two
+  U+FFFD with no error, while Python's `json.loads` preserves the lone
+  surrogates and a later `.encode("utf-8")` raises — neither is a clean
+  rejection, and the two disagree with each other, before either
+  language's own JSON stack has even finished running. `ill_formed_utf8_bytes`
+  and `lone_surrogate_escape` are the negatives; `valid_surrogate_pair` is the
+  must-accept positive without which an implementation could pass this suite
+  by rejecting every `\ud` escape wholesale, which is over-rejection, not
+  conformance — see "Positive vectors" below. Rejected: `encoding`.
 
 ## Canonical form
 
@@ -191,7 +229,7 @@ No published vector can express this — see [Not pinned](#rules-hold-at-every-p
 
 ## Positive vectors (a conformant validator MUST accept these)
 
-The 16 positive vectors, one line each:
+The 17 positive vectors, one line each:
 
 - `genesis_empty_tips` — the first checkpoint of the positives' own hash
   chain, with an empty `tips` array.
@@ -245,6 +283,12 @@ The 16 positive vectors, one line each:
 - `advisory_first_prefix_unsorted_tips` — the counterpart to the above, with
   unsorted tips (three, in reverse order) at `chain[0]` instead of the
   middle, and the changed epoch on the identity-interior tip.
+- `valid_surrogate_pair` — carries `input_raw_hex` instead of `input`: a
+  correctly-ordered high/low surrogate escape pair (`😀`, U+1F600)
+  in a tip's `stream_id`. The positive control for A4 (see below) — without
+  it an implementation could pass this suite by rejecting every `\ud`
+  escape wholesale, which is over-rejection, not conformance. The only
+  vector that exercises `input_raw_hex`'s accept path at all.
 
 ## Negative vectors (a conformant validator MUST reject these)
 
@@ -253,7 +297,9 @@ vectors prove it actually enforces the rules. Each must be **rejected**; the
 reason in its `expect` field is **advisory for third parties**.
 
 `expect` records the reason *this repo's* reference validators give, under
-their check order — schema, canonical, signature, Tier B, chain — and the
+their check order — encoding (only for a vector carrying `input_raw_hex`,
+before it is even parsed into a checkpoint), schema, canonical, signature,
+Tier B, chain — and the
 generator asserts that at `gen` time, so a vector whose `expect` is wrong
 cannot be published. A conformant validator need not share that order, and a
 vector that fails more than one check may be named differently by one that
@@ -410,6 +456,21 @@ padding bits, so two different signature strings decoded to the same 64 bytes
 and both verified. The round trip is what makes one signature have exactly one
 spelling. `go/encoding_test.go` and `py/test_validate.py` splice `!`, `\n` and
 `\r` and flip the padding bits, at all three decode sites in each reference.
+
+- `ill_formed_utf8_bytes` — carries `input_raw_hex` instead of `input`: the
+  raw bytes contain `0xFF`, never valid in any position of a UTF-8 sequence.
+  A typed `input` object cannot express this at all — a JSON parse would
+  already have to succeed to populate one. Caught by an explicit byte-level
+  UTF-8 validity check before any parsing is attempted. Rejected: encoding.
+- `lone_surrogate_escape` — carries `input_raw_hex`: a tip's `stream_id`
+  literally contains the six-character escape `\ud800`, a high surrogate
+  with no low surrogate immediately after it — syntactically valid UTF-8
+  and valid JSON, but not a correctly-paired escape, so it does not
+  correspond to any single Unicode scalar value. Go's `encoding/json`
+  silently decodes this to U+FFFD; Python's `json.loads` decodes it to a
+  real (if unencodable) lone surrogate — both accept it, and disagree on
+  what they accepted. Caught by a raw-text surrogate scan before either
+  parser ever runs. Rejected: encoding.
 
 ## Cross-checkpoint rules
 
@@ -714,7 +775,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 16 positive (13 through Tier B) + 29 negative
+checked: 17 positive (13 through Tier B) + 31 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.
@@ -746,22 +807,25 @@ code-unit order, code-point order and byte order all coincide. It exercises
 none of JCS's string-escaping rules, and nothing here distinguishes the
 UTF-16 code-unit key ordering RFC 8785 §3.2.3
 requires from a plain code-point sort. That distinction is exactly where
-Python's `sort_keys=True` stops being general JCS. The two implementations are also
-not symmetric in kind: Go canonicalizes through `gowebpki/jcs`, a
-general-purpose RFC 8785 implementation, while Python's
-`json.dumps(sort_keys=True, ensure_ascii=False, separators=(",", ":"))` is
-valid JCS only for this restricted, ASCII/integers-only profile — it is not a
-general RFC 8785 implementation.
+Python's `sort_keys=True` stops being general JCS.
 
-`non_bmp_and_pua_stream_id_order` carries a value-level exception to the
-key-name-only ASCII scope above: its two stream_ids (U+E000, and U+10000 —
-the first non-BMP code point) are published as literal UTF-8 rather than
-`\u` escapes, since JCS only requires escaping a small fixed set of
-characters (control characters, `"`, `\`) and neither is one of them. This
-is not a second exception to the key-ordering scope itself, since a tip's
-`stream_id` is an array-element *value*, sorted by this repo's own R4 rule,
-not a JSON object key subject to RFC 8785 §3.2.3 at all — see the vector's
-own entry above for what it *does* pin.
+`valid_surrogate_pair` and `non_bmp_and_pua_stream_id_order` are exceptions
+at the *value* level: their stream_ids (😀 U+1F600; and U+E000 and U+10000,
+the first non-BMP code point, respectively) are published as literal UTF-8
+rather than `\u` escapes, because JCS only requires escaping a small fixed
+set of characters (control characters, `"`, `\`) and none of these are among
+them. That is real coverage of JCS's string-escaping rule, at these specific
+code points — not general JCS string-escaping conformance, and not a second
+exception to the key-ordering scope above, since a tip's `stream_id` is an
+array-element *value*, sorted by this repo's own R4 rule, not a JSON object
+key subject to RFC 8785 §3.2.3 at all.
+
+The suite therefore exercises JCS's compact separators throughout. The two
+implementations are also not symmetric in kind: Go canonicalizes through
+`gowebpki/jcs`, a general-purpose RFC 8785 implementation, while Python's
+`json.dumps(sort_keys=True, ensure_ascii=False, separators=(",", ":"))` is
+valid JCS only for this restricted, ASCII-keys/integers-only profile — it is
+not a general RFC 8785 implementation.
 
 Both accept the positive vectors on identical canonical bytes, hashes, and
 signatures, and reject every negative vector for the expected reason.
