@@ -133,6 +133,7 @@ func TestCheckEncodingRejectsPermissiveHexDigitVariants(t *testing.T) {
 		`{"stream_id":"\uD_00"}`, // digit-group separator
 		`{"stream_id":"\u-800"}`, // leading sign
 		`{"stream_id":"\u 800"}`, // embedded whitespace
+		`{"stream_id":"\u0x12"}`, // 0x prefix -- 'x' is not a hex digit at any position
 	} {
 		if reason := checkEncoding([]byte(raw)); reason != "encoding" {
 			t.Errorf("permissive-parser-only hex variant %q: reason = %q, want \"encoding\"", raw, reason)

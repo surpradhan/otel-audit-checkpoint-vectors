@@ -339,6 +339,20 @@ def check_entries(suite):
                                            f"the checkpoint of {named}")
             if err:
                 return err
+            # input_raw_hex is a member of the full Vector/NegativeVector,
+            # not of the header the skip decision above already read, so it
+            # is gated here rather than alongside min_format_version/name --
+            # same reasoning as reason/prev_sha256 above, just for a field
+            # both vectors and negatives can carry. Go's struct field is
+            # plain `string`, so a wrong-typed value there fails the whole
+            # file at strict decode; resolve_input's own `len(s) % 2 == 0`
+            # read of it crashed uncaught on anything without a length (an
+            # int, a bool, a float) rather than returning a reason, same
+            # shape of bug as the pre-#7/#20 fields once did.
+            input_raw_hex = e.get("input_raw_hex")
+            if input_raw_hex is not None and not isinstance(input_raw_hex, str):
+                return (f"input_raw_hex on {named} must be a string, got "
+                        f"{type(input_raw_hex).__name__}")
             # Type-gate "chain" and "expect_warnings" before either is read
             # as a list downstream: absent OR explicitly null is Go's nil
             # slice -- legal, zero entries -- but a PRESENT non-list value

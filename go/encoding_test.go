@@ -752,6 +752,50 @@ func TestWrongTypedNegativeBodyFieldsAreRejectedWhileDecoding(t *testing.T) {
 	}
 }
 
+// TestWrongTypedInputRawHexIsRejectedWhileDecoding pins strict decoding for
+// input_raw_hex, a member of both Vector and NegativeVector (unlike
+// reason/prev_sha256 above, which are negative-only). Go's field is plain
+// `string`, so a wrong-typed value fails the whole file at decode; Python's
+// check_entries now gates the same field explicitly, in the same position
+// as its chain/expect_warnings check, since the field is read directly by
+// resolve_input (`len(s) % 2 == 0`) with no isinstance guard of its own --
+// a wrong-typed value there crashed uncaught (TypeError: object of type
+// 'int' has no len()) rather than returning a reason, before that gate
+// existed. Mirrors Python's
+// test_check_entries_rejects_wrong_typed_input_raw_hex.
+func TestWrongTypedInputRawHexIsRejectedWhileDecoding(t *testing.T) {
+	for _, raw := range []string{`[1,2]`, `{"a":1}`, `42`, `1.0`, `true`, `false`} {
+		var v Vector
+		body := `{"input_raw_hex":` + raw + `}`
+		if err := json.Unmarshal([]byte(body), &v); err == nil {
+			t.Errorf("Vector: input_raw_hex %s was accepted; must be a string", raw)
+		}
+		var nv NegativeVector
+		if err := json.Unmarshal([]byte(body), &nv); err == nil {
+			t.Errorf("NegativeVector: input_raw_hex %s was accepted; must be a string", raw)
+		}
+	}
+	for _, raw := range []string{`"aabb"`, `null`} {
+		var v Vector
+		body := `{"input_raw_hex":` + raw + `}`
+		if err := json.Unmarshal([]byte(body), &v); err != nil {
+			t.Errorf("Vector: input_raw_hex %s must decode without error, got: %v", raw, err)
+		}
+		var nv NegativeVector
+		if err := json.Unmarshal([]byte(body), &nv); err != nil {
+			t.Errorf("NegativeVector: input_raw_hex %s must decode without error, got: %v", raw, err)
+		}
+	}
+	var absentV Vector
+	if err := json.Unmarshal([]byte(`{}`), &absentV); err != nil {
+		t.Errorf("a Vector with no input_raw_hex must decode without error, got: %v", err)
+	}
+	var absentNV NegativeVector
+	if err := json.Unmarshal([]byte(`{}`), &absentNV); err != nil {
+		t.Errorf("a NegativeVector with no input_raw_hex must decode without error, got: %v", err)
+	}
+}
+
 // TestWrongTypedCheckpointBodyScalarsAreRejectedWhileDecoding pins strict
 // decoding for seq, timestamp and prev_hash -- the three Checkpoint members
 // besides tips. A wrong-typed seq or timestamp used to reach unguarded Tier B

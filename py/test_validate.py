@@ -2378,6 +2378,51 @@ def test_wrong_typed_negative_body_fields_reject_the_whole_file():
         assert rc == 0, f"an ordinary string {field} must stay legal\n{output}"
 
 
+def test_check_entries_rejects_wrong_typed_input_raw_hex():
+    """input_raw_hex is a member of the full Vector/NegativeVector, not of
+    the header the skip decision itself reads, and -- unlike reason/
+    prev_sha256 above -- it is shared by both entry kinds. Found in review:
+    resolve_input's own `len(s) % 2 == 0` read of it crashed uncaught
+    (TypeError: object of type 'int' has no len()) on any wrong type
+    without a length, rather than returning a reason; check_entries now
+    gates it explicitly, in the same position as the chain/expect_warnings
+    check just below it. Mirrors Go's
+    TestWrongTypedInputRawHexIsRejectedWhileDecoding."""
+    bad_values = ([1, 2], {"a": 1}, 42, 1.0, True, False)
+
+    nv_base = {"name": "probe", "expect": "schema", "min_format_version": 2}
+    for bad in bad_values:
+        nv = dict(nv_base, input_raw_hex=bad)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(negatives=[nv]))
+        assert rc != 0, f"negative input_raw_hex={bad!r} was accepted, not rejected\n{output}"
+        assert "Traceback" not in output, (
+            f"negative input_raw_hex={bad!r} crashed instead of returning a "
+            f"clean reason:\n{output}")
+        assert f"got {type(bad).__name__}" in output, (
+            f"negative input_raw_hex={bad!r} rejected, but not with the "
+            f"expected diagnosis:\n{output}")
+
+    v_base = {"name": "probe", "min_format_version": 2}
+    for bad in bad_values:
+        v = dict(v_base, input_raw_hex=bad)
+        rc, output = _run_main_capturing_stdout(_synthetic_suite(vectors=[v]))
+        assert rc != 0, f"vector input_raw_hex={bad!r} was accepted, not rejected\n{output}"
+        assert "Traceback" not in output, (
+            f"vector input_raw_hex={bad!r} crashed instead of returning a "
+            f"clean reason:\n{output}")
+        assert f"got {type(bad).__name__}" in output, (
+            f"vector input_raw_hex={bad!r} rejected, but not with the "
+            f"expected diagnosis:\n{output}")
+
+    # The premise: an ordinary (well-formed) hex string is unaffected by
+    # this specific gate -- it still has to pass check_encoding and decode
+    # to something check_schema accepts, so this only proves the type gate
+    # itself doesn't reject good input, not that the whole entry validates.
+    good = dict(nv_base, input_raw_hex="aabb")
+    err = validate.check_entries(_synthetic_suite(negatives=[good]))
+    assert err is None, f"an ordinary hex string input_raw_hex must pass check_entries: {err}"
+
+
 def test_wrong_typed_negative_body_fields_ignored_when_the_entry_is_skipped():
     """Unlike name, reason and prev_sha256 are members of the full
     NegativeVector, not of the header the skip decision itself reads -- Go's
@@ -2516,10 +2561,11 @@ def test_check_encoding_rejects_permissive_hex_digit_variants():
     _hex4_value now closes at the source instead of relying on that
     ceiling as an accident of the surrogate range's own numeric bounds."""
     for raw in (
-        r'{"stream_id":"\u+800"}',  # leading sign
-        r'{"stream_id":"\uD_00"}',  # digit-group separator
-        r'{"stream_id":"\u-800"}',  # leading sign
-        r'{"stream_id":"\u 800"}',  # embedded whitespace
+        r'{"stream_id":"\u+800"}',   # leading sign
+        r'{"stream_id":"\uD_00"}',   # digit-group separator
+        r'{"stream_id":"\u-800"}',   # leading sign
+        r'{"stream_id":"\u 800"}',   # embedded whitespace
+        r'{"stream_id":"\u0x12"}',   # 0x prefix -- 'x' is not a hex digit at any position
     ):
         assert validate.check_encoding(raw.encode()) == "encoding", raw
 
