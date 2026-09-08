@@ -354,7 +354,27 @@ def _freeze_key(cp: dict, signature: str, prev_sha256: str = "") -> bytes:
     nothing and stays consistent. Tips are walked in the order they appear
     in `input`, not sorted, since the point is to detect ANY change to what
     genFrozenV1 produced, including one that changed only their order.
-    Mirrors Go's freezeKey byte for byte."""
+    Mirrors Go's freezeKey byte for byte.
+
+    The `\\x00` join has no length-prefixing or escaping, so two different
+    field sequences could in principle concatenate to the same bytes if any
+    field ever contained an embedded NUL -- the exact class of bug tipKey's
+    own doc comment in main.go describes fixing elsewhere. Safe here only
+    because every field genFrozenV1 supplies is a short hex/UUID/timestamp
+    literal it hardcodes, never third-party or attacker-derived input; this
+    function must not be reused anywhere that assumption doesn't hold.
+
+    `str(field)` coerces any JSON type to text, so a value that stringifies
+    the same way regardless of type (e.g. entry_count) is invisible to this
+    key -- a narrower blind spot than Go's, where Tip.EntryCount's static
+    int field makes a wrong-typed value unreachable before this function
+    ever runs. Not reachable through the committed file this test actually
+    reads, though: this is a hardcoded 7-name lookup against vectors.json as
+    currently PUBLISHED, and a wrong-typed field on any of these seven
+    entries would already fail `python3 py/validate.py vectors.json` --
+    check_schema's own type gates -- a separate, earlier step of the same CI
+    job. A committed vectors.json with a wrong-typed entry_count could not
+    have passed CI to be committed in the first place."""
     parts = [cp.get("prev_hash", ""), str(cp.get("seq", 0)), cp.get("timestamp", "")]
     for t in (cp.get("tips") or []):
         ep = t.get("epoch")
@@ -397,25 +417,39 @@ def test_v1_vectors_match_frozen_snapshot():
     though it fails neither the no-drift check nor either validator. Reads
     the actually-committed vectors.json (not the generator's live output) so
     it also catches a hand-edit that happens to leave the file
-    self-consistent enough to pass everything else. Mirrors Go's
-    TestV1VectorsMatchFrozenSnapshot."""
+    self-consistent enough to pass everything else.
+
+    Mismatches are collected, not raised on the first one -- if genFrozenV1's
+    prev_hash chain is disturbed, the effect cascades to every checkpoint
+    after the one actually edited (each one's prev_hash depends on the
+    canonical bytes of the one before it), so a single edit typically breaks
+    more than one entry. A bare assert inside the loop would report only
+    whichever entry happens to be checked first and hide the rest,
+    understating the blast radius exactly when a caller most needs to see
+    all of it. Mirrors Go's TestV1VectorsMatchFrozenSnapshot, which uses
+    t.Errorf for the same reason -- and mirrors this same function's own
+    trailing "missing" check below, already accumulate-then-assert-once."""
     suite = _load_real_suite()
     found = set()
+    failures = []
 
     def check(name, cp, signature, prev_sha256=""):
         found.add(name)
         want = _V1_FREEZE.get(name)
-        assert want is not None, (
-            f"{name}: not one of the pinned v1 vectors; if this is a genuinely new "
-            "format_version-1 entry, add it to _V1_FREEZE (and Go's v1FreezeKeys) "
-            "rather than leaving it unpinned")
+        if want is None:
+            failures.append(
+                f"{name}: not one of the pinned v1 vectors; if this is a genuinely new "
+                "format_version-1 entry, add it to _V1_FREEZE (and Go's v1FreezeKeys) "
+                "rather than leaving it unpinned")
+            return
         got = hashlib.sha256(_freeze_key(cp, signature, prev_sha256)).hexdigest()
-        assert got == want, (
-            f"{name}: frozen v1 vector's checkpoint/signature/prev_sha256 no longer "
-            f"matches the pinned snapshot (got {got}, want {want}) -- this is exactly "
-            "the CONTRIBUTING vector-stability violation this test exists to catch; "
-            "do not update _V1_FREEZE to make this pass unless the change is a "
-            "deliberately documented breaking change under a new version marker")
+        if got != want:
+            failures.append(
+                f"{name}: frozen v1 vector's checkpoint/signature/prev_sha256 no longer "
+                f"matches the pinned snapshot (got {got}, want {want}) -- this is exactly "
+                "the CONTRIBUTING vector-stability violation this test exists to catch; "
+                "do not update _V1_FREEZE to make this pass unless the change is a "
+                "deliberately documented breaking change under a new version marker")
 
     for v in suite.get("vectors") or []:
         if v.get("min_format_version", 0) <= 1:
@@ -424,6 +458,7 @@ def test_v1_vectors_match_frozen_snapshot():
         if nv.get("min_format_version", 0) <= 1:
             check(nv["name"], nv.get("input") or {}, nv.get("signature", ""),
                   nv.get("prev_sha256", ""))
+    assert not failures, "\n".join(failures)
 
     missing = set(_V1_FREEZE) - found
     assert not missing, (

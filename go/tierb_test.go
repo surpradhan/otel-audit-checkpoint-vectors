@@ -138,6 +138,15 @@ func TestVersion1TipOmitsEpoch(t *testing.T) {
 // are walked in the order they appear in Input, not sorted, since the point
 // is to detect ANY change to what genFrozenV1 produced, including one that
 // changed only their order. Mirrors Python's freeze_key byte for byte.
+//
+// The \x00 join has no length-prefixing or escaping, so two different field
+// sequences could in principle concatenate to the same bytes if any field
+// ever contained an embedded NUL -- the exact assumption tipKey's own doc
+// comment in main.go describes replacing, for the same reason. Safe here
+// only because every field genFrozenV1 supplies is a short hex/UUID/
+// timestamp literal it hardcodes, never third-party or attacker-derived
+// input; this function must not be reused anywhere that assumption
+// doesn't hold.
 func freezeKey(cp Checkpoint, signature, prevSHA256 string) []byte {
 	parts := []string{cp.PrevHash, strconv.Itoa(cp.Seq), cp.Timestamp}
 	for _, tip := range cp.Tips {
