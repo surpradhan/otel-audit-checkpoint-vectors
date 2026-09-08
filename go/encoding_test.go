@@ -574,7 +574,7 @@ func TestWholeFileEncodingCatchesTheCheckpointPayloadCase(t *testing.T) {
 		t.Fatal("a fully self-consistent, correctly-signed suite with a lone surrogate escape in a checkpoint payload was accepted")
 	}
 	if strings.Contains(err.Error(), "canonical") || strings.Contains(err.Error(), "signature") {
-		t.Fatalf("rejected for a canonical/signature reason, not the whole-file encoding check -- the fixture is not properly self-consistent: %v", err)
+		t.Fatalf("rejected for a canonical/signature reason, not the whole-file encoding check -- this fixture does not isolate that check: %v", err)
 	}
 }
 
