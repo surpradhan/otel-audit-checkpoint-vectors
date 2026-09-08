@@ -642,14 +642,17 @@ walk on the checkpoint itself.
 
 **Not pinned**, stated plainly rather than left to be discovered:
 
-- **`stream_id` ordering by code point vs. by length.** Every `stream_id` in
-  the suite is a 36-character UUID, so no published vector ever compares two
-  of different lengths. A validator that sorts by length first and only then
-  lexicographically reproduces every vector here exactly, and disagrees on the
-  signed bytes the moment a real deployment uses ids of mixed length — `"aa"`
-  precedes `"b"` under the published rule and follows it under that one. The
-  `a`/`a<NUL>` case does not separate them either: those two stand in a prefix
-  relationship, and prefix pairs order the same way under both.
+- **`stream_id` ordering by code point vs. by length.** No published vector
+  distinguishes the two: `stream_id_prefix_pair`'s differing-length pair
+  (`"abc"`/`"abc-1"`) does not separate them, because one is a prefix of the
+  other and prefix pairs order the same way under both schemes — the shorter
+  string sorts first either way. A validator that sorts by length first and
+  only then lexicographically reproduces every vector here exactly, and
+  disagrees on the signed bytes the moment a real deployment uses ids of mixed
+  length that are *not* in a prefix relationship — `"aa"` precedes `"b"` under
+  the published rule and follows it under that one. The `a`/`a<NUL>` case does
+  not separate them either, for the identical reason: those two also stand in
+  a prefix relationship.
   `TestStreamIDSortsByCodePointNotLength` (`go/encoding_test.go`) and
   `test_stream_id_sorts_by_code_point_not_length` (`py/test_validate.py`)
   assert the discriminating pair in both references instead, over the same
