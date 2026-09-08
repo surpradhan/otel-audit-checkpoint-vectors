@@ -22,9 +22,13 @@ It does not currently make that argument. Three defects, all verified:
    `ef bf bd ef bf bd` (two U+FFFD) with no error; Python's `json.loads`
    preserves the lone surrogates and `.encode("utf-8")` then raises
    `UnicodeEncodeError`. Neither rejects cleanly and they disagree — before
-   `gowebpki/jcs` is reached. The repo also pins `gowebpki/jcs v1.0.1`, the
-   version shown in `open-telemetry/opentelemetry-collector-contrib#50079` to
-   canonicalize distinguishable inputs to identical bytes.
+   `gowebpki/jcs` is reached. The repo also pins `gowebpki/jcs v1.0.1`;
+   [astrogilda's differential corpus](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/50079#issuecomment-5374471203),
+   run at that exact pinned commit, reports it accepting `"\ud800\ud800"` and
+   silently substituting U+FFFD rather than erroring, colliding with any
+   legitimate string containing a real U+FFFD. Confirmed directly against
+   v1.0.1, not merely cited, and extended one step further: `"\udfff\udfff"`
+   collides with `"\ud800\ud800"` too (see README's A4 section).
 3. **Duplicate `stream_id` leaks input order into signed bytes.** `sort.Slice`
    imposes no total order on equal keys, so the same logical tip set in two
    input orders produces two different canonical byte strings, two hashes and

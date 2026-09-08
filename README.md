@@ -117,6 +117,27 @@ Version 3 adds one further optional field:
   by rejecting every `\ud` escape wholesale, which is over-rejection, not
   conformance — see "Positive vectors" below. Rejected: `encoding`.
 
+  **This is not a hypothetical failure mode for the canonicalizer this repo
+  itself depends on.**
+  [astrogilda's differential corpus](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/50079#issuecomment-5374471203)
+  (86 vectors, run against `gowebpki/jcs` at the pinned commit `1a4242a` —
+  exactly v1.0.1, the version pinned here) reports that `gowebpki/jcs` accepts
+  `"\ud800\ud800"`, a high surrogate followed by another high surrogate and
+  not a valid pair, and silently substitutes U+FFFD rather than erroring — so
+  that malformed input canonicalizes identically to any ordinary, legitimate
+  string that happens to contain a real U+FFFD, and one signature covers both.
+  Confirmed directly against the pinned version, not merely cited, and
+  extended one step further: `"\udfff\udfff"` (a *low* surrogate repeated, an
+  equally invalid, differently malformed pair) canonicalizes to the identical
+  bytes too, showing this isn't specific to one bad escape value. A validator
+  that trusted the library alone for encoding validity would accept a
+  malformed record in place of a legitimate one, or either malformed record
+  in place of the other; this is precisely the case A4's explicit, pre-parse
+  byte-level check exists to close, ahead of any JCS or JSON-stack
+  involvement. The corpus and the reference verifier astrogilda
+  maintains for RFC 8785/7493 conformance more broadly are at
+  [astrogilda/aee-conformance](https://github.com/astrogilda/aee-conformance).
+
 ## Canonical form
 
 A checkpoint is a JSON object:
