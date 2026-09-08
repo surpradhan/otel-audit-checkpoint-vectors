@@ -360,21 +360,30 @@ def _freeze_key(cp: dict, signature: str, prev_sha256: str = "") -> bytes:
     field sequences could in principle concatenate to the same bytes if any
     field ever contained an embedded NUL -- the exact class of bug tipKey's
     own doc comment in main.go describes fixing elsewhere. Safe here only
-    because every field genFrozenV1 supplies is a short hex/UUID/timestamp
-    literal it hardcodes, never third-party or attacker-derived input; this
-    function must not be reused anywhere that assumption doesn't hold.
+    because every field is either a short hex/UUID/timestamp literal
+    genFrozenV1 hardcodes, or base64/hex derived deterministically from one
+    (signature, prev_sha256) -- never third-party or attacker-derived input;
+    this function must not be reused anywhere that assumption doesn't hold.
 
     `str(field)` coerces any JSON type to text, so a value that stringifies
     the same way regardless of type (e.g. entry_count) is invisible to this
-    key -- a narrower blind spot than Go's, where Tip.EntryCount's static
-    int field makes a wrong-typed value unreachable before this function
-    ever runs. Not reachable through the committed file this test actually
-    reads, though: this is a hardcoded 7-name lookup against vectors.json as
-    currently PUBLISHED, and a wrong-typed field on any of these seven
-    entries would already fail `python3 py/validate.py vectors.json` --
-    check_schema's own type gates -- a separate, earlier step of the same CI
-    job. A committed vectors.json with a wrong-typed entry_count could not
-    have passed CI to be committed in the first place."""
+    key -- a blind spot Go's static typing does not share: Tip.EntryCount's
+    int field makes a wrong-typed value unreachable before freezeKey ever
+    runs. check_schema does not close this gap either: it only type-gates
+    seq/timestamp/prev_hash on the checkpoint and epoch on a tip (verified
+    directly, not assumed -- see check_schema/check_epoch_presence) --
+    entry_count/sequence_number/stream_id/tip_hash have no type check
+    anywhere in validate.py, only the unknown-member-NAME check every tip
+    member goes through. A wrong-typed entry_count on a v1 vector would
+    still fail `python3 py/validate.py vectors.json`, just through a
+    different, later mechanism: a `str` where canonical() expects an `int`
+    changes the canonical bytes, so the positive-vector loop in main() would
+    report a canonical mismatch against the published `canonical` field --
+    unless the whole entry were also hand-re-derived and re-signed with the
+    published test seed (signing_seed_hex is public, by design, so anyone
+    can do this), which is a deliberate-forgery scenario well outside an
+    accidental edit to genFrozenV1 and outside what this test claims to
+    catch."""
     parts = [cp.get("prev_hash", ""), str(cp.get("seq", 0)), cp.get("timestamp", "")]
     for t in (cp.get("tips") or []):
         ep = t.get("epoch")

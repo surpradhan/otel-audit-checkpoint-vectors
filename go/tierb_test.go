@@ -143,10 +143,10 @@ func TestVersion1TipOmitsEpoch(t *testing.T) {
 // sequences could in principle concatenate to the same bytes if any field
 // ever contained an embedded NUL -- the exact assumption tipKey's own doc
 // comment in main.go describes replacing, for the same reason. Safe here
-// only because every field genFrozenV1 supplies is a short hex/UUID/
-// timestamp literal it hardcodes, never third-party or attacker-derived
-// input; this function must not be reused anywhere that assumption
-// doesn't hold.
+// only because every field is either a short hex/UUID/timestamp literal
+// genFrozenV1 hardcodes, or base64/hex derived deterministically from one
+// (signature, prevSHA256) -- never third-party or attacker-derived input;
+// this function must not be reused anywhere that assumption doesn't hold.
 func freezeKey(cp Checkpoint, signature, prevSHA256 string) []byte {
 	parts := []string{cp.PrevHash, strconv.Itoa(cp.Seq), cp.Timestamp}
 	for _, tip := range cp.Tips {
