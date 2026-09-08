@@ -158,6 +158,67 @@ def check_epoch_presence(cp: dict, min_ver: int):
     return None
 
 
+# RFC 7493 (I-JSON) §2.2's stated integer range: the largest magnitude an
+# IEEE 754 double represents exactly, 2^53-1. This repo's own canonical form
+# is RFC 8785 JCS, which defers entirely to whatever range a schema declares
+# -- the restriction enforced below is I-JSON's, not JCS's, and exists to
+# protect a THIRD implementation that parses JSON numbers as float64
+# (JavaScript's Number, for one), not because Go or Python have any trouble
+# with a larger value themselves: both round-trip far past this boundary
+# exactly (Go's int64, Python's arbitrary-precision int), confirmed directly
+# before this comment was written, not assumed. _MIN_SAFE_INT is its
+# negative mirror; RFC 7493 states the range symmetrically.
+_MAX_SAFE_INT = 2**53 - 1
+_MIN_SAFE_INT = -(2**53 - 1)
+
+
+def check_integer_range(cp: dict, min_ver: int):
+    """A5 (spec §4, §7): every integer field on a checkpoint -- seq, and each
+    tip's entry_count, epoch and sequence_number -- must fall within
+    _MIN_SAFE_INT/_MAX_SAFE_INT. Applied uniformly across all four fields
+    rather than only entry_count (the one field the spec names for the
+    published vector), because the interoperability risk this rule exists to
+    close applies equally to any of them. Mirrors Go's checkIntegerRange;
+    both report a failure as "schema". Gated on min_ver the same way
+    check_epoch_presence gates its own rules: a format_version 1 or 2 vector
+    is never rejected by this rule.
+
+    entry_count and sequence_number reach this function completely
+    untyped by anything upstream -- check_schema type-gates seq, and
+    check_epoch_presence type-gates epoch, but neither of those two fields
+    had ever been read at all before this function existed: `_TIP_MEMBERS`
+    only declares the member NAME as allowed, and canonical() serializes
+    whatever value is present without inspecting it. A wrong-typed
+    entry_count (a string, say) reached the comparison below and raised
+    TypeError, uncaught, where Go's `EntryCount int` struct field already
+    refuses the whole file at decode -- the exact defect class already fixed
+    for every OTHER scalar in this schema, just not these two until now.
+    Type-gated here, in the same position and the same way as every sibling
+    gate in this file, and -- unlike the range check itself -- NOT
+    min_ver-gated: Go's struct decode enforces the type unconditionally, at
+    every format version, so this reference must too or a v1/v2 vector with
+    a wrong-typed entry_count would newly diverge in the other direction.
+    None (absent, or explicit null) stays legal, matching seq's own gate
+    just above and Go's non-pointer int fields: a JSON null decoded into
+    either is a documented no-op, leaving the zero value, not an error."""
+    seq = cp.get("seq") or 0
+    if min_ver >= 3 and not (_MIN_SAFE_INT <= seq <= _MAX_SAFE_INT):
+        return f"seq {seq} is outside the I-JSON-safe integer range [{_MIN_SAFE_INT}, {_MAX_SAFE_INT}]"
+    for t in (cp.get("tips") or []):
+        sid = t.get("stream_id", "")
+        for field in ("entry_count", "sequence_number"):
+            val = t.get(field)
+            if val is not None and (isinstance(val, bool) or not isinstance(val, int)):
+                return f"stream {sid!r}: {field} must be an integer, got {type(val).__name__}"
+            if min_ver >= 3 and val is not None and not (_MIN_SAFE_INT <= val <= _MAX_SAFE_INT):
+                return (f"stream {sid!r}: {field} {val} is outside the "
+                        f"I-JSON-safe integer range [{_MIN_SAFE_INT}, {_MAX_SAFE_INT}]")
+        ep = t.get("epoch")
+        if min_ver >= 3 and ep is not None and not (_MIN_SAFE_INT <= ep <= _MAX_SAFE_INT):
+            return f"stream {sid!r}: epoch {ep} is outside the I-JSON-safe integer range [{_MIN_SAFE_INT}, {_MAX_SAFE_INT}]"
+    return None
+
+
 # The complete member set of each object in the schema. Anything else is bytes
 # the signature does not cover, and both references reject it -- Go through its
 # decoder's DisallowUnknownFields, this one through the checks below.
@@ -612,7 +673,10 @@ def check_schema(cp, min_ver: int):
         err = unknown_members(t, _TIP_MEMBERS, "a tip")
         if err:
             return err
-    return check_epoch_presence(cp, min_ver)
+    err = check_epoch_presence(cp, min_ver)
+    if err:
+        return err
+    return check_integer_range(cp, min_ver)
 
 
 # The genesis constant: SHA-256 of the empty string. Derived rather than

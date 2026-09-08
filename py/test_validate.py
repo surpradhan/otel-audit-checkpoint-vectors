@@ -1481,6 +1481,101 @@ def test_wrong_typed_checkpoint_body_scalars_returns_a_reason():
             f"a null {field} must stay legal, matching Go's non-pointer zero-value no-op"
 
 
+def test_wrong_typed_entry_count_and_sequence_number_reject_while_decoding():
+    """entry_count and sequence_number reached check_schema completely
+    unvalidated before A5 (#28): `_TIP_MEMBERS` only declared the member NAME
+    as allowed, and canonical() serialized whatever value was present without
+    inspecting it, so a wrong-typed value here validated normally where Go's
+    `EntryCount`/`SequenceNumber int` struct fields already refuse the whole
+    file at decode. Mirrors TestWrongTypedTipScalarsAreRejectedWhileDecoding."""
+    for field in ("entry_count", "sequence_number"):
+        for bad in ("1", [1], True, False, 1.0, {"a": 1}):
+            tip = _tip(_pos_stream(1), 0, 1, 1, "aa")
+            tip[field] = bad
+            cp = _cp(1, _pos_ts(100), [tip])
+            err = validate.check_schema(cp, 2)
+            assert err is not None, f"{field}={bad!r} was accepted; {field} must be an integer"
+        # The contrast: an ordinary value and an explicit null both stay
+        # legal, matching Go's non-pointer zero-value no-op.
+        for ok_val in (0, 1, None):
+            tip = _tip(_pos_stream(1), 0, 1, 1, "aa")
+            tip[field] = ok_val
+            cp = _cp(1, _pos_ts(100), [tip])
+            assert validate.check_schema(cp, 2) is None, \
+                f"{field}={ok_val!r} must stay legal"
+
+
+# --- check_integer_range (A5): every integer field must fall within I-JSON's
+# safe range. Mirrors go/integerrange_test.go.
+
+def _checkpoint_with_field(field, n):
+    """A checkpoint that is otherwise entirely ordinary, with exactly one of
+    the four A5-covered fields set to n. Mirrors go/integerrange_test.go's
+    checkpointWithField."""
+    if field == "seq":
+        return _cp(n, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    kwargs = {"epoch": 0, "seq": 1, "count": 1}
+    key = {"entry_count": "count", "sequence_number": "seq", "epoch": "epoch"}[field]
+    kwargs[key] = n
+    tip = _tip(_pos_stream(1), kwargs["epoch"], kwargs["seq"], kwargs["count"], "aa")
+    return _cp(1, _pos_ts(100), [tip])
+
+
+def test_check_integer_range_boundaries():
+    """Table-driven over all four A5-covered fields and both sides of the
+    range, 16 cases in total. Every individual reject test before this one
+    tested exactly one field on exactly one side -- entry_count only above
+    max, sequence_number only below min, and so on -- so a bug that flipped
+    a comparison on a field's UNTESTED side, or compared the wrong field
+    against the wrong constant, could have shipped undetected. This table
+    closes that gap. Mirrors TestCheckIntegerRangeBoundaries."""
+    cases = (
+        ("accept-min", validate._MIN_SAFE_INT, False),
+        ("accept-max", validate._MAX_SAFE_INT, False),
+        ("reject-below-min", validate._MIN_SAFE_INT - 1, True),
+        ("reject-above-max", validate._MAX_SAFE_INT + 1, True),
+    )
+    for field in ("seq", "entry_count", "sequence_number", "epoch"):
+        for name, n, want_rejected in cases:
+            cp = _checkpoint_with_field(field, n)
+            err = validate.check_integer_range(cp, 3)
+            if want_rejected:
+                assert err is not None, f"{name}: {field} ({n}) was accepted"
+            else:
+                assert err is None, f"{name}: {field} ({n}) was rejected: {err}"
+
+
+def test_check_integer_range_is_gated_by_min_ver():
+    """The published integer_out_of_range vector only exercises the v3 side;
+    nothing published pins that an older-labeled vector is left alone."""
+    cp = _checkpoint_with_field("entry_count", validate._MAX_SAFE_INT + 1)
+    assert validate.check_integer_range(cp, 2) is None, \
+        "an out-of-range entry_count was rejected below format_version 3"
+    assert validate.check_integer_range(cp, 3) is not None, \
+        "an out-of-range entry_count was accepted at format_version 3"
+
+
+def test_check_integer_range_epoch_lower_bound_is_unreachable_through_check_schema():
+    """A property of the full pipeline, not of check_integer_range in
+    isolation: check_epoch_presence already rejects any negative epoch
+    unconditionally, at every format version, and runs before
+    check_integer_range inside check_schema -- so epoch's own lower-bound
+    branch in check_integer_range (epoch < _MIN_SAFE_INT) can never fire
+    through check_schema; 0 is always a tighter floor than _MIN_SAFE_INT.
+    check_integer_range still checks it, for a caller that reaches it
+    directly (as every test above does) rather than through check_schema --
+    but nothing published, and no other test in this file, exercises
+    check_schema's real call order for this specific interaction, so this
+    pins it explicitly. Mirrors
+    TestCheckIntegerRangeEpochLowerBoundIsUnreachableThroughCheckSchema."""
+    cp = _checkpoint_with_field("epoch", validate._MIN_SAFE_INT - 1)
+    err = validate.check_schema(cp, 3)
+    assert err is not None, "a negative epoch was accepted by check_schema"
+    assert "non-negative" in err, (
+        f"check_schema rejected it, but not via check_epoch_presence's "
+        f"non-negativity rule as expected: {err}")
+
+
 def test_null_checkpoint_body_scalars_fold_to_zero_value_in_tier_b():
     """A null seq or timestamp must behave EXACTLY as its zero value (0, "")
     inside check_tier_b, not merely avoid crashing -- Go's non-pointer

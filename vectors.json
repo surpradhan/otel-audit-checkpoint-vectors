@@ -746,6 +746,46 @@
       "min_format_version": 2
     },
     {
+      "name": "max_safe_integer_entry_count",
+      "input": {
+        "prev_hash": "8c205f49b8215985768c788a856c81b13c5b0e03f09d683e566a60d5591f8069",
+        "seq": 2,
+        "timestamp": "2027-02-01T00:00:05Z",
+        "tips": [
+          {
+            "entry_count": 9007199254740991,
+            "epoch": 0,
+            "sequence_number": 1,
+            "stream_id": "5f5f5f5f-5f5f-4f5f-8f5f-5f5f5f5f5f5f",
+            "tip_hash": "5f00000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"8c205f49b8215985768c788a856c81b13c5b0e03f09d683e566a60d5591f8069\",\"seq\":2,\"timestamp\":\"2027-02-01T00:00:05Z\",\"tips\":[{\"entry_count\":9007199254740991,\"epoch\":0,\"sequence_number\":1,\"stream_id\":\"5f5f5f5f-5f5f-4f5f-8f5f-5f5f5f5f5f5f\",\"tip_hash\":\"5f00000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "ee5ba72bc2eca1b98984c1b9d52eb103194f80eb99a0f453f5ec0c78c49b0779",
+      "signature": "obj08UX2Bo/UnS6n7q8G5FDX3u+P0HNL2JV8lovgF4ddA9EVGKI+azAt29cVhlAgJ0d3CzGsSFr8YLd4sfTXAw==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2027-02-01T00:00:00Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "dededede-dede-4ded-8ded-dededededede",
+                "tip_hash": "de00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "FFIDnD6YOb1eDKY2Z6pDA5+LUK33K7LlDndbRTrVf0avHktBHo6UjYL0+FVmwVJwEeY8CVBXL8iTM3gJMCYHAA=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
       "name": "valid_surrogate_pair",
       "input": {
         "prev_hash": "",
@@ -2167,6 +2207,27 @@
           "signature": "5CHasTXHsNFOz3rW2mt7juw69gh2ImMEE+AoxKkcX9D2rGgVYZB/BEDf+/L5mgdthEjsDQoyYFcaODoQax0WAw=="
         }
       ],
+      "min_format_version": 3
+    },
+    {
+      "name": "integer_out_of_range",
+      "expect": "schema",
+      "reason": "a tip's entry_count is 9007199254740992, one past the largest integer I-JSON (RFC 7493 §2.2) allows without precision loss on an IEEE 754 double",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 1,
+        "timestamp": "2027-02-01T00:00:10Z",
+        "tips": [
+          {
+            "entry_count": 9007199254740992,
+            "epoch": 0,
+            "sequence_number": 1,
+            "stream_id": "60606060-6060-4060-8060-606060606060",
+            "tip_hash": "6000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "signature": "ib+IM0JOgoBqQC8APjcWJCgLa4VLmcSe5HrFpNj39WUSu/iE0HmO2EEOkMW3tmgSKPzZjshUy8sJ5DAQ02XoDg==",
       "min_format_version": 3
     },
     {
