@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -109,7 +110,7 @@ func TestR4CompositeSortKey(t *testing.T) {
 }
 
 // A version-1 tip carries no epoch key, and re-marshalling must not add one.
-// This is what keeps the six frozen vectors byte-identical.
+// This is what keeps the seven frozen vectors byte-identical.
 func TestVersion1TipOmitsEpoch(t *testing.T) {
 	cp := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:00Z", Tips: []Tip{
 		{EntryCount: 1, Epoch: nil, SequenceNumber: 1, StreamID: "s1", TipHash: "aa"},
@@ -120,6 +121,122 @@ func TestVersion1TipOmitsEpoch(t *testing.T) {
 	}
 	if bytes.Contains(cb, []byte("epoch")) {
 		t.Errorf("version-1 canonical bytes must not contain an epoch key: %s", cb)
+	}
+}
+
+// freezeKey is the byte string v1FreezeKeys' hashes are taken over: an
+// explicit, hand-ordered concatenation of a checkpoint's own scalar fields
+// plus its signature and (for a negative that carries one) prev_sha256,
+// NUL-separated. It does not call canonical(): that function deliberately
+// errors on duplicate_tip_identity, one of the seven vectors this pins, and
+// even where it succeeds, using it here would conflate two different failure
+// classes -- "the frozen input changed" and "the shared canonicalization
+// logic changed" -- that this repo's other tests already cover separately.
+// Every field is read directly off the struct (Seq/Timestamp/PrevHash are
+// plain, non-pointer values, never absent), so there is no absent-vs-zero
+// ambiguity to resolve, unlike the epoch reads elsewhere in this file. Tips
+// are walked in the order they appear in Input, not sorted, since the point
+// is to detect ANY change to what genFrozenV1 produced, including one that
+// changed only their order. Mirrors Python's freeze_key byte for byte.
+//
+// The \x00 join has no length-prefixing or escaping, so two different field
+// sequences could in principle concatenate to the same bytes if any field
+// ever contained an embedded NUL -- the exact assumption tipKey's own doc
+// comment in main.go describes replacing, for the same reason. Safe here
+// only because every field is either a short hex/UUID/timestamp literal
+// genFrozenV1 hardcodes, or hex/base64 derived deterministically from one --
+// PrevHash on the two non-genesis chained positives is itself the prior
+// checkpoint's sha256 digest, and signature/prevSHA256 are ed25519/sha256
+// output -- never third-party or attacker-derived input; this function
+// must not be reused anywhere that assumption doesn't hold.
+func freezeKey(cp Checkpoint, signature, prevSHA256 string) []byte {
+	parts := []string{cp.PrevHash, strconv.Itoa(cp.Seq), cp.Timestamp}
+	for _, tip := range cp.Tips {
+		epoch := ""
+		if tip.Epoch != nil {
+			epoch = strconv.Itoa(*tip.Epoch)
+		}
+		parts = append(parts, tip.StreamID, epoch,
+			strconv.Itoa(tip.SequenceNumber), strconv.Itoa(tip.EntryCount), tip.TipHash)
+	}
+	parts = append(parts, signature, prevSHA256)
+	return []byte(strings.Join(parts, "\x00"))
+}
+
+// v1FreezeKeys pins the seven format_version-1 entries genFrozenV1 produces
+// (main.go), keyed by name, against sha256(freezeKey(...)) computed once from
+// the committed vectors.json when this test was added. CI's existing no-drift
+// check only ever compares `gen`'s output against ITSELF, so it cannot catch
+// a genFrozenV1 edit that changes what these entries contain: a normal regen
+// after such an edit is internally self-consistent and passes every other
+// gate (no-drift, both validators, both test suites) unchanged. This is the
+// independent baseline that catches it. A failure here means STOP, not
+// regenerate -- per CONTRIBUTING's vector-stability discipline, a change to a
+// published vector's canonical bytes, hash or signature is breaking and
+// requires superseding under a version marker, never a silent update to this
+// map. Mirrors Python's _V1_FREEZE.
+var v1FreezeKeys = map[string]string{
+	"genesis_empty_tips":                "0bb3f2c250debdb9c56cf60f5202cae3f5914fec129f916eabaf25ed447d59f5",
+	"single_tip":                        "0ad96391b112a968c47a8a300e6e152e2af9ba280faedf50bd5b732472f92784",
+	"multi_tip_unsorted_input":          "37119009365ff5b0286ee2db5d6ae51d4fd7d774176236446c7ed7e74ee304b8",
+	"tampered_signature":                "f4e76bc9b72c8acc951522dfdf9bfeac9c8e0204b71dc8fe7a36e59878db8b14",
+	"truncation_rewrites_committed_tip": "c56203cab8d5054e74cf8ba24105cd5b3b887163d10bdcc57510f549a0e47396",
+	"broken_chain":                      "33c0d43f179bd1462cb46a5f15462dd713071c0b9912508b9d88a53383445e04",
+	"duplicate_tip_identity":            "d3cdff059ba1e3a124daaad05de680b3e239c7f3bef416b270b0012fafa7b937",
+}
+
+// TestV1VectorsMatchFrozenSnapshot is the machine-checked gate named in issue
+// #31 / PR #4's own backlog: a deliberate or accidental edit to genFrozenV1
+// must fail SOMETHING, even though it fails neither the no-drift check nor
+// either validator. Reads the actually-committed vectors.json (not
+// genFrozenV1's live output) so it also catches a hand-edit that happens to
+// leave the file self-consistent enough to pass everything else.
+func TestV1VectorsMatchFrozenSnapshot(t *testing.T) {
+	data, err := os.ReadFile("../vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suite Suite
+	if err := json.Unmarshal(data, &suite); err != nil {
+		t.Fatal(err)
+	}
+
+	found := map[string]bool{}
+	check := func(name string, cp Checkpoint, signature, prevSHA256 string) {
+		found[name] = true
+		want, ok := v1FreezeKeys[name]
+		if !ok {
+			t.Errorf("%s: not one of the pinned v1 vectors; if this is a genuinely new "+
+				"format_version-1 entry, add it to v1FreezeKeys (and Python's _V1_FREEZE) "+
+				"rather than leaving it unpinned", name)
+			return
+		}
+		sum := sha256.Sum256(freezeKey(cp, signature, prevSHA256))
+		got := hex.EncodeToString(sum[:])
+		if got != want {
+			t.Errorf("%s: frozen v1 vector's checkpoint/signature/prev_sha256 no longer "+
+				"matches the pinned snapshot (got %s, want %s) -- this is exactly the "+
+				"CONTRIBUTING vector-stability violation this test exists to catch; do not "+
+				"update v1FreezeKeys to make this pass unless the change is a deliberately "+
+				"documented breaking change under a new version marker",
+				name, got, want)
+		}
+	}
+	for _, v := range suite.Vectors {
+		if v.MinFormatVersion <= 1 {
+			check(v.Name, v.Input, v.Signature, "")
+		}
+	}
+	for _, nv := range suite.Negatives {
+		if nv.MinFormatVersion <= 1 {
+			check(nv.Name, nv.Input, nv.Signature, nv.PrevSHA256)
+		}
+	}
+	for name := range v1FreezeKeys {
+		if !found[name] {
+			t.Errorf("%s: pinned in v1FreezeKeys but no longer present in vectors.json "+
+				"at format_version 1 -- a frozen vector must not be silently removed", name)
+		}
 	}
 }
 
