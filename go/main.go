@@ -37,10 +37,16 @@ const sha256Empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b785
 // format_version 3 added input_raw_hex (spec §5.5) and the A4 encoding check
 // (spec §7/§8 step 4): a checkpoint may now arrive as raw bytes to
 // canonicalize instead of a typed input object, specifically so a vector can
-// carry a malformation -- invalid UTF-8, or a lone surrogate escape -- that a
-// typed Checkpoint struct cannot express after JSON-decoding already erased
-// or mangled it. Unknown-member rejection makes this non-additive for a v2
-// validator (spec §5 point 2), hence the bump rather than a same-version add.
+// carry invalid UTF-8 -- inexpressible on the typed path at all, since
+// json.Unmarshal would already have to succeed to populate one -- or a lone
+// surrogate escape, which the typed path CAN carry, just inconsistently:
+// encoding/json silently substitutes U+FFFD and keeps decoding (Python's
+// json.loads instead keeps the literal surrogate), so the two references
+// disagree on such a checkpoint today unless it arrives as input_raw_hex and
+// goes through checkEncoding below. See
+// https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36.
+// Unknown-member rejection makes this non-additive for a v2 validator
+// (spec §5 point 2), hence the bump rather than a same-version add.
 const supportedFormatVersion = 3
 
 // skipVector reports whether a vector requiring minVer must be skipped by a

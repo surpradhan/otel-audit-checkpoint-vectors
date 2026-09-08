@@ -94,9 +94,15 @@ def canonical(cp: dict) -> bytes:
 # format_version 3 added input_raw_hex (spec §5.5) and the A4 encoding check
 # (spec §7/§8 step 4): a checkpoint may now arrive as raw bytes to
 # canonicalize instead of a typed input object, specifically so a vector can
-# carry a malformation -- invalid UTF-8, or a lone surrogate escape -- that a
-# typed object cannot express after JSON-decoding already erased or mangled
-# it. Unknown-member rejection makes this non-additive for a v2 validator
+# carry invalid UTF-8 -- inexpressible on the typed path at all, since
+# json.loads would already have to succeed to populate one -- or a lone
+# surrogate escape, which the typed path CAN carry, just inconsistently: this
+# module's own json.loads keeps the literal surrogate in the resulting str
+# (Go's encoding/json instead silently substitutes U+FFFD), so the two
+# references disagree on such a checkpoint today unless it arrives as
+# input_raw_hex and goes through check_encoding below. See
+# https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36.
+# Unknown-member rejection makes this non-additive for a v2 validator
 # (spec §5 point 2), hence the bump rather than a same-version add.
 SUPPORTED_FORMAT_VERSION = 3
 

@@ -88,13 +88,21 @@ Version 3 adds one further optional field:
 - `input_raw_hex` — when present, the exact hex-encoded bytes to validate and
   canonicalize, in place of `input`. A typed `input` object is round-tripped
   through each language's own JSON parser before a validator ever sees it, so
-  it cannot express an encoding-level malformation — invalid UTF-8, or an
-  unpaired surrogate escape — that parsing has already normalized or errored
-  on by the time a typed field would be populated. `input_raw_hex` exists so
-  such a vector can be published at all. A validator MUST run the encoding
-  check below on these bytes **before** attempting to parse them, exactly
-  once, in the same position both references do: first in the check order,
-  ahead of the schema check.
+  it cannot express invalid UTF-8 at all — a parse would already have to
+  succeed to populate a typed field, and invalid UTF-8 can't produce a string
+  either language's JSON parser will accept. An unpaired surrogate escape is
+  a different case: it *is* expressible on the typed path, just inconsistently
+  — Go's `encoding/json` silently substitutes U+FFFD and keeps parsing, while
+  Python's `json.loads` keeps the literal (unencodable) surrogate — so the two
+  references currently diverge on checkpoints that carry one there instead of
+  agreeing via the check below. `input_raw_hex` exists so a vector pinning the
+  *raw-bytes* form of this malformation class can be published at all; it does
+  not by itself make the typed path agree. See
+  [#36](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36)
+  for the typed-path gap. A validator MUST run the encoding check below on
+  `input_raw_hex` bytes **before** attempting to parse them, exactly once, in
+  the same position both references do: first in the check order, ahead of
+  the schema check.
 
   **Encoding check (A4).** The raw bytes must be valid UTF-8 outright, and no
   `\uXXXX` escape inside a string literal may encode a surrogate
