@@ -21,7 +21,9 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gowebpki/jcs"
 )
@@ -31,7 +33,21 @@ const sha256Empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b785
 
 // supportedFormatVersion is the highest suite format this build understands.
 // Vectors carrying a higher min_format_version are skipped, not failed.
-const supportedFormatVersion = 2
+//
+// format_version 3 added input_raw_hex (spec §5.5) and the A4 encoding check
+// (spec §7/§8 step 4): a checkpoint may now arrive as raw bytes to
+// canonicalize instead of a typed input object, specifically so a vector can
+// carry invalid UTF-8 -- inexpressible on the typed path at all, since
+// json.Unmarshal would already have to succeed to populate one -- or a lone
+// surrogate escape, which the typed path CAN carry, just inconsistently:
+// encoding/json silently substitutes U+FFFD and keeps decoding (Python's
+// json.loads instead keeps the literal surrogate), so the two references
+// disagree on such a checkpoint today unless it arrives as input_raw_hex and
+// goes through checkEncoding below. See
+// https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36.
+// Unknown-member rejection makes this non-additive for a v2 validator
+// (spec §5 point 2), hence the bump rather than a same-version add.
+const supportedFormatVersion = 3
 
 // skipVector reports whether a vector requiring minVer must be skipped by a
 // validator supporting supportedVer. A minVer of 0 means "no minimum".
@@ -226,11 +242,20 @@ type SignedCheckpoint struct {
 }
 
 type Vector struct {
-	Name      string     `json:"name"`
-	Input     Checkpoint `json:"input"`
-	Canonical string     `json:"canonical"`
-	SHA256    string     `json:"sha256"`
-	Signature string     `json:"signature"`
+	Name  string     `json:"name"`
+	Input Checkpoint `json:"input"`
+	// InputRawHex, when non-empty, replaces Input as the source of truth:
+	// the exact hex-encoded bytes to run through checkEncoding and then
+	// parse, rather than a typed object round-tripped through this
+	// language's own JSON parser. It exists because a typed Checkpoint
+	// cannot express the malformations input_raw_hex-only vectors carry --
+	// see resolveInput and checkEncoding. Absent from every vector this
+	// field doesn't apply to (omitempty), so it changes no existing
+	// vector's published bytes.
+	InputRawHex string `json:"input_raw_hex,omitempty"`
+	Canonical   string `json:"canonical"`
+	SHA256      string `json:"sha256"`
+	Signature   string `json:"signature"`
 	// Chain is the preceding, already-signed context this vector's Tier B
 	// rules are evaluated against. ExpectWarnings is what makes an advisory
 	// rule testable: without it a validator that silently accepts still
@@ -242,15 +267,17 @@ type Vector struct {
 }
 
 // NegativeVector is a case a conformant validator MUST reject. Expect names the
-// check that should catch it: "schema", "canonical", "signature", "tier_b" or
-// "chain". PrevSHA256, when set, is the hash the input's prev_hash is expected
-// to chain to. Chain, when set, is the preceding signed context the
-// cross-checkpoint (Tier B) rules are evaluated against.
+// check that should catch it: "schema", "canonical", "signature", "tier_b",
+// "chain" or "encoding". PrevSHA256, when set, is the hash the input's
+// prev_hash is expected to chain to. Chain, when set, is the preceding
+// signed context the cross-checkpoint (Tier B) rules are evaluated against.
 type NegativeVector struct {
-	Name             string             `json:"name"`
-	Expect           string             `json:"expect"`
-	Reason           string             `json:"reason"`
-	Input            Checkpoint         `json:"input"`
+	Name   string     `json:"name"`
+	Expect string     `json:"expect"`
+	Reason string     `json:"reason"`
+	Input  Checkpoint `json:"input"`
+	// InputRawHex: see Vector.InputRawHex -- same field, same meaning.
+	InputRawHex      string             `json:"input_raw_hex,omitempty"`
 	Signature        string             `json:"signature"`
 	PrevSHA256       string             `json:"prev_sha256,omitempty"`
 	Chain            []SignedCheckpoint `json:"chain,omitempty"`
@@ -504,6 +531,27 @@ func gen() Suite {
 		suite.Vectors = append(suite.Vectors, vs...)
 		suite.Negatives = append(suite.Negatives, ns...)
 	}
+
+	// genA4 runs outside the uniform loop above because its one must-accept
+	// vector (valid_surrogate_pair) is not chain-carrying and therefore
+	// participates in the positives' own hash chain that validate() checks
+	// across the WHOLE file (any two adjacent non-chain-carrying positives,
+	// regardless of which group produced either one) -- so, like every other
+	// link in that chain, its prev_hash has to be derived from whatever
+	// simple positive actually precedes it, not hardcoded. Scanning backward
+	// for the last Vector with no Chain is the same rule validate() itself
+	// applies; computing it here keeps genA4 correct even if an earlier
+	// group's own vector count changes.
+	prevSHA256 := sha256Empty
+	for i := len(suite.Vectors) - 1; i >= 0; i-- {
+		if len(suite.Vectors[i].Chain) == 0 {
+			prevSHA256 = suite.Vectors[i].SHA256
+			break
+		}
+	}
+	a4Vectors, a4Negatives := genA4(priv, prevSHA256)
+	suite.Vectors = append(suite.Vectors, a4Vectors...)
+	suite.Negatives = append(suite.Negatives, a4Negatives...)
 
 	// Spec 5.6 promises this check: every negative is rejected for exactly the
 	// reason its expect field names, asserted at gen time so the invariant
@@ -1526,6 +1574,108 @@ func genMemberShapeAndEncoding(priv ed25519.PrivateKey) ([]Vector, []NegativeVec
 	return vectors, negatives
 }
 
+// genA4 builds the three input_raw_hex vectors for A4 (spec §7): two
+// negatives that a typed Checkpoint cannot express at all -- an invalid
+// UTF-8 byte, and a lone surrogate escape -- plus the one positive that
+// keeps A4 from over-rejecting, a correctly-paired surrogate escape. All
+// three carry format_version 3.
+//
+// Each starts from the SAME canonical bytes of an ordinary checkpoint, with
+// a distinctive placeholder in place of a tip's stream_id, then splices the
+// vector's actual payload in over that placeholder. This is a convenience
+// for building realistic-looking JSON text to mutate, not a claim that the
+// result is already canonical -- input_raw_hex bytes are parsed and then
+// canonicalized exactly like any other input; only the positive vector
+// below actually re-derives its canonical/sha256/signature from what its
+// raw bytes decode to, because only a must-accept vector goes far enough
+// through the pipeline for that to matter.
+// prevSHA256 is the sha256 of whatever simple (non-chain-carrying) positive
+// currently precedes this group in the published file -- see the call site
+// in gen(), which derives it rather than a caller hardcoding it.
+func genA4(priv ed25519.PrivateKey, prevSHA256 string) ([]Vector, []NegativeVector) {
+	var vectors []Vector
+	var negatives []NegativeVector
+
+	const placeholder = "A4_PLACEHOLDER_MARKER"
+	buildRaw := func(prevHash string, seq int, ts string) []byte {
+		cp := Checkpoint{PrevHash: prevHash, Seq: seq, Timestamp: ts, Tips: []Tip{
+			{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: placeholder, TipHash: "a4" + strings.Repeat("00", 31)},
+		}}
+		return mustCanonical(cp, "genA4 placeholder base")
+	}
+	splice := func(base []byte, replacement string) []byte {
+		out := bytes.Replace(base, []byte(placeholder), []byte(replacement), 1)
+		if bytes.Equal(out, base) {
+			panic("gen: genA4 splice: placeholder not found in base bytes")
+		}
+		return out
+	}
+
+	// ill_formed_utf8_bytes: 0xFF is not a valid byte in any position of a
+	// UTF-8 sequence (unlike a JSON structural character, which is always
+	// single-byte ASCII, so splicing a raw byte into what was a placeholder
+	// string's content cannot accidentally produce different, still-valid
+	// JSON). Caught by an explicit utf8.Valid check on the raw bytes before
+	// any parsing is attempted -- never as an emergent property of the JSON
+	// stack, which is exactly where the two references disagree (spec §1
+	// defect 2: Go's encoding/json and Python's json.loads do different,
+	// both-wrong things with malformed UTF-8, rather than agreeing on a
+	// clean rejection).
+	illFormed := splice(buildRaw(sha256Empty, 1, "2026-12-01T00:00:00Z"), "\xff")
+	negatives = append(negatives, NegativeVector{
+		Name: "ill_formed_utf8_bytes", Expect: "encoding",
+		Reason:           "the raw bytes contain 0xFF, which is not valid UTF-8 in any position. A typed Checkpoint cannot express this at all -- json.Unmarshal/json.loads would already have to succeed to populate one -- so it can only be published as input_raw_hex. Caught by an explicit byte-level validity check before any JSON parsing is attempted",
+		InputRawHex:      hex.EncodeToString(illFormed),
+		Signature:        "",
+		MinFormatVersion: 3,
+	})
+
+	// lone_surrogate_escape: `\ud800` is a syntactically well-formed JSON
+	// string escape -- six ASCII bytes, no invalid UTF-8 anywhere in the
+	// document -- but D800 is a high surrogate with no low surrogate
+	// immediately following it, so it does not correspond to any single
+	// Unicode scalar value on its own. Go's encoding/json silently decodes
+	// this to U+FFFD; Python's json.loads decodes it to a real (if
+	// unencodable) lone surrogate. Both accept it, and disagree on what they
+	// accepted. checkEncoding scans string content for exactly this shape,
+	// before parsing, so both references reject the same bytes instead.
+	loneSurrogate := splice(buildRaw(sha256Empty, 2, "2026-12-01T00:00:05Z"), `\ud800`)
+	negatives = append(negatives, NegativeVector{
+		Name: "lone_surrogate_escape", Expect: "encoding",
+		Reason:           "the tip's stream_id carries the escape \\ud800: a high surrogate with no low surrogate immediately after it, so it does not correspond to any single Unicode scalar value. The bytes are otherwise valid UTF-8 and valid JSON syntax -- only the raw-text surrogate scan catches this, before the escape is ever decoded into whatever each language's JSON parser turns an unpaired surrogate into",
+		InputRawHex:      hex.EncodeToString(loneSurrogate),
+		Signature:        "",
+		MinFormatVersion: 3,
+	})
+
+	// valid_surrogate_pair: the ESCAPE SEQUENCE `😀` -- a
+	// correctly-ordered high/low surrogate pair, encoding U+1F600 (😀) --
+	// spliced in raw as literal text, exactly like the two negatives above.
+	// This is the positive control for A4, without which an implementation
+	// could pass this suite by rejecting every `\ud` escape wholesale,
+	// which is exactly the over-rejection §6 argues the suite must guard
+	// against, not merely permit. It is also the only vector that
+	// exercises input_raw_hex's ACCEPT path at all in either reference.
+	validPairRaw := splice(buildRaw(prevSHA256, 3, "2026-12-01T00:00:10Z"), `\ud83d\ude00`)
+	var validPairCP Checkpoint
+	dec := json.NewDecoder(bytes.NewReader(validPairRaw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&validPairCP); err != nil {
+		panic("gen: valid_surrogate_pair: raw bytes do not decode: " + err.Error())
+	}
+	vpCanon := mustCanonical(validPairCP, "valid_surrogate_pair")
+	vectors = append(vectors, Vector{
+		Name:             "valid_surrogate_pair",
+		InputRawHex:      hex.EncodeToString(validPairRaw),
+		Canonical:        string(vpCanon),
+		SHA256:           mustSum(vpCanon),
+		Signature:        signB64(priv, vpCanon),
+		MinFormatVersion: 3,
+	})
+
+	return vectors, negatives
+}
+
 // checkNegativeExpectations reports the first negative whose actual rejection
 // reason differs from its expect field.
 //
@@ -1648,6 +1798,120 @@ func checkEpochPresence(cp Checkpoint, minVer int) error {
 	return nil
 }
 
+// checkEncoding is A4's explicit validation step on raw bytes, run before any
+// JSON parsing -- never as an emergent property of the JSON stack, which is
+// exactly where the two references disagree (spec §1 defect 2): given
+// `"\ud800\ud800"`, Go's encoding/json silently yields two U+FFFD with no
+// error, while Python's json.loads preserves the lone surrogates and a
+// later .encode("utf-8") raises. Neither is a clean rejection, and they
+// disagree with each other -- before gowebpki/jcs is even reached.
+//
+// Two things are checked, both about UTF-8 specifically: the raw bytes must
+// be valid UTF-8 outright, and no \uXXXX escape inside a string literal may
+// encode a surrogate (U+D800-U+DFFF) that is not the correctly-ordered half
+// of an adjacent pair. A decoded, correctly-paired surrogate pair (like
+// 😀 for U+1F600) is NOT rejected -- see valid_surrogate_pair,
+// without which an implementation could pass this suite by rejecting every
+// \ud escape, which is the over-rejection §6 already argues against for the
+// suite as a whole.
+//
+// The scan is byte-oriented and does not need to be UTF-8-aware beyond the
+// upfront utf8.Valid check: `"`, `\`, `u` and hex digits are all single-byte
+// ASCII (<0x80), and every UTF-8 continuation byte is >=0x80, so a multi-byte
+// character can never be misread as one of these structural markers.
+func checkEncoding(raw []byte) string {
+	if !utf8.Valid(raw) {
+		return "encoding"
+	}
+	inString := false
+	for i := 0; i < len(raw); {
+		c := raw[i]
+		if !inString {
+			if c == '"' {
+				inString = true
+			}
+			i++
+			continue
+		}
+		switch c {
+		case '"':
+			inString = false
+			i++
+		case '\\':
+			if i+1 >= len(raw) {
+				return "encoding" // truncated escape
+			}
+			if raw[i+1] != 'u' {
+				i += 2 // \\, \", \/, \b, \f, \n, \r, \t
+				continue
+			}
+			if i+6 > len(raw) {
+				return "encoding" // truncated \uXXXX
+			}
+			code, err := strconv.ParseUint(string(raw[i+2:i+6]), 16, 32)
+			if err != nil {
+				return "encoding" // \u not followed by 4 hex digits
+			}
+			switch {
+			case code >= 0xD800 && code <= 0xDBFF:
+				// High surrogate: legal only immediately followed by a low
+				// surrogate escape, forming one pair. Anything else -- EOF,
+				// a different escape, a non-surrogate \uXXXX, ordinary text
+				// -- is a lone high surrogate.
+				if i+12 <= len(raw) && raw[i+6] == '\\' && raw[i+7] == 'u' {
+					low, lowErr := strconv.ParseUint(string(raw[i+8:i+12]), 16, 32)
+					if lowErr == nil && low >= 0xDC00 && low <= 0xDFFF {
+						i += 12
+						continue
+					}
+				}
+				return "encoding"
+			case code >= 0xDC00 && code <= 0xDFFF:
+				// A low surrogate reached on its own: the loop above only
+				// advances past one as part of consuming a pair together,
+				// so reaching one here means nothing claimed it as a pair.
+				return "encoding"
+			default:
+				i += 6 // an ordinary \uXXXX escape, not a surrogate
+			}
+		default:
+			i++
+		}
+	}
+	return ""
+}
+
+// resolveInput returns the checkpoint an entry actually means: Input as
+// given, or -- when InputRawHex is set -- the checkpoint that raw byte
+// string decodes to, after checkEncoding has passed it. The empty string
+// return is "" on success and "encoding" or "schema" on failure, matching
+// the same reason tokens checkSchema and the rest of this file already use;
+// this function never panics or errors on malformed third-party input, it
+// returns a reason like every other check in this file.
+//
+// Callers that already have InputRawHex == "" (every vector before format
+// 3) pay nothing beyond the one string comparison: Input passes through
+// unchanged.
+func resolveInput(input Checkpoint, inputRawHex string) (Checkpoint, string) {
+	if inputRawHex == "" {
+		return input, ""
+	}
+	raw, err := hex.DecodeString(inputRawHex)
+	if err != nil {
+		return Checkpoint{}, "schema"
+	}
+	if reason := checkEncoding(raw); reason != "" {
+		return Checkpoint{}, reason
+	}
+	var cp Checkpoint
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cp); err != nil {
+		return Checkpoint{}, "schema"
+	}
+	return cp, ""
+}
+
 // checkSchema applies the structural rules a checkpoint must satisfy before any
 // byte-level check: `tips` must be present as an array (a missing or null tips
 // member is not an empty one), and every tip must satisfy the epoch rules for
@@ -1695,10 +1959,14 @@ func verifyPrefixes(pub ed25519.PublicKey, chain []SignedCheckpoint, minVer int)
 // rejectReason returns the check that rejects a negative vector, or "" if the
 // vector is (wrongly) accepted.
 func rejectReason(pub ed25519.PublicKey, nv NegativeVector) string {
-	if err := checkSchema(nv.Input, nv.MinFormatVersion); err != nil {
+	input, reason := resolveInput(nv.Input, nv.InputRawHex)
+	if reason != "" {
+		return reason
+	}
+	if err := checkSchema(input, nv.MinFormatVersion); err != nil {
 		return "schema"
 	}
-	cb, err := canonical(nv.Input)
+	cb, err := canonical(input)
 	if err != nil {
 		return "canonical"
 	}
@@ -1707,16 +1975,16 @@ func rejectReason(pub ed25519.PublicKey, nv NegativeVector) string {
 		return "signature"
 	}
 	if len(nv.Chain) > 0 {
-		full, reason := verifyPrefixes(pub, nv.Chain, nv.MinFormatVersion)
-		if reason != "" {
-			return reason
+		full, chainReason := verifyPrefixes(pub, nv.Chain, nv.MinFormatVersion)
+		if chainReason != "" {
+			return chainReason
 		}
-		full = append(full, nv.Input)
+		full = append(full, input)
 		if _, err := checkTierB(full); err != nil {
 			return "tier_b"
 		}
 	}
-	if nv.PrevSHA256 != "" && nv.Input.PrevHash != nv.PrevSHA256 {
+	if nv.PrevSHA256 != "" && input.PrevHash != nv.PrevSHA256 {
 		return "chain"
 	}
 	return ""
@@ -1823,10 +2091,14 @@ func validate(path string) error {
 			continue
 		}
 		v := lv.Entry
-		if err := checkSchema(v.Input, v.MinFormatVersion); err != nil {
+		input, reason := resolveInput(v.Input, v.InputRawHex)
+		if reason != "" {
+			return fmt.Errorf("[%s] must be accepted, but input_raw_hex was rejected (%s)", v.Name, reason)
+		}
+		if err := checkSchema(input, v.MinFormatVersion); err != nil {
 			return fmt.Errorf("[%s] %v", v.Name, err)
 		}
-		cb, err := canonical(v.Input)
+		cb, err := canonical(input)
 		if err != nil {
 			return err
 		}
@@ -1851,7 +2123,7 @@ func validate(path string) error {
 			if reason != "" {
 				return fmt.Errorf("[%s] must be accepted, but its chain context was rejected (%s)", v.Name, reason)
 			}
-			full = append(full, v.Input)
+			full = append(full, input)
 			warns, err := checkTierB(full)
 			if err != nil {
 				return fmt.Errorf("[%s] must be accepted, but Tier B rejected it: %v", v.Name, err)
@@ -1865,8 +2137,8 @@ func validate(path string) error {
 		}
 		// A vector carrying its own chain context is not part of the
 		// positives' own hash chain, so prevExpected does not apply to it.
-		if i > 0 && prevExpected != "" && len(v.Chain) == 0 && v.Input.PrevHash != prevExpected {
-			return fmt.Errorf("[%s] chain break: prev_hash=%s expected=%s", v.Name, v.Input.PrevHash, prevExpected)
+		if i > 0 && prevExpected != "" && len(v.Chain) == 0 && input.PrevHash != prevExpected {
+			return fmt.Errorf("[%s] chain break: prev_hash=%s expected=%s", v.Name, input.PrevHash, prevExpected)
 		}
 		if len(v.Chain) == 0 {
 			// Only vectors in the positives' own hash chain advance it; a

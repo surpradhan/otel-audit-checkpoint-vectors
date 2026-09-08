@@ -91,7 +91,20 @@ def canonical(cp: dict) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
-SUPPORTED_FORMAT_VERSION = 2
+# format_version 3 added input_raw_hex (spec §5.5) and the A4 encoding check
+# (spec §7/§8 step 4): a checkpoint may now arrive as raw bytes to
+# canonicalize instead of a typed input object, specifically so a vector can
+# carry invalid UTF-8 -- inexpressible on the typed path at all, since
+# json.loads would already have to succeed to populate one -- or a lone
+# surrogate escape, which the typed path CAN carry, just inconsistently: this
+# module's own json.loads keeps the literal surrogate in the resulting str
+# (Go's encoding/json instead silently substitutes U+FFFD), so the two
+# references disagree on such a checkpoint today unless it arrives as
+# input_raw_hex and goes through check_encoding below. See
+# https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36.
+# Unknown-member rejection makes this non-additive for a v2 validator
+# (spec §5 point 2), hence the bump rather than a same-version add.
+SUPPORTED_FORMAT_VERSION = 3
 
 
 def skip_vector(min_ver: int, supported_ver: int) -> bool:
@@ -170,10 +183,10 @@ _SIGNED_CP_MEMBERS = frozenset({"input", "signature"})
 _SUITE_MEMBERS = frozenset({"format_version", "description", "algorithm",
                             "signing_seed_hex", "public_key_hex", "vectors",
                             "negatives"})
-_VECTOR_MEMBERS = frozenset({"name", "input", "canonical", "sha256", "signature",
-                             "chain", "expect_warnings", "min_format_version"})
-_NEGATIVE_MEMBERS = frozenset({"name", "expect", "reason", "input", "signature",
-                               "prev_sha256", "chain", "min_format_version"})
+_VECTOR_MEMBERS = frozenset({"name", "input", "input_raw_hex", "canonical", "sha256",
+                             "signature", "chain", "expect_warnings", "min_format_version"})
+_NEGATIVE_MEMBERS = frozenset({"name", "expect", "reason", "input", "input_raw_hex",
+                               "signature", "prev_sha256", "chain", "min_format_version"})
 
 
 def check_envelope(suite):
@@ -332,6 +345,20 @@ def check_entries(suite):
                                            f"the checkpoint of {named}")
             if err:
                 return err
+            # input_raw_hex is a member of the full Vector/NegativeVector,
+            # not of the header the skip decision above already read, so it
+            # is gated here rather than alongside min_format_version/name --
+            # same reasoning as reason/prev_sha256 above, just for a field
+            # both vectors and negatives can carry. Go's struct field is
+            # plain `string`, so a wrong-typed value there fails the whole
+            # file at strict decode; resolve_input's own `len(s) % 2 == 0`
+            # read of it crashed uncaught on anything without a length (an
+            # int, a bool, a float) rather than returning a reason, same
+            # shape of bug as the pre-#7/#20 fields once did.
+            input_raw_hex = e.get("input_raw_hex")
+            if input_raw_hex is not None and not isinstance(input_raw_hex, str):
+                return (f"input_raw_hex on {named} must be a string, got "
+                        f"{type(input_raw_hex).__name__}")
             # Type-gate "chain" and "expect_warnings" before either is read
             # as a list downstream: absent OR explicitly null is Go's nil
             # slice -- legal, zero entries -- but a PRESENT non-list value
@@ -368,6 +395,169 @@ def unknown_members(obj, allowed, what: str):
     if extra:
         return f"unknown member(s) {extra} on {what}; the signature does not cover them"
     return None
+
+
+def _hex4_value(b: bytes) -> int:
+    """Parses exactly 4 strict hex digits (0-9, A-F, a-f only) into an int,
+    or raises ValueError -- for check_encoding's \\uXXXX window. Not
+    int(bytes_or_str, 16): that stdlib constructor is a permissive
+    superset of what Go's strconv.ParseUint(s, 16, 32) accepts for the
+    equivalent window -- it additionally allows a leading `+`/`-` sign,
+    `_` digit-group separators, a `0x`/`0X` prefix, and surrounding
+    whitespace, every one of which consumes at least one of the 4
+    available bytes here and so caps what int() can extract from a
+    malformed window at 0xFFF, always below the surrogate range -- but
+    still a real reason-token divergence (Go says "encoding", Python's
+    lenient parse either succeeds wrongly or falls through to a
+    downstream "schema" once json.loads' own strict grammar catches it),
+    proven directly against checkEncoding, not merely reasoned about.
+    Mirrors Go's strconv.ParseUint call sites exactly."""
+    if len(b) != 4:
+        raise ValueError(f"not 4 bytes: {b!r}")
+    value = 0
+    for c in b:
+        if 0x30 <= c <= 0x39:
+            value = value * 16 + (c - 0x30)
+        elif 0x41 <= c <= 0x46:
+            value = value * 16 + (c - 0x41 + 10)
+        elif 0x61 <= c <= 0x66:
+            value = value * 16 + (c - 0x61 + 10)
+        else:
+            raise ValueError(f"not a hex digit: {bytes([c])!r}")
+    return value
+
+
+def check_encoding(raw: bytes) -> str:
+    """A4's explicit validation step on raw bytes, run before any JSON
+    parsing -- never as an emergent property of the JSON stack, which is
+    exactly where the two references disagree (spec §1 defect 2): given
+    `"\\ud800\\ud800"`, Go's encoding/json silently yields two U+FFFD with no
+    error, while Python's own json.loads preserves the lone surrogates and a
+    later .encode("utf-8") raises. Neither is a clean rejection, and they
+    disagree with each other -- before gowebpki/jcs (or this reference's own
+    canonicalization) is even reached.
+
+    Two things are checked, both about UTF-8 specifically: the raw bytes
+    must be valid UTF-8 outright, and no \\uXXXX escape inside a string
+    literal may encode a surrogate (U+D800-U+DFFF) that is not the
+    correctly-ordered half of an adjacent pair. A decoded, correctly-paired
+    surrogate pair (like 😀 for U+1F600) is NOT rejected -- see
+    valid_surrogate_pair, without which an implementation could pass this
+    suite by rejecting every \\ud escape, which is the over-rejection §6
+    already argues against for the suite as a whole.
+
+    Byte-oriented, not rune-oriented: after the upfront UTF-8-validity
+    check, `"`, `\\`, `u` and hex digits are all single-byte ASCII (<0x80),
+    and every UTF-8 continuation byte is >=0x80, so a multi-byte character
+    can never be misread as one of these structural markers. Mirrors Go's
+    checkEncoding byte for byte."""
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return "encoding"
+    in_string = False
+    i = 0
+    n = len(raw)
+    while i < n:
+        c = raw[i]
+        if not in_string:
+            if c == 0x22:  # '"'
+                in_string = True
+            i += 1
+            continue
+        if c == 0x22:  # '"'
+            in_string = False
+            i += 1
+        elif c == 0x5C:  # '\\'
+            if i + 1 >= n:
+                return "encoding"  # truncated escape
+            if raw[i + 1] != 0x75:  # 'u'
+                i += 2  # \\, \", \/, \b, \f, \n, \r, \t
+                continue
+            if i + 6 > n:
+                return "encoding"  # truncated \uXXXX
+            try:
+                code = _hex4_value(raw[i + 2:i + 6])
+            except ValueError:
+                return "encoding"  # \u not followed by 4 hex digits
+            if 0xD800 <= code <= 0xDBFF:
+                # High surrogate: legal only immediately followed by a low
+                # surrogate escape, forming one pair. Anything else -- EOF,
+                # a different escape, a non-surrogate \uXXXX, ordinary text
+                # -- is a lone high surrogate.
+                if i + 12 <= n and raw[i + 6] == 0x5C and raw[i + 7] == 0x75:
+                    try:
+                        low = _hex4_value(raw[i + 8:i + 12])
+                    except ValueError:
+                        low = -1
+                    if 0xDC00 <= low <= 0xDFFF:
+                        i += 12
+                        continue
+                return "encoding"
+            elif 0xDC00 <= code <= 0xDFFF:
+                # A low surrogate reached on its own: the branch above only
+                # advances past one as part of consuming a pair together, so
+                # reaching one here means nothing claimed it as a pair.
+                return "encoding"
+            else:
+                i += 6  # an ordinary \uXXXX escape, not a surrogate
+        else:
+            i += 1
+    return ""
+
+
+_HEX_ALPHABET = "0123456789abcdefABCDEF"
+
+
+def _is_strict_hex(s: str) -> bool:
+    """True iff `s` is exactly what Go's encoding/hex.DecodeString accepts:
+    an even-length string of hex digits only. Not a check bytes.fromhex()
+    already makes redundant -- it doesn't. bytes.fromhex() silently ignores
+    embedded ASCII whitespace (that's documented CPython behavior, not a
+    bug in it), which Go's decoder rejects outright. Proven to matter, not
+    just theoretical: the committed valid_surrogate_pair vector's own
+    input_raw_hex, with one space spliced in, is REJECTED by Go's
+    resolveInput ("schema") and was ACCEPTED by this function before this
+    check existed, decoding to byte-identical content -- a genuine
+    accept/reject divergence between the two references on realistic input,
+    not a contrived one. Gating on this exact alphabet, before
+    bytes.fromhex ever runs, closes it."""
+    return len(s) % 2 == 0 and all(c in _HEX_ALPHABET for c in s)
+
+
+def resolve_input(input_obj, input_raw_hex: str):
+    """The checkpoint an entry actually means: `input_obj` as given, or --
+    when `input_raw_hex` is non-empty -- the checkpoint that raw byte string
+    decodes to, after check_encoding has passed it. Returns (checkpoint,
+    reason); reason is "" on success and "encoding" or "schema" on failure,
+    matching the same tokens check_schema and the rest of this file already
+    use. Never raises on malformed third-party input -- like every other
+    check in this file, it returns a reason.
+
+    Callers that already have input_raw_hex == "" (every vector before
+    format 3) pay nothing beyond the one truthiness check: input_obj passes
+    through completely unchanged, None/non-dict included -- check_schema's
+    own `isinstance(cp, dict)` gate is what turns that into a clean "schema"
+    reason, exactly as it already did before this function existed. Mirrors
+    Go's resolveInput."""
+    if not input_raw_hex:
+        return input_obj, ""
+    if not _is_strict_hex(input_raw_hex):
+        return {}, "schema"
+    try:
+        raw = bytes.fromhex(input_raw_hex)
+    except (ValueError, TypeError):
+        return {}, "schema"
+    reason = check_encoding(raw)
+    if reason:
+        return {}, reason
+    try:
+        cp = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}, "schema"
+    if not isinstance(cp, dict):
+        return {}, "schema"
+    return cp, ""
 
 
 def check_schema(cp, min_ver: int):
@@ -611,7 +801,9 @@ def reject_reason(pub, nv):
     """Return the check that rejects a negative vector, or "" if it is
     (wrongly) accepted. At module scope, mirroring Go's top-level
     rejectReason, so both references can be exercised the same way."""
-    cp = nv.get("input") or {}
+    cp, reason = resolve_input(nv.get("input") or {}, nv.get("input_raw_hex", ""))
+    if reason:
+        return reason
     err = check_schema(cp, nv.get("min_format_version", 0))
     if err:
         return "schema"
@@ -725,7 +917,10 @@ def main() -> int:
         # `or {}`: a present-but-null "input" is not an absent one, and both
         # decode to Go's zero Checkpoint, whose nil tips check_schema rejects
         # as "schema" rather than raising on the None fed to it here.
-        cp_input = v.get("input") or {}
+        cp_input, reason = resolve_input(v.get("input") or {}, v.get("input_raw_hex", ""))
+        if reason:
+            print(f"FAIL [{entry_name(v)}] must be accepted, but input_raw_hex was rejected ({reason})")
+            return 1
         # Same check order as Go's positive path -- schema boundary first,
         # then canonical bytes, hash, signature. Both negative paths already
         # agree on that order; this one lagged, and a check order a third party
