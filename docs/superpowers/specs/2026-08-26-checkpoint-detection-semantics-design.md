@@ -423,6 +423,17 @@ from a literal U+FFFD. **A4 is therefore specified as an explicit validation ste
 on raw bytes before parsing, never as an emergent property of the JSON stack.**
 That assumption's absence is exactly defect 2.
 
+That same "Go cannot distinguish after parsing" property is not specific to
+`input_raw_hex` — it holds for a typed `input` field too, and was not
+originally applied there (#36): a lone surrogate reaching a typed field's
+string was left to whatever `encoding/json`/`json.loads` happened to do with
+it, silently and differently in each language, through no check this spec
+named. A4 now runs on the whole suite file's raw bytes, once, before any JSON
+parsing at all — not scoped to `input_raw_hex` values specifically — closing
+that gap by the same "raw bytes before parsing" reasoning this section already
+argues for, applied completely rather than only where the first two vectors
+happened to need it.
+
 **A4 needs a positive too.** A raw-text scan for lone surrogate escapes must
 still accept a *valid* surrogate pair, and must handle `\\u` and case variants.
 Without `valid_surrogate_pair` — a raw-hex **positive** containing

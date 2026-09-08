@@ -90,32 +90,37 @@ Version 3 adds one further optional field:
   through each language's own JSON parser before a validator ever sees it, so
   it cannot express invalid UTF-8 at all — a parse would already have to
   succeed to populate a typed field, and invalid UTF-8 can't produce a string
-  either language's JSON parser will accept. An unpaired surrogate escape is
-  a different case: it *is* expressible on the typed path, just inconsistently
-  — Go's `encoding/json` silently substitutes U+FFFD and keeps parsing, while
-  Python's `json.loads` keeps the literal (unencodable) surrogate — so the two
-  references currently diverge on checkpoints that carry one there instead of
-  agreeing via the check below. `input_raw_hex` exists so a vector pinning the
-  *raw-bytes* form of this malformation class can be published at all; it does
-  not by itself make the typed path agree. See
-  [#36](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36)
-  for the typed-path gap. A validator MUST run the encoding check below on
-  `input_raw_hex` bytes **before** attempting to parse them, exactly once, in
-  the same position both references do: first in the check order, ahead of
-  the schema check.
+  either language's JSON parser will accept. `input_raw_hex` exists so a
+  vector pinning that specific malformation class can be published at all.
 
-  **Encoding check (A4).** The raw bytes must be valid UTF-8 outright, and no
-  `\uXXXX` escape inside a string literal may encode a surrogate
-  (U+D800–U+DFFF) that is not the correctly-ordered half of an adjacent pair.
-  Given `"\ud800\ud800"`, Go's `encoding/json` silently decodes it to two
-  U+FFFD with no error, while Python's `json.loads` preserves the lone
-  surrogates and a later `.encode("utf-8")` raises — neither is a clean
-  rejection, and the two disagree with each other, before either
-  language's own JSON stack has even finished running. `ill_formed_utf8_bytes`
-  and `lone_surrogate_escape` are the negatives; `valid_surrogate_pair` is the
-  must-accept positive without which an implementation could pass this suite
-  by rejecting every `\ud` escape wholesale, which is over-rejection, not
-  conformance — see "Positive vectors" below. Rejected: `encoding`.
+  **Encoding check (A4) runs over the whole file, once, before any JSON
+  parsing — not only over `input_raw_hex` payloads.** A validator MUST run
+  this check on the raw file bytes before attempting to parse them at all,
+  in the same position both references do: the very first check, ahead of
+  even the envelope/suite-level decode. The raw bytes must be
+  valid UTF-8 outright, and no `\uXXXX` escape inside a string literal may
+  encode a surrogate (U+D800–U+DFFF) that is not the correctly-ordered half of
+  an adjacent pair — checked on the entire suite file's bytes, before either
+  language's own JSON stack has even started running, not only within an
+  `input_raw_hex` value. Before this whole-file check existed, an unpaired
+  surrogate escape reaching a *typed* `input` field was handled
+  inconsistently — Go's `encoding/json` silently substitutes U+FFFD and keeps
+  parsing, while Python's `json.loads` keeps the literal (unencodable)
+  surrogate, so the two references disagreed on such a checkpoint, through no
+  check the spec actually named ([#36](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36),
+  now closed by this check). Go cannot detect this class of malformation
+  *after* its own decode at all: the substitution is irreversible, so the
+  check has to run on raw bytes, before parsing, for every string in the
+  file, not only inside `input_raw_hex`. No vector can pin this the same way
+  `ill_formed_utf8_bytes`
+  and `lone_surrogate_escape` (below) pin the `input_raw_hex` path specifically
+  — a malformed escape anywhere in the file fails the whole file to load, the
+  same way an unknown member does, so mirrored unit tests hold the property
+  instead (see "Not pinned" below). `valid_surrogate_pair` is the must-accept
+  positive without which an implementation could pass this suite by rejecting
+  every `\ud` escape wholesale, which is over-rejection, not conformance — see
+  "Positive vectors" below. `ill_formed_utf8_bytes` and `lone_surrogate_escape`
+  are the `input_raw_hex`-specific negatives, `expect: encoding`.
 
   **This is not a hypothetical failure mode for the canonicalizer this repo
   itself depends on.**
@@ -704,6 +709,25 @@ walk on the checkpoint itself.
   is the strongest instrument available for it. The envelope positions (a
   vector, a negative, the suite object) are covered the same way; no signature
   reaches them at all, so only an explicit member set can.
+
+- **A lone surrogate escape or invalid UTF-8 byte outside `input_raw_hex`.**
+  A4's whole-file check (above) rejects one anywhere in the file, but like
+  unknown members, that means no vector can carry one without failing every
+  other vector's verdict alongside it — the whole file refuses to load, not
+  one entry. Two pairs of tests cover this, one per class of position: for an
+  envelope field never subject to any other check, `go/encoding_test.go`'s
+  `TestWholeFileEncodingIsCheckedBeforeParsing` and `py/test_validate.py`'s
+  `test_whole_file_encoding_is_checked_before_parsing` splice a lone `\ud800`
+  into `description`; for a checkpoint payload field,
+  `TestWholeFileEncodingCatchesTheCheckpointPayloadCase` and
+  `test_whole_file_encoding_catches_the_checkpoint_payload_case` splice the
+  same escape into `stream_id` in a properly re-signed fixture (a naive
+  splice into an already-signed one is rejected by the pre-existing
+  canonical/signature check regardless of whether this one exists, proving
+  nothing about this check specifically). All four require both references
+  to reject cleanly — not silently normalize it away (Go) or crash the
+  reporting layer while printing a verdict about it (Python,
+  [#36](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36)).
 
 - **Wrong-typed scalars, at the level of the published vectors.** `"epoch":
   "1"`, `"epoch": true`, `"epoch": 1.0` and a null `tips` *element* are

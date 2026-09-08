@@ -1832,6 +1832,158 @@ def test_trailing_data_after_the_suite_is_rejected():
             f"{tail!r} was rejected without a FAIL line; a traceback is not a verdict\n{output}"
 
 
+def test_whole_file_encoding_is_checked_before_parsing():
+    """A4's extension to the whole file (#36): a literal, unpaired surrogate
+    escape in the suite's description -- an envelope field never subject to
+    any other check, not part of any signed payload -- must be rejected
+    before json.loads ever runs. Splicing it into the real suite's own text
+    (without re-signing) correctly isolates this case: mutating description
+    changes no checkpoint's canonical bytes, so nothing except the new
+    whole-file check can reject it. The checkpoint-payload case (stream_id)
+    needs a different construction, in
+    test_whole_file_encoding_catches_the_checkpoint_payload_case below,
+    because splicing there DOES change canonical bytes -- and unlike Go,
+    this reference's canonical() ALSO already fails on a lone surrogate (its
+    own .encode("utf-8") raises), so a naive splice into an unsigned-for-this
+    mutation checkpoint would be rejected via that pre-existing, accidental
+    path regardless of whether the new whole-file check exists at all,
+    proving nothing about the new check specifically. Mirrors
+    TestWholeFileEncodingIsCheckedBeforeParsing."""
+    body = json.dumps(_load_real_suite())
+    # The premise: the same bytes unmodified pass, so the rejection below is
+    # about the spliced escape and nothing else.
+    rc, output = _run_main_on_raw(body)
+    assert rc == 0, f"the unmodified suite must validate\n{output}"
+    anchor = '"description": "Conformance'
+    assert anchor in body, f"test bug: anchor {anchor!r} not found in the real suite"
+    # A literal six-ASCII-character escape, \ud800, NOT the character it
+    # would decode to -- confirmed via the raw text actually spliced, not a
+    # visual read of this source.
+    escape_text = "\\" + "ud800"
+    assert escape_text.encode("ascii") == b"\\ud800", \
+        "test bug: escape_text is not the literal 6-character escape"
+    spliced = body.replace(anchor, anchor + escape_text, 1)
+    rc, output = _run_main_on_raw(spliced)
+    assert rc != 0, f"a suite with a lone surrogate escape spliced into description was accepted\n{output}"
+    assert "FAIL" in output, \
+        f"rejected without a FAIL line; a traceback is not a verdict\n{output}"
+
+
+def test_whole_file_encoding_catches_the_checkpoint_payload_case():
+    """Pins the same property (#36) for the class the issue names
+    explicitly: a lone surrogate escape reaching a typed CHECKPOINT field,
+    not only an envelope field like description above. This needs a
+    properly RE-SIGNED fixture, not a splice into the real suite's
+    already-published bytes: mutating a checkpoint's stream_id changes its
+    canonical bytes, and canonical()'s own .encode("utf-8") already raises
+    on a lone surrogate regardless of the new check -- a real error, but the
+    WRONG one for what this test needs to isolate, satisfying a bare
+    `rc != 0` assertion even with no whole-file check at all (confirmed
+    directly: a naive splice-without-resigning construction, run with the
+    new whole-file check disabled, is STILL rejected -- via "canonical:",
+    not the new message).
+
+    Signing bytes that were spliced directly (matching go/encoding_test.go's
+    own placeholder-then-splice technique, since json.dumps cannot be made
+    to emit an intentionally malformed \\u escape -- it would escape the
+    backslash instead) does NOT make every other check pass on its own
+    terms -- that is impossible here, by this PR's own thesis: parsing this
+    fixture keeps the literal lone surrogate in the Python str (unlike Go),
+    but canonical()'s own re-encode of that str can never succeed either, so
+    a "canonical: ..." rejection (a caught UnicodeEncodeError, not a
+    mismatch) is the unavoidable fallback if the whole-file check is
+    bypassed -- confirmed directly, by disabling that check's call site and
+    observing exactly that rejection. What the signing buys is narrower but
+    sufficient: if the whole-file check regresses, the fallback rejection is
+    deterministically labeled "canonical", so asserting the actual error is
+    NOT that label (nor "signature", ruled out the same way) is what
+    isolates the new check -- not round-trip fidelity of the fixture, which
+    no construction of this input could ever have. Mirrors
+    TestWholeFileEncodingCatchesTheCheckpointPayloadCase."""
+    import base64 as _b64
+    priv = _priv()
+    real = _load_real_suite()
+
+    # seq=2, not 1: check_genesis requires seq==1 to pair specifically with
+    # the genesis prev_hash, and _cp's default prev is a plain non-genesis
+    # placeholder -- seq 2 takes the check's other legal branch (both false)
+    # rather than the genesis one (both true) that go/encoding_test.go's
+    # Seq:1 + sha256Empty uses; either is a valid way to satisfy the same
+    # rule.
+    placeholder = "WHOLE_FILE_PLACEHOLDER_MARKER"
+    cp = _cp(2, _pos_ts(100), [_tip(placeholder, 0, 1, 1, "aa")])
+    base = validate.canonical(cp)
+    escape_text = ("\\" + "ud800").encode("ascii")
+    assert escape_text == b"\\ud800", \
+        "test bug: escape_text is not the literal 6-character escape"
+    assert placeholder.encode() in base, "test bug: placeholder not found in base canonical bytes"
+    spliced = base.replace(placeholder.encode(), escape_text, 1)
+    spliced_text = spliced.decode("utf-8")
+
+    # Every field but "input" is built the ordinary way -- a dict through
+    # json.dumps, so its own quoting/escaping is never hand-typed. "input"
+    # alone needs a raw, unquoted object literal spliced in verbatim (it is
+    # already complete JSON, just with a malformed escape inside one string
+    # value), so it goes in as a sentinel STRING here and is swapped for the
+    # real bytes below -- the one substitution this test makes by hand, same
+    # as the checkpoint splice above and go/encoding_test.go's own
+    # placeholder-then-splice technique.
+    sentinel = "@@WHOLE_FILE_INPUT_SENTINEL@@"
+    suite = {
+        "format_version": real["format_version"],
+        "description": "probe",
+        "algorithm": real["algorithm"],
+        "signing_seed_hex": real["signing_seed_hex"],
+        "public_key_hex": real["public_key_hex"],
+        "vectors": [{
+            "name": "probe",
+            "min_format_version": 2,
+            "input": sentinel,
+            "canonical": spliced_text,
+            "sha256": hashlib.sha256(spliced).hexdigest(),
+            "signature": _b64.b64encode(priv.sign(spliced)).decode(),
+        }],
+        "negatives": [],
+    }
+    body = json.dumps(suite)
+    quoted_sentinel = json.dumps(sentinel)
+    assert quoted_sentinel in body, "test bug: sentinel not found in serialized suite"
+    suite_text = body.replace(quoted_sentinel, spliced_text, 1)
+    rc, output = _run_main_on_raw(suite_text)
+    assert rc != 0, (
+        "a fully self-consistent, correctly-signed suite with a lone "
+        f"surrogate escape in a checkpoint payload was accepted\n{output}")
+    assert "canonical" not in output and "signature" not in output, (
+        "rejected for a canonical/signature reason, not the whole-file "
+        f"encoding check -- this fixture does not isolate that check\n{output}")
+
+
+def test_entry_name_survives_a_raw_lone_surrogate_on_real_encode():
+    """entry_name()'s fix for #36 finding 2 has no test elsewhere that can
+    catch a reversion: this file's own harness captures output via
+    io.StringIO (see _run_main_on_raw), and StringIO.write() never encodes
+    at all, so it cannot exercise the UnicodeEncodeError entry_name() exists
+    to prevent. This test calls entry_name() directly instead -- the only
+    way left to reach it with a raw surrogate, now that A4's whole-file
+    check rejects one in a "name" field before json.loads ever runs (see
+    entry_name()'s own docstring) -- and performs a REAL .encode("utf-8"),
+    the same operation print() performs against a real stdout, proving the
+    fix actually prevents the crash rather than merely returning a str."""
+    raw = "prefix-\ud800-suffix"
+    # The premise: encoding the RAW name directly would crash, or this test
+    # cannot prove entry_name() is the thing preventing that crash.
+    try:
+        raw.encode("utf-8")
+        raise AssertionError(
+            "test bug: the raw name must not be encodable, or this test cannot prove anything")
+    except UnicodeEncodeError:
+        pass
+    result = validate.entry_name({"name": raw})
+    encoded = result.encode("utf-8")  # must not raise
+    assert encoded.decode("utf-8") == result, \
+        f"entry_name()'s return value did not round-trip through UTF-8: {result!r}"
+
+
 # The same literal appears in go/encoding_test.go as wantNULCanonical: the two
 # references must agree on these exact bytes, not merely each be internally
 # consistent.

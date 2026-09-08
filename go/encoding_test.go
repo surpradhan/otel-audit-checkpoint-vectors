@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -442,6 +446,135 @@ func TestTrailingDataAfterSuiteIsRejected(t *testing.T) {
 				t.Fatalf("a file with %q appended after the suite was accepted; it is not a single JSON document", tail)
 			}
 		})
+	}
+}
+
+// TestWholeFileEncodingIsCheckedBeforeParsing pins A4's extension to the
+// whole file (#36): a literal, unpaired surrogate escape in the suite's
+// description -- an envelope field never subject to any other check, not
+// part of any signed payload -- must be rejected before any JSON parsing
+// normalizes it away. Splicing it into gen()'s own already-signed output
+// (without re-signing) correctly isolates this case: mutating description
+// changes no checkpoint's canonical bytes, so nothing except the new
+// whole-file check can reject it -- confirmed directly: on pre-#36 main,
+// the identical splice validates cleanly (rc 0), so this is genuine new
+// coverage, not a coincidental catch. The checkpoint-payload case
+// (stream_id) needs a different construction, below, because splicing
+// there DOES change canonical bytes, and a pre-existing canonical/signature
+// mismatch would reject the file too -- for the wrong reason, passing this
+// test even with no whole-file check at all. Mirrors
+// py/test_validate.py's test_whole_file_encoding_is_checked_before_parsing.
+func TestWholeFileEncodingIsCheckedBeforeParsing(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	clean := filepath.Join(dir, "clean.json")
+	if err := os.WriteFile(clean, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(clean); err != nil {
+		t.Fatalf("the unmodified suite must validate: %v", err)
+	}
+	anchor := `"description":"Conformance`
+	idx := bytes.Index(raw, []byte(anchor))
+	if idx < 0 {
+		t.Fatalf("anchor %q not found in generated suite", anchor)
+	}
+	// A literal six-ASCII-character escape, `\ud800`, NOT the character it
+	// would decode to -- confirmed below via the raw bytes actually
+	// written, not a visual read of this source.
+	insertAt := idx + len(anchor)
+	spliced := append(append(append([]byte(nil), raw[:insertAt]...), []byte(`\ud800`)...), raw[insertAt:]...)
+	if !bytes.Contains(spliced, []byte{0x5c, 0x75, 0x64, 0x38, 0x30, 0x30}) {
+		t.Fatal("test bug: spliced bytes do not contain the literal escape text \\ud800")
+	}
+	path := filepath.Join(t.TempDir(), "malformed.json")
+	if err := os.WriteFile(path, spliced, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(path); err == nil {
+		t.Fatal("a suite with a lone surrogate escape spliced into description was accepted")
+	}
+}
+
+// TestWholeFileEncodingCatchesTheCheckpointPayloadCase pins the same
+// property (#36) for the class the issue names explicitly: a lone surrogate
+// escape reaching a typed CHECKPOINT field, not only an envelope field like
+// description above. This needs a properly RE-SIGNED fixture, not a splice
+// into gen()'s already-published output: mutating a checkpoint's stream_id
+// changes its canonical bytes, so a naive splice into already-signed bytes
+// would ALSO fail the pre-existing canonical/signature check -- a real
+// error, but the wrong one, satisfying a bare `err != nil` assertion even
+// with no whole-file encoding check at all. Confirmed directly: that naive
+// construction, run against pre-#36 main, already returns a non-nil error
+// ("canonical mismatch"), so it cannot distinguish "the new check fired"
+// from "a pre-existing check fired for an unrelated reason" -- exactly the
+// gap this test closes.
+//
+// Signing the malformed bytes directly (matching genA4's own
+// placeholder-then-splice technique, since encoding/json's own encoder
+// cannot be made to emit an intentionally-malformed \u escape -- it would
+// escape the backslash instead) does NOT make every other check pass on its
+// own terms -- that is impossible here, by this PR's own thesis: decoding
+// this fixture substitutes U+FFFD for the lone surrogate irreversibly, so
+// re-canonicalizing the decoded struct can never reproduce the exact
+// spliced bytes this fixture's "canonical" field holds, and a canonical
+// mismatch is the unavoidable fallback if the whole-file check is bypassed
+// -- confirmed directly, by disabling that check's call site and observing
+// exactly that rejection. What the signing buys is narrower but sufficient:
+// if the whole-file check regresses, the fallback rejection is
+// deterministically labeled "canonical", so asserting the actual error is
+// NOT that label (nor "signature", ruled out the same way) is what isolates
+// the new check -- not round-trip fidelity of the fixture, which no
+// construction of this input could ever have.
+func TestWholeFileEncodingCatchesTheCheckpointPayloadCase(t *testing.T) {
+	priv := ed25519.NewKeyFromSeed(testSeed())
+	pub := priv.Public().(ed25519.PublicKey)
+
+	const placeholder = "WHOLE_FILE_PLACEHOLDER_MARKER"
+	cp := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2027-03-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: placeholder, TipHash: "aa" + strings.Repeat("00", 31)},
+	}}
+	base := mustCanonical(cp, "TestWholeFileEncodingCatchesTheCheckpointPayloadCase base")
+	spliced := bytes.Replace(base, []byte(placeholder), []byte(`\ud800`), 1)
+	if bytes.Equal(spliced, base) {
+		t.Fatal("test bug: placeholder not found in base canonical bytes")
+	}
+	if !bytes.Contains(spliced, []byte{0x5c, 0x75, 0x64, 0x38, 0x30, 0x30}) {
+		t.Fatal("test bug: spliced bytes do not contain the literal escape text \\ud800")
+	}
+
+	// canonical must hold the spliced bytes too, as a JSON STRING -- its own
+	// backslashes and quotes escaped by Go's own encoder, so this doesn't
+	// repeat the exact mistake the splice above exists to avoid making by
+	// hand.
+	canonicalField, err := json.Marshal(string(spliced))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(spliced)
+	sig := signB64(priv, spliced)
+
+	// input is spliced embedded VERBATIM: it is already a complete JSON
+	// object literal (just one with a malformed escape inside one string
+	// value), so it needs no further quoting or escaping of its own.
+	suite := fmt.Sprintf(
+		`{"format_version":3,"description":"probe","algorithm":"ed25519","signing_seed_hex":%q,"public_key_hex":%q,`+
+			`"vectors":[{"name":"probe","min_format_version":2,"input":%s,"canonical":%s,"sha256":%q,"signature":%q}],"negatives":[]}`,
+		hex.EncodeToString(testSeed()), hex.EncodeToString(pub), spliced, canonicalField, hex.EncodeToString(sum[:]), sig)
+
+	path := filepath.Join(t.TempDir(), "malformed_payload.json")
+	if err := os.WriteFile(path, []byte(suite), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = validate(path)
+	if err == nil {
+		t.Fatal("a fully self-consistent, correctly-signed suite with a lone surrogate escape in a checkpoint payload was accepted")
+	}
+	if strings.Contains(err.Error(), "canonical") || strings.Contains(err.Error(), "signature") {
+		t.Fatalf("rejected for a canonical/signature reason, not the whole-file encoding check -- this fixture does not isolate that check: %v", err)
 	}
 }
 
