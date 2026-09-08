@@ -928,7 +928,14 @@ def check_tier_b(chain: list) -> tuple:
         # advisory_two_streams_new_epoch is the vector that pins this.
         for t in sorted(cp.get("tips") or [], key=tip_identity):
             ident = tip_identity(t)
-            sid = t.get("stream_id", "")
+            # Through tip_stream_id, not a raw .get(): this is a SECOND, independent
+            # read of the same field tip_identity already folds internally (#40). A
+            # present-but-null stream_id used to reach `last_epoch[sid]` keyed on
+            # None -- inconsistent with seen_identity's key, which already folds via
+            # tip_identity -- and "B4:" + sid raised TypeError outright once a B4
+            # warning fired for it, reachable end to end through a real signed chain
+            # (verify_prefixes -> check_tier_b), not merely by calling this directly.
+            sid = tip_stream_id(t)
             if ident in seen_identity:
                 return (f"B3: stream {sid!r} epoch {tip_epoch(t)} "
                         f"committed in checkpoint {seen_identity[ident]} and again in {seq}", warns)

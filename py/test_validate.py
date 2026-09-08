@@ -678,6 +678,26 @@ def test_b4_fires_on_epoch_regression():
         f"warnings = {warns}, want ['B4:s1'] -- B4 must fire on epoch DIFFERENCE, not increase")
 
 
+def test_b4_stream_id_read_is_folded_the_same_way_as_tip_identity():
+    """check_tier_b's B4 loop reads stream_id a SECOND time, independently of
+    tip_identity: `sid = t.get("stream_id", "")` used to supply "" only for
+    an ABSENT key, not a present null -- unlike tip_identity's own fold
+    (#40) -- so an explicit null stream_id reached `last_epoch[sid]` keyed on
+    None (inconsistent with seen_identity's key, which DOES fold) and
+    crashed `"B4:" + sid` with an uncaught TypeError once a B4 warning fired
+    for it. Confirmed reachable end to end through verify_prefixes ->
+    check_tier_b, the real path a chain-carrying vector uses, not only via
+    this direct call. Found reviewing #40's own fix, which updated
+    tip_identity but not this second read site -- same root cause, same
+    field, same PR, so fixed here rather than filed separately."""
+    chain = _link(
+        _cp(1, _pos_ts(0), [_tip_with(stream_id=None, epoch=0)]),
+        _cp(2, _pos_ts(10), [_tip_with(stream_id=None, epoch=1)]))
+    err, warns = validate.check_tier_b(chain)  # must not raise
+    assert err is None, f"an epoch change on a null-stream_id tip is advisory, not a rejection: {err}"
+    assert warns == ["B4:"], f"warnings = {warns}, want ['B4:'] -- folded to the empty string"
+
+
 def test_chain_prev_hash_linkage_is_checked():
     """B2 must hold across the whole assembled chain, not only at the vector's
     own link: a chain whose prefixes do not hash-link is a forged history."""
