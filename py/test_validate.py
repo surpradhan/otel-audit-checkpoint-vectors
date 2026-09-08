@@ -1623,6 +1623,123 @@ def test_null_checkpoint_body_scalars_fold_to_zero_value_in_tier_b():
         f"got null={null_result}, empty={empty_result}")
 
 
+# (#40): entry_count, sequence_number, stream_id and tip_hash are plain
+# non-pointer fields in Go's Tip struct, so Go's decode folds a present null
+# and an absent key to the identical zero value -- unlike epoch, which Go
+# tracks explicitly (Tip.EpochNull) and canonicalizes differently on
+# purpose. Before the fix, canonical() serialized each tip's raw dict
+# untouched, so Python's json.dumps -- which has no such folding -- produced
+# GENUINELY DIFFERENT bytes for null vs absent on all four fields, a real
+# accept/reject-shaped divergence: the same signature verifies either
+# document in Go, only one of the two in Python.
+_TIP_NULL_FOLD_FIELDS = ("entry_count", "sequence_number", "stream_id", "tip_hash")
+
+
+def _tip_with(**overrides) -> dict:
+    """An otherwise-ordinary tip, minus any key named in `overrides` whose
+    value is the sentinel _ABSENT, present with the given value otherwise."""
+    t = {"entry_count": 1, "epoch": 0, "sequence_number": 1,
+         "stream_id": "22222222-0000-4000-8000-000000000002", "tip_hash": "bb" + "00" * 31}
+    for k, v in overrides.items():
+        if v is _ABSENT:
+            del t[k]
+        else:
+            t[k] = v
+    return t
+
+
+_ABSENT = object()
+
+
+def test_tip_scalars_fold_to_identical_canonical_bytes_null_vs_absent():
+    """The direct #40 property: for each of the four affected fields,
+    canonical() must produce byte-identical output whether the field is
+    absent or explicitly null -- not merely avoid crashing. Confirmed this
+    genuinely discriminates: reverting canonical()'s fold (restoring the
+    pre-fix "cp['tips'] = sorted(tips, key=tip_identity)" with no per-tip
+    folding) reproduces a real byte difference for all four fields, checked
+    directly against pre-fix `main` before writing this test."""
+    for field in _TIP_NULL_FOLD_FIELDS:
+        cp_null = _cp(2, _pos_ts(100), [_tip_with(**{field: None})])
+        cp_absent = _cp(2, _pos_ts(100), [_tip_with(**{field: _ABSENT})])
+        cb_null = validate.canonical(cp_null)
+        cb_absent = validate.canonical(cp_absent)
+        assert cb_null == cb_absent, (
+            f"{field}: null and absent must canonicalize identically, matching Go's "
+            f"zero-value collapse\n  null:   {cb_null}\n  absent: {cb_absent}")
+
+
+def test_a_signature_over_absent_tip_scalars_still_verifies_when_mutated_to_explicit_null():
+    """The end-to-end shape of #40's own attack: a checkpoint published with
+    a field ABSENT, then mutated (by a third party, or in transit) to carry
+    an explicit null instead -- a no-op mutation in Go, since both decode to
+    the same struct -- must keep verifying against the ORIGINAL signature in
+    this reference too. Verifying directly against canonical bytes, not
+    through main()/a suite file: the property under test is canonical()'s
+    own byte-identity, and this is the most direct real-world consequence of
+    it -- the same one #40's issue body demonstrates by hand."""
+    from cryptography.exceptions import InvalidSignature
+    pub, priv = _pub(), _priv()
+    for field in _TIP_NULL_FOLD_FIELDS:
+        cp_absent = _cp(2, _pos_ts(100), [_tip_with(**{field: _ABSENT})])
+        cp_null = _cp(2, _pos_ts(100), [_tip_with(**{field: None})])
+        signed = _sign(priv, cp_absent)  # signs canonical(cp_absent)
+        cb_null = validate.canonical(cp_null)
+        try:
+            pub.verify(validate.decode_signature(signed["signature"]), cb_null)
+        except InvalidSignature:
+            raise AssertionError(
+                f"{field}: a signature computed over the ABSENT-field checkpoint "
+                "must still verify against the explicit-null one -- Go treats "
+                "them as the same document, so a validator that doesn't is the "
+                "accept/reject divergence #40 describes")
+
+
+def test_epoch_null_vs_absent_still_diverges_in_canonical_bytes():
+    """Regression guard, the deliberate opposite of the two tests above:
+    epoch must NOT be folded by #40's fix. Go tracks epoch's null-vs-absent
+    distinction explicitly (Tip.EpochNull) and canonicalizes the two
+    differently on purpose -- absence is legal only pre-v2, an explicit null
+    is a distinct, format-version-gated shape -- so if a future edit
+    "generalizes" the fold in canonical() to include epoch, this must catch
+    it: canonical() should produce DIFFERENT bytes for a null epoch than for
+    an absent one, matching Go's own MarshalJSON, which re-emits an explicit
+    null only for a tip that carried one.
+
+    Deliberately passes unchanged whether #40's fix is present or not --
+    confirmed directly, running this test against the pre-fix canonical() --
+    since epoch's fold was correct before #40 and is untouched by it; this
+    test's job is to keep it that way, not to prove #40's fix works."""
+    cp_null = _cp(2, _pos_ts(100), [_tip_with(epoch=None)])
+    cp_absent = _cp(2, _pos_ts(100), [_tip_with(epoch=_ABSENT)])
+    cb_null = validate.canonical(cp_null)
+    cb_absent = validate.canonical(cp_absent)
+    assert cb_null != cb_absent, (
+        "epoch must NOT fold null and absent to the same canonical bytes -- "
+        f"Go itself preserves this distinction\n  null:   {cb_null}\n  absent: {cb_absent}")
+    assert b'"epoch":null' in cb_null, f"a null epoch must serialize explicitly: {cb_null}"
+    assert b'"epoch"' not in cb_absent, f"an absent epoch must stay absent: {cb_absent}"
+
+
+def test_mixed_null_and_string_stream_id_tips_canonicalize_without_crashing():
+    """Before the fold, a checkpoint with one tip missing stream_id (reads as
+    "" via tip_identity's old `.get(key, "")`) and another carrying an
+    EXPLICIT null (reads as None, the default only applies to an absent key)
+    compared a str against a None inside canonical()'s own sort and raised
+    TypeError -- reproduced directly against pre-fix `main` before writing
+    this test. Both must now fold to "" and sort deterministically, empty
+    string first."""
+    tips = [_tip_with(stream_id=None, tip_hash="aa" + "00" * 31),
+            _tip_with(stream_id="zzzzzzzz-0000-4000-8000-000000000009",
+                      epoch=1, tip_hash="cc" + "00" * 31)]
+    cp = _cp(2, _pos_ts(100), tips)
+    cb = validate.canonical(cp)  # must not raise
+    first_tip_pos = cb.index(b'"stream_id":""')
+    second_tip_pos = cb.index(b'"stream_id":"zzzzzzzz')
+    assert first_tip_pos < second_tip_pos, \
+        f"the folded (empty) stream_id must sort first: {cb}"
+
+
 def test_wrong_typed_checkpoint_body_scalars_reject_cleanly_through_the_validator():
     """A wrong-typed seq, timestamp or prev_hash must be rejected as "schema"
     through every path the real validator actually uses -- a vector's own

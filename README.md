@@ -812,7 +812,52 @@ walk on the checkpoint itself.
   `test_wrong_typed_checkpoint_body_scalars_returns_a_reason`,
   `test_null_checkpoint_body_scalars_fold_to_zero_value_in_tier_b` and
   `test_wrong_typed_checkpoint_body_scalars_reject_cleanly_through_the_validator`
-  (`py/test_validate.py`) assert all of this instead.
+  (`py/test_validate.py`) assert all of this instead. The tip-level
+  counterpart of this null-vs-absent question is below; unlike this
+  checkpoint-level case, it reached `canonical()` itself, not only
+  `check_tier_b`.
+
+- **A null tip scalar (`entry_count`, `sequence_number`, `stream_id`,
+  `tip_hash`) canonicalizing differently from an absent one.** None of
+  `Tip`'s four plain scalar fields are pointers either, so Go's decode
+  collapses a present null and an absent key to the identical zero value —
+  but this was never actually fixed for `canonical()`, only assumed to
+  already be, by analogy with the checkpoint-level bullet above (an
+  assumption later found to be wrong: `cp_seq`/`cp_timestamp` are
+  `check_tier_b`-only helpers, never wired into `canonical()` — the
+  checkpoint-level version of *this exact* gap remains open, tracked as
+  [#44](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/44)).
+  Before this fix, `canonical()` serialized each tip's raw dict untouched, so
+  a checkpoint published with `entry_count` absent and mutated to carry
+  `"entry_count": null` instead kept validating in Go (same canonical bytes,
+  same signature) but failed here (different bytes, signature no longer
+  verifies) — a real accept/reject divergence, not a formatting nicety.
+  Worse for `stream_id` specifically: a checkpoint with one tip missing
+  `stream_id` and another carrying an explicit null compared a `str` against
+  a `None` inside `canonical()`'s own tip sort and crashed with an uncaught
+  `TypeError`, not a clean rejection. `tip_entry_count`/`tip_sequence_number`/
+  `tip_stream_id`/`tip_tip_hash` fold a present null the same way
+  `cp_seq`/`cp_timestamp`/`tip_epoch` already do, and `canonical()` now
+  builds each tip from the folded values rather than the raw dict. `epoch`
+  is deliberately excluded from this fold: Go tracks its null-vs-absent
+  distinction explicitly (`Tip.EpochNull`) and canonicalizes the two
+  differently *on purpose* (absence is legal only pre-v2; an explicit null
+  is a distinct, format-version-gated shape), so folding it here would be
+  the opposite of correct.
+  `TestTipScalarsCollapseNullAndAbsentIdentically`/
+  `TestEpochNullVsAbsentStillDivergesOnTheGoSide` (`go/encoding_test.go`)
+  and
+  `test_tip_scalars_fold_to_identical_canonical_bytes_null_vs_absent`/
+  `test_a_signature_over_absent_tip_scalars_still_verifies_when_mutated_to_explicit_null`/
+  `test_epoch_null_vs_absent_still_diverges_in_canonical_bytes`/
+  `test_mixed_null_and_string_stream_id_tips_canonicalize_without_crashing`
+  (`py/test_validate.py`) assert all of this
+  ([#40](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/40)).
+  A `stream_id`/`tip_hash` carrying the WRONG TYPE entirely (not null, an
+  int or other non-string) is a related but distinct gap — neither field has
+  a type-gate at all, unlike `entry_count`/`sequence_number` — tracked
+  separately as
+  [#45](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/45).
 
 - **The version-1-carrying-`epoch` direction.** A version-2 tip missing
   `epoch` is published as a vector (`missing_epoch_in_v2`); the mirror-image
