@@ -13,10 +13,13 @@ breaking the chain. What it cannot do is attest to an **absence**. Nothing insid
 a stream can tell you that the stream was truncated at the tail, or that a whole
 stream stopped arriving and was never seen at all.
 
-A checkpoint is a small signed object that periodically commits the tips of every
-active stream, chained to the previous checkpoint. Truncation and disappearance
-become detectable, because a tip a checkpoint has committed cannot be edited
-without re-signing it.
+A checkpoint is a small signed object, chained to the previous checkpoint, that
+periodically commits the tips of the streams sealed since then — a delta, not
+a snapshot of every currently active stream. Truncation of an already-committed
+tip becomes detectable, because it cannot be edited without re-signing the
+checkpoint. A stream that stops arriving before any checkpoint ever commits it
+stays undetectable: the same absence gap described above, which a checkpoint
+closes only for streams it has actually attested to.
 
 Field names below are **placeholders** aligned to the sketch; they map to
 whatever the OTEP settles on. The point of this repo is to show the shape is
