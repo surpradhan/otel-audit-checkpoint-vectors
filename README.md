@@ -299,7 +299,7 @@ reason in its `expect` field is **advisory for third parties**.
 `expect` records the reason *this repo's* reference validators give, under
 their check order — encoding (only for a vector carrying `input_raw_hex`,
 before it is even parsed into a checkpoint), schema, canonical, signature,
-Tier B, chain — and the
+Tier B, chain, genesis — and the
 generator asserts that at `gen` time, so a vector whose `expect` is wrong
 cannot be published. A conformant validator need not share that order, and a
 vector that fails more than one check may be named differently by one that
@@ -316,7 +316,25 @@ label.**
   be edited without re-signing, and the signing key is not the operator's to use
   freely on honest infrastructure.
 - `broken_chain` — a valid, correctly signed checkpoint whose `prev_hash` does not
-  equal the previous checkpoint's hash. Rejected: chain.
+  equal the previous checkpoint's hash. Rejected: chain. Same `seq: 1`,
+  non-genesis-`prev_hash` shape as `genesis_wrong_prev_hash` below, but reaches
+  a different check: this vector sets `prev_sha256` to the genesis hash, so it
+  is caught by the mismatch against that specific expected value before A6
+  (below) ever runs.
+- `genesis_wrong_seq` — `prev_hash` is the genesis constant, `sha256("")`,
+  claiming to be the first checkpoint of the chain, but `seq` is 2, not 1.
+  Rejected: genesis. The direction of the rule no other vector covers: every
+  genesis-hash-carrying checkpoint elsewhere in the suite already has `seq: 1`.
+- `genesis_wrong_prev_hash` — `seq` is 1, claiming to be the first checkpoint
+  of the chain, but `prev_hash` is not the genesis constant. Rejected: genesis.
+  Carries no `prev_sha256`, unlike `broken_chain` above — the only thing that
+  can catch it is the intrinsic rule itself, checked with no chain context.
+- `chain_prefix_wrong_genesis` — the same malformation as `genesis_wrong_seq`,
+  but on a `chain` *prefix* rather than the vector's own input; the input
+  above it is ordinary and correctly linked. Rejected: genesis. Pins that the
+  rule is checked on every prefix a validator examines, not only the final
+  checkpoint — the same position-generic standard `chain_prefix_missing_epoch`
+  holds the epoch-presence rule to.
 - `duplicate_tip_identity` — two tips share a `(stream_id, epoch)` identity, so the
   canonical bytes would depend on input order. Rejected: canonical, before any
   signature check.
@@ -775,7 +793,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 17 positive (13 through Tier B) + 31 negative
+checked: 17 positive (13 through Tier B) + 34 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.

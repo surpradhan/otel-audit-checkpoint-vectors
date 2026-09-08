@@ -139,10 +139,33 @@ first.
 | A3 | No duplicate `(stream_id, epoch)` within a checkpoint | **add** |
 | A4 | Ill-formed Unicode rejected, as an explicit pre-parse step on raw bytes | **add** |
 | A5 | Integers within I-JSON range: `2^53−1` accepted, `2^53` rejected | **add** |
+| A6 | `seq == 1` iff `prev_hash` is the genesis constant, `sha256("")` | **add** |
 
 A5 is RFC 7493 §2.2's stated range, not an IEEE representability limit —
 `2^53` is exactly representable; `2^53+1` is the first that is not. Cite I-JSON,
 not JCS, if challenged.
+
+A6 is stateless despite reading like a chain-continuity rule: it is checked
+against one checkpoint's own two fields, with no reference to any other
+checkpoint, so it holds regardless of whether a validator has ever seen this
+chain's true genesis. `seq` is a single counter for the whole audit trail (B1:
+it increments by exactly 1 at every transition of the assembled chain), so
+`seq == 1` is only ever a claim to *be* the genesis checkpoint — never a claim
+about position within whatever chain window a validator happens to have been
+handed. `mid_chain_window_no_genesis` (`seq: 400`, a non-genesis `prev_hash`)
+already pins that the suite's other rules are checked against the absolute
+value, not a checkpoint's index in the `chain` array; A6 makes that
+distinction load-bearing rather than incidental. Checked on every checkpoint a
+validator examines — a vector's own input and every chain prefix alike — the
+same way A1–A5 are.
+
+A6 does not subsume the existing `prev_sha256` chain-linkage check (README's
+negative-vector list), and is deliberately checked after it: a checkpoint can
+satisfy A6 in isolation (`seq: 1`, a genesis `prev_hash`) while still lying
+about which specific checkpoint precedes it, which only linkage against a
+known predecessor catches — the reverse also holds, a `seq`/`prev_hash` pair
+consistent with *some* real predecessor while failing A6 outright. The two
+rules are independent and both apply.
 
 ### Tier B — cross-checkpoint, single chain, single verifier
 
@@ -206,15 +229,16 @@ pair and every warning-list index in turn. Because rules cannot fix a harness
 that skips entries, both validators additionally count what they actually
 reached and fail if it disagrees with an independent pre-pass over the suite.
 
-Not pinned, and worth stating rather than leaving implicit: every chain in the
-suite starts at `seq: 1`, so a validator that compares `seq` against its
-position in the `chain` array rather than its absolute value is
-indistinguishable from a correct one on every vector here; no zero-tip
+Not pinned, and worth stating rather than leaving implicit: no published
+vector distinguishes `stream_id` ordering by code point from ordering by
+length-then-code-point — `stream_id_prefix_pair`'s differing-length pair
+("abc"/"abc-1") does not separate them, because one is a prefix of the other
+and prefix pairs order the same way under both schemes; only a dedicated unit
+test in each reference (not a vector) pins the discriminating case (README's
+"Rules hold at every position"); no zero-tip
 checkpoint appears as a `chain` prefix (`genesis_empty_tips` supplies one only
-as a vector's own input); every `stream_id` in the suite is a 36-character
-UUID, so no vector compares two of different lengths and a validator that sorts
-by length before code point is indistinguishable from a correct one here; and
-an unknown member on a checkpoint, a tip, a chain prefix or a prefix wrapper is
+as a vector's own input); and an unknown member on a checkpoint, a tip, a
+chain prefix or a prefix wrapper is
 rejected by both references — each by an explicit member-set rule, Go's decoder
 and Python's declared sets — and both refuse the whole file rather than
 reporting a per-vector verdict, so no vector can express it; the same is true
