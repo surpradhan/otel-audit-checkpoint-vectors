@@ -1,15 +1,15 @@
 {
-  "description": "Shared fixture for the Go and Python future-format skip tests (go/version_test.go, py/test_validate.py). Both tests append these two entries to the committed suite, raise format_version, and require the entries to be SKIPPED rather than rejected -- which is what the MUST-skip rule promises: a new vector shape can be added without breaking an existing validator. Each entry deliberately carries members no current build has a field or a member set for (`tier`, `attestation`, `provenance`, `witness`) and an `expect` token no current build knows, so a validator that strict-decodes before deciding to skip fails the whole file. The same tests re-run both entries at min_format_version 2, where they must be rejected AS unknown members: without that control the skip assertion would pass even if these members were not actually unknown.",
-  "format_version": 3,
+  "description": "Shared fixture for the Go and Python future-format skip tests (go/version_test.go, py/test_validate.py). Both tests append these two entries to the committed suite, raise format_version, and require the entries to be SKIPPED rather than rejected -- which is what the MUST-skip rule promises: a new vector shape can be added without breaking an existing validator. Each entry deliberately carries members no current build has a field or a member set for (`tier`, `attestation`, `provenance`, `witness`) and an `expect` token no current build knows, so a validator that strict-decodes before deciding to skip fails the whole file. This file's own format_version is read directly and must exceed whatever supportedFormatVersion is at the time (checked by loadFutureFormatFixture / its Python mirror); the min_format_version values nested inside `vector`/`negative` below are cosmetic only -- the test code overwrites both with whichever version it's exercising for that run (futureFormatSuite / its Python mirror). The same tests re-run both entries at supportedFormatVersion (the currently-supported version, whatever it is), where they must be rejected AS unknown members: without that control the skip assertion would pass even if these members were not actually unknown.",
+  "format_version": 4,
   "vector": {
     "name": "future_format_vector",
-    "min_format_version": 3,
+    "min_format_version": 4,
     "tier": "c",
     "input": {
       "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "seq": 1,
       "timestamp": "2027-01-01T00:00:00Z",
-      "attestation": "a v3 member on a checkpoint",
+      "attestation": "a v4 member on a checkpoint",
       "tips": [
         {
           "entry_count": 1,
@@ -17,7 +17,7 @@
           "sequence_number": 1,
           "stream_id": "00000001-0000-4000-8000-000000000001",
           "tip_hash": "ff",
-          "provenance": "a v3 member on a tip"
+          "provenance": "a v4 member on a tip"
         }
       ]
     },
@@ -27,14 +27,14 @@
   },
   "negative": {
     "name": "future_format_negative",
-    "min_format_version": 3,
+    "min_format_version": 4,
     "expect": "attestation",
-    "reason": "a v3 rejection reason no current build has a name for",
+    "reason": "a v4 rejection reason no current build has a name for",
     "input": {
       "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "seq": 2,
       "timestamp": "2027-01-01T00:00:10Z",
-      "attestation": "a v3 member on a checkpoint",
+      "attestation": "a v4 member on a checkpoint",
       "tips": [
         {
           "entry_count": 2,
@@ -42,7 +42,7 @@
           "sequence_number": 2,
           "stream_id": "00000002-0000-4000-8000-000000000002",
           "tip_hash": "ee",
-          "provenance": "a v3 member on a tip"
+          "provenance": "a v4 member on a tip"
         }
       ]
     },
@@ -56,7 +56,7 @@
           "tips": []
         },
         "signature": "",
-        "witness": "a v3 member on a signed chain prefix wrapper"
+        "witness": "a v4 member on a signed chain prefix wrapper"
       }
     ]
   }

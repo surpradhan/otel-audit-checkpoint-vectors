@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "description": "Conformance vectors for the audit-checkpoint canonical form (RFC 8785 JCS + SHA-256 chain + Ed25519). TEST KEY ONLY.",
   "algorithm": "ed25519",
   "signing_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -697,6 +697,20 @@
         "B4:c2000000-0000-4000-8000-000000000002"
       ],
       "min_format_version": 2
+    },
+    {
+      "name": "valid_surrogate_pair",
+      "input": {
+        "prev_hash": "",
+        "seq": 0,
+        "timestamp": "",
+        "tips": null
+      },
+      "input_raw_hex": "7b22707265765f68617368223a2238643032373737303765313266383765383232363432383165333065356138616262363336313730633031653064656230323035643037663631663832666263222c22736571223a332c2274696d657374616d70223a22323032362d31322d30315430303a30303a31305a222c2274697073223a5b7b22656e7472795f636f756e74223a312c2265706f6368223a302c2273657175656e63655f6e756d626572223a312c2273747265616d5f6964223a225c75643833645c7564653030222c227469705f68617368223a2261343030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030227d5d7d",
+      "canonical": "{\"prev_hash\":\"8d0277707e12f87e82264281e30e5a8abb636170c01e0deb0205d07f61f82fbc\",\"seq\":3,\"timestamp\":\"2026-12-01T00:00:10Z\",\"tips\":[{\"entry_count\":1,\"epoch\":0,\"sequence_number\":1,\"stream_id\":\"😀\",\"tip_hash\":\"a400000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "1d878f2165972ee8e94a082695a49587d30e99955ba7083767aea9e29254780a",
+      "signature": "XXTl9qaLdRY+w/qeyZ5deQADoegg2d5CeCGDz7X54uMHv67FikvmJHznk470dLDNuQToGANtLobOecdYSzUZBw==",
+      "min_format_version": 3
     }
   ],
   "negatives": [
@@ -2049,6 +2063,34 @@
       },
       "signature": "ns/mbRqRq60t8sG31ucC5rEbuLN7/JFLVxU27xbDadSK1BmEfX2KYpYukBDTaMZ8AEhnQ+whZOWKbTZxtc8yDQ==",
       "min_format_version": 2
+    },
+    {
+      "name": "ill_formed_utf8_bytes",
+      "expect": "encoding",
+      "reason": "the raw bytes contain 0xFF, which is not valid UTF-8 in any position. A typed Checkpoint cannot express this at all -- json.Unmarshal/json.loads would already have to succeed to populate one -- so it can only be published as input_raw_hex. Caught by an explicit byte-level validity check before any JSON parsing is attempted",
+      "input": {
+        "prev_hash": "",
+        "seq": 0,
+        "timestamp": "",
+        "tips": null
+      },
+      "input_raw_hex": "7b22707265765f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c22736571223a312c2274696d657374616d70223a22323032362d31322d30315430303a30303a30305a222c2274697073223a5b7b22656e7472795f636f756e74223a312c2265706f6368223a302c2273657175656e63655f6e756d626572223a312c2273747265616d5f6964223a22ff222c227469705f68617368223a2261343030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030227d5d7d",
+      "signature": "",
+      "min_format_version": 3
+    },
+    {
+      "name": "lone_surrogate_escape",
+      "expect": "encoding",
+      "reason": "the tip's stream_id carries the escape \\ud800: a high surrogate with no low surrogate immediately after it, so it does not correspond to any single Unicode scalar value. The bytes are otherwise valid UTF-8 and valid JSON syntax -- only the raw-text surrogate scan catches this, before the escape is ever decoded into whatever each language's JSON parser turns an unpaired surrogate into",
+      "input": {
+        "prev_hash": "",
+        "seq": 0,
+        "timestamp": "",
+        "tips": null
+      },
+      "input_raw_hex": "7b22707265765f68617368223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c22736571223a322c2274696d657374616d70223a22323032362d31322d30315430303a30303a30355a222c2274697073223a5b7b22656e7472795f636f756e74223a312c2265706f6368223a302c2273657175656e63655f6e756d626572223a312c2273747265616d5f6964223a225c7564383030222c227469705f68617368223a2261343030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030227d5d7d",
+      "signature": "",
+      "min_format_version": 3
     }
   ]
 }

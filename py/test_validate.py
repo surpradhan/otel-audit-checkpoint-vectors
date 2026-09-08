@@ -2273,6 +2273,127 @@ def test_wrong_typed_negative_body_fields_ignored_when_the_entry_is_skipped():
             f"rejected, but not with the expected diagnosis:\n{output}")
 
 
+# --- A4: raw-byte encoding checks (issue #26) -------------------------------
+#
+# check_encoding's own tests pin the two properties spec §7 calls out by
+# name: an escaped backslash followed by literal "u..." text is not a \u
+# escape at all, and the four hex digits after a real \u escape are
+# case-insensitive, the same way int(x, 16) already treats them. Every
+# literal escape sequence below is written with an r"..." raw string, not an
+# ordinary string: an ordinary Python string literal would decode \ud800
+# itself at parse time (and fail outright, since a lone surrogate is not a
+# valid Python str character on its own) rather than leaving the six literal
+# ASCII characters `\`, `u`, `d`, `8`, `0`, `0` for check_encoding to scan --
+# exactly the raw-bytes-before-parsing distinction A4 exists to test.
+# Mirrors go/a4_test.go's TestCheckEncoding* functions.
+
+def test_check_encoding_accepts_ordinary_text():
+    assert validate.check_encoding(b'{"stream_id":"plain ascii, no escapes"}') == ""
+
+
+def test_check_encoding_rejects_invalid_utf8():
+    raw = b'{"stream_id":"' + b'\xff' + b'"}'
+    assert validate.check_encoding(raw) == "encoding"
+
+
+def test_check_encoding_rejects_lone_high_surrogate():
+    # \ud800 with nothing pairing it: no following escape at all.
+    assert validate.check_encoding(r'{"stream_id":"\ud800"}'.encode()) == "encoding"
+    # \ud800 followed by an ordinary (non-surrogate) escape, not a low surrogate.
+    assert validate.check_encoding(r'{"stream_id":"\ud800A"}'.encode()) == "encoding"
+    # \ud800 followed by another HIGH surrogate, not a low one: still not a pair.
+    assert validate.check_encoding(r'{"stream_id":"\ud800\ud801"}'.encode()) == "encoding"
+
+
+def test_check_encoding_rejects_lone_low_surrogate():
+    # \udc00 with nothing preceding it to pair with -- the scan only ever
+    # consumes a low surrogate as part of a pair started by a high one, so
+    # reaching one on its own means nothing claimed it.
+    assert validate.check_encoding(r'{"stream_id":"\udc00"}'.encode()) == "encoding"
+
+
+def test_check_encoding_accepts_valid_surrogate_pair():
+    # 😀 is U+1F600 (😀) correctly encoded as a high/low pair.
+    assert validate.check_encoding(r'{"stream_id":"\ud83d\ude00"}'.encode()) == ""
+
+
+def test_check_encoding_accepts_ordinary_escape():
+    # A is 'A', nowhere near the surrogate range -- must not be treated
+    # as one just because it starts with \u.
+    assert validate.check_encoding(r'{"stream_id":"A"}'.encode()) == ""
+
+
+def test_check_encoding_distinguishes_escaped_backslash_from_real_escape():
+    """Pins spec §7's own example: "an escaped backslash followed by ud800
+    is not an escape." Raw text `\\\\ud800` is an escaped backslash (one
+    literal `\\`) followed by the five plain characters `u`, `d`, `8`, `0`,
+    `0` -- NOT a `\\u` escape, because the backslash that would have started
+    it was already consumed pairing with the one before it. A scanner that
+    merely searched for the substring "\\u" without tracking escape pairing
+    would misfire on this and reject text that is not a surrogate escape at
+    all."""
+    # Raw text: "\\ud800" -- an escaped backslash, then literal "ud800".
+    assert validate.check_encoding(r'{"stream_id":"\\ud800"}'.encode()) == ""
+    # Contrast: one MORE backslash and it IS a real escape again -- three
+    # backslashes is an escaped backslash followed by the start of a real
+    # \u escape, which must still be caught as a lone surrogate.
+    assert validate.check_encoding(r'{"stream_id":"\\\ud800"}'.encode()) == "encoding"
+
+
+def test_check_encoding_is_case_insensitive_for_surrogate_hex_digits():
+    """Pins spec §7's "case variants": \\uD800 (uppercase hex digits) is the
+    same surrogate as \\ud800, and a validator that only matched the
+    lowercase form would miss it."""
+    assert validate.check_encoding(r'{"stream_id":"\uD800"}'.encode()) == "encoding"
+    assert validate.check_encoding(r'{"stream_id":"\uDC00"}'.encode()) == "encoding"
+    # A valid pair in uppercase, and one mixed-case, must both still be accepted.
+    assert validate.check_encoding(r'{"stream_id":"\uD83D\uDE00"}'.encode()) == ""
+    assert validate.check_encoding(r'{"stream_id":"\uD83d\udE00"}'.encode()) == ""
+
+
+def test_check_encoding_rejects_truncated_escape():
+    for raw in (
+        '{"stream_id":"' + "\\",      # backslash with nothing after it
+        r'{"stream_id":"\u12',        # \u with fewer than 4 hex digits before EOF
+        r'{"stream_id":"\uZZZZ"}',    # \u followed by non-hex characters
+    ):
+        assert validate.check_encoding(raw.encode()) == "encoding", raw
+
+
+# resolve_input is what actually wires check_encoding into the pipeline;
+# these tests exercise it directly rather than only through a published
+# vector.
+
+def test_resolve_input_passes_through_when_no_raw_hex():
+    cp = _cp(1, "2026-01-01T00:00:00Z", [])
+    got, reason = validate.resolve_input(cp, "")
+    assert reason == ""
+    assert got is cp
+
+
+def test_resolve_input_rejects_invalid_hex():
+    _, reason = validate.resolve_input({}, "not valid hex!!")
+    assert reason == "schema"
+
+
+def test_resolve_input_rejects_encoding_failure_before_parsing():
+    raw = (r'{"prev_hash":"' + validate.hashlib.sha256(b"").hexdigest() +
+           r'","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":['
+           r'{"entry_count":1,"epoch":0,"sequence_number":1,'
+           r'"stream_id":"\ud800","tip_hash":"aa"}]}').encode()
+    _, reason = validate.resolve_input({}, raw.hex())
+    assert reason == "encoding"
+
+
+def test_resolve_input_parses_valid_raw_hex():
+    raw = ('{"prev_hash":"' + validate.hashlib.sha256(b"").hexdigest() +
+           '","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":[]}').encode()
+    got, reason = validate.resolve_input({}, raw.hex())
+    assert reason == ""
+    assert got["seq"] == 1
+    assert got["prev_hash"] == validate.hashlib.sha256(b"").hexdigest()
+
+
 def main():
     # Derived from the module, not hand-maintained. A list written out by hand
     # silently stops running any test nobody remembers to add to it -- a test
