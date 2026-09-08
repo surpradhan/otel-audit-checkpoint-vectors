@@ -1152,7 +1152,8 @@ def test_malformed_chain_entry_rejects_cleanly():
     later. Go decodes each of these into zero values and returns a verdict, so
     every case here must too. Mirrors TestMalformedChainEntryRejectsCleanly."""
     pub = _pub()
-    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")],
+             prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     cases = {
         # No "input" at all, and an explicitly null one, both read as a zero
         # checkpoint, whose absent tips are a schema failure ahead of the
@@ -1299,7 +1300,8 @@ def test_stray_character_signature_is_not_repaired():
     third-party input. Mirrors TestStrayCharacterSignatureIsNotRepaired."""
     import base64 as _b64
     pub, priv = _pub(), _priv()
-    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")],
+             prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     good = _b64.b64encode(priv.sign(validate.canonical(cp))).decode()
 
     # The premise: the underlying signature is genuinely valid, so the only
@@ -2089,7 +2091,8 @@ def test_accepted_vector_with_missing_or_null_name_reports_cleanly():
     the skip line does, and is reached only after every real check on the
     vector's data already passed -- so a missing/null name here is purely a
     reporting-path defect, not a validation one."""
-    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")],
+             prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     v = _positive(cp)
     for label, mutate in (("missing", lambda e: e.pop("name", None)),
                           ("null", lambda e: e.__setitem__("name", None))):
@@ -2180,7 +2183,8 @@ def test_chain_or_expect_warnings_wrong_type_rejects_cleanly():
     never runs it. Explicitly null must still pass through untouched (Go's
     nil slice, legal), so this also checks the negative: null is not rejected
     here, only a present non-list value is."""
-    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")],
+             prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     v = _positive(cp)
     for field in ("chain", "expect_warnings"):
         for bad in (5, "not-a-list", {"a": 1}):
@@ -2243,7 +2247,8 @@ def test_wrong_typed_name_rejects_the_whole_file():
     vector or must-reject negative -- fails the whole suite before a single
     report line is printed, not a per-entry mismatch and not a silently
     accepted entry with a stringified name in its "ok" line."""
-    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")],
+             prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     bad_names = ([1, 2], {"a": 1}, 42, 1.0, True, False)
 
     for bad in bad_names:
@@ -2328,7 +2333,8 @@ def test_wrong_typed_envelope_strings_reject_the_whole_file():
     the whole suite before a single report line is printed. A real,
     otherwise-valid vector is present so this is actually exercised, not
     true merely because there was nothing to report."""
-    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    cp = _cp(1, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")],
+             prev="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     v = _positive(cp)
     bad_values = ([1, 2], {"a": 1}, 42, 1.0, True, False)
 
@@ -2622,6 +2628,43 @@ def test_resolve_input_parses_valid_raw_hex():
     assert reason == ""
     assert got["seq"] == 1
     assert got["prev_hash"] == validate.hashlib.sha256(b"").hexdigest()
+
+
+# --- check_genesis (A6): seq == 1 iff prev_hash is the genesis constant.
+# These exercise it directly, including the two ACCEPT cases the published
+# vectors don't demonstrate on their own -- every negative vector pins one
+# violating direction, but neither pins that the two ordinary, non-violating
+# shapes are still accepted. Mirrors go/genesis_test.go.
+
+def test_check_genesis_accepts_the_genesis_checkpoint():
+    cp = {"prev_hash": validate._GENESIS_HASH, "seq": 1}
+    assert validate.check_genesis(cp) == ""
+
+
+def test_check_genesis_accepts_an_ordinary_non_genesis_checkpoint():
+    cp = {"prev_hash": validate._GENESIS_HASH[:63] + "1", "seq": 400}
+    assert validate.check_genesis(cp) == ""
+
+
+def test_check_genesis_rejects_genesis_hash_with_wrong_seq():
+    cp = {"prev_hash": validate._GENESIS_HASH, "seq": 2}
+    assert validate.check_genesis(cp) != ""
+
+
+def test_check_genesis_rejects_seq_one_with_wrong_hash():
+    cp = {"prev_hash": validate._GENESIS_HASH[:63] + "1", "seq": 1}
+    assert validate.check_genesis(cp) != ""
+
+
+def test_check_genesis_does_not_fire_on_absent_seq():
+    """An absent `seq` reads as Go's zero value (0) via `.get("seq")`
+    returning None; None must not be treated as satisfying "seq == 1" any
+    more than Go's 0 does."""
+    cp = {"prev_hash": validate._GENESIS_HASH[:63] + "1"}
+    assert validate.check_genesis(cp) == ""
+    cp = {"prev_hash": validate._GENESIS_HASH}
+    assert validate.check_genesis(cp) != "", \
+        "seq absent with the genesis prev_hash was accepted -- None must not be treated as seq 1"
 
 
 def main():

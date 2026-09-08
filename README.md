@@ -299,7 +299,7 @@ reason in its `expect` field is **advisory for third parties**.
 `expect` records the reason *this repo's* reference validators give, under
 their check order — encoding (only for a vector carrying `input_raw_hex`,
 before it is even parsed into a checkpoint), schema, canonical, signature,
-Tier B, chain — and the
+Tier B, chain, genesis — and the
 generator asserts that at `gen` time, so a vector whose `expect` is wrong
 cannot be published. A conformant validator need not share that order, and a
 vector that fails more than one check may be named differently by one that
@@ -316,7 +316,25 @@ label.**
   be edited without re-signing, and the signing key is not the operator's to use
   freely on honest infrastructure.
 - `broken_chain` — a valid, correctly signed checkpoint whose `prev_hash` does not
-  equal the previous checkpoint's hash. Rejected: chain.
+  equal the previous checkpoint's hash. Rejected: chain. Same `seq: 1`,
+  non-genesis-`prev_hash` shape as `genesis_wrong_prev_hash` below, but reaches
+  a different check: this vector sets `prev_sha256` to the genesis hash, so it
+  is caught by the mismatch against that specific expected value before A6
+  (below) ever runs.
+- `genesis_wrong_seq` — `prev_hash` is the genesis constant, `sha256("")`,
+  claiming to be the first checkpoint of the chain, but `seq` is 2, not 1.
+  Rejected: genesis. The direction of the rule no other vector covers: every
+  genesis-hash-carrying checkpoint elsewhere in the suite already has `seq: 1`.
+- `genesis_wrong_prev_hash` — `seq` is 1, claiming to be the first checkpoint
+  of the chain, but `prev_hash` is not the genesis constant. Rejected: genesis.
+  Carries no `prev_sha256`, unlike `broken_chain` above — the only thing that
+  can catch it is the intrinsic rule itself, checked with no chain context.
+- `chain_prefix_wrong_genesis` — the same malformation as `genesis_wrong_seq`,
+  but on a `chain` *prefix* rather than the vector's own input; the input
+  above it is ordinary and correctly linked. Rejected: genesis. Pins that the
+  rule is checked on every prefix a validator examines, not only the final
+  checkpoint — the same position-generic standard `chain_prefix_missing_epoch`
+  holds the epoch-presence rule to.
 - `duplicate_tip_identity` — two tips share a `(stream_id, epoch)` identity, so the
   canonical bytes would depend on input order. Rejected: canonical, before any
   signature check.
@@ -624,14 +642,17 @@ walk on the checkpoint itself.
 
 **Not pinned**, stated plainly rather than left to be discovered:
 
-- **`stream_id` ordering by code point vs. by length.** Every `stream_id` in
-  the suite is a 36-character UUID, so no published vector ever compares two
-  of different lengths. A validator that sorts by length first and only then
-  lexicographically reproduces every vector here exactly, and disagrees on the
-  signed bytes the moment a real deployment uses ids of mixed length — `"aa"`
-  precedes `"b"` under the published rule and follows it under that one. The
-  `a`/`a<NUL>` case does not separate them either: those two stand in a prefix
-  relationship, and prefix pairs order the same way under both.
+- **`stream_id` ordering by code point vs. by length.** No published vector
+  distinguishes the two: `stream_id_prefix_pair`'s differing-length pair
+  (`"abc"`/`"abc-1"`) does not separate them, because one is a prefix of the
+  other and prefix pairs order the same way under both schemes — the shorter
+  string sorts first either way. A validator that sorts by length first and
+  only then lexicographically reproduces every vector here exactly, and
+  disagrees on the signed bytes the moment a real deployment uses ids of mixed
+  length that are *not* in a prefix relationship — `"aa"` precedes `"b"` under
+  the published rule and follows it under that one. The `a`/`a<NUL>` case does
+  not separate them either, for the identical reason: those two also stand in
+  a prefix relationship.
   `TestStreamIDSortsByCodePointNotLength` (`go/encoding_test.go`) and
   `test_stream_id_sorts_by_code_point_not_length` (`py/test_validate.py`)
   assert the discriminating pair in both references instead, over the same
@@ -775,7 +796,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 17 positive (13 through Tier B) + 31 negative
+checked: 17 positive (13 through Tier B) + 34 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.
