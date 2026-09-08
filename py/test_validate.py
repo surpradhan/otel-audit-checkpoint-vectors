@@ -26,6 +26,7 @@ a temp path.
     python3 py/test_validate.py
 """
 import copy
+import hashlib
 import io
 import json
 import os
@@ -331,11 +332,103 @@ def test_epoch_presence_boundary():
 
 def test_version1_tip_omits_epoch():
     """A version-1 tip carries no epoch key, and canonicalizing must not add
-    one. This is what keeps the six frozen vectors byte-identical."""
+    one. This is what keeps the seven frozen vectors byte-identical."""
     cp = _cp(1, "2026-01-01T00:00:00Z", [
         {"entry_count": 1, "sequence_number": 1, "stream_id": "s1", "tip_hash": "aa"}])
     cb = validate.canonical(cp)
     assert b"epoch" not in cb, f"version-1 canonical bytes must not contain an epoch key: {cb!r}"
+
+
+def _freeze_key(cp: dict, signature: str, prev_sha256: str = "") -> bytes:
+    """The byte string _V1_FREEZE's hashes are taken over: an explicit,
+    hand-ordered concatenation of a checkpoint's own scalar fields plus its
+    signature and (for a negative that carries one) prev_sha256,
+    NUL-separated. Does not call validate.canonical(): that function
+    deliberately raises on duplicate_tip_identity, one of the seven vectors
+    this pins, and even where it succeeds, using it here would conflate two
+    different failure classes -- "the frozen input changed" and "the shared
+    canonicalization logic changed" -- this repo's other tests already cover
+    separately. `.get(key, default)` throughout, not a bare subscript: these
+    seven entries are always well-formed, but reading them the same
+    defensive way the rest of this file reads third-party input costs
+    nothing and stays consistent. Tips are walked in the order they appear
+    in `input`, not sorted, since the point is to detect ANY change to what
+    genFrozenV1 produced, including one that changed only their order.
+    Mirrors Go's freezeKey byte for byte."""
+    parts = [cp.get("prev_hash", ""), str(cp.get("seq", 0)), cp.get("timestamp", "")]
+    for t in (cp.get("tips") or []):
+        ep = t.get("epoch")
+        parts.append(t.get("stream_id", ""))
+        parts.append("" if ep is None else str(ep))
+        parts.append(str(t.get("sequence_number", 0)))
+        parts.append(str(t.get("entry_count", 0)))
+        parts.append(t.get("tip_hash", ""))
+    parts.append(signature)
+    parts.append(prev_sha256)
+    return b"\x00".join(p.encode("utf-8") for p in parts)
+
+
+# Pins the seven format_version-1 entries genFrozenV1/gen_frozen_v1 produce,
+# keyed by name, against sha256(_freeze_key(...)) computed once from the
+# committed vectors.json when this test was added. CI's existing no-drift
+# check only ever compares `gen`'s output against ITSELF, so it cannot catch
+# a genFrozenV1 edit that changes what these entries contain: a normal regen
+# after such an edit is internally self-consistent and passes every other
+# gate (no-drift, both validators, both test suites) unchanged. This is the
+# independent baseline that catches it. A failure here means STOP, not
+# regenerate -- per CONTRIBUTING's vector-stability discipline, a change to a
+# published vector's canonical bytes, hash or signature is breaking and
+# requires superseding under a version marker, never a silent update to this
+# dict. Mirrors Go's v1FreezeKeys.
+_V1_FREEZE = {
+    "genesis_empty_tips": "0bb3f2c250debdb9c56cf60f5202cae3f5914fec129f916eabaf25ed447d59f5",
+    "single_tip": "0ad96391b112a968c47a8a300e6e152e2af9ba280faedf50bd5b732472f92784",
+    "multi_tip_unsorted_input": "37119009365ff5b0286ee2db5d6ae51d4fd7d774176236446c7ed7e74ee304b8",
+    "tampered_signature": "f4e76bc9b72c8acc951522dfdf9bfeac9c8e0204b71dc8fe7a36e59878db8b14",
+    "truncation_rewrites_committed_tip": "c56203cab8d5054e74cf8ba24105cd5b3b887163d10bdcc57510f549a0e47396",
+    "broken_chain": "33c0d43f179bd1462cb46a5f15462dd713071c0b9912508b9d88a53383445e04",
+    "duplicate_tip_identity": "d3cdff059ba1e3a124daaad05de680b3e239c7f3bef416b270b0012fafa7b937",
+}
+
+
+def test_v1_vectors_match_frozen_snapshot():
+    """The machine-checked gate named in issue #31 / PR #4's own backlog: a
+    deliberate or accidental edit to genFrozenV1 must fail SOMETHING, even
+    though it fails neither the no-drift check nor either validator. Reads
+    the actually-committed vectors.json (not the generator's live output) so
+    it also catches a hand-edit that happens to leave the file
+    self-consistent enough to pass everything else. Mirrors Go's
+    TestV1VectorsMatchFrozenSnapshot."""
+    suite = _load_real_suite()
+    found = set()
+
+    def check(name, cp, signature, prev_sha256=""):
+        found.add(name)
+        want = _V1_FREEZE.get(name)
+        assert want is not None, (
+            f"{name}: not one of the pinned v1 vectors; if this is a genuinely new "
+            "format_version-1 entry, add it to _V1_FREEZE (and Go's v1FreezeKeys) "
+            "rather than leaving it unpinned")
+        got = hashlib.sha256(_freeze_key(cp, signature, prev_sha256)).hexdigest()
+        assert got == want, (
+            f"{name}: frozen v1 vector's checkpoint/signature/prev_sha256 no longer "
+            f"matches the pinned snapshot (got {got}, want {want}) -- this is exactly "
+            "the CONTRIBUTING vector-stability violation this test exists to catch; "
+            "do not update _V1_FREEZE to make this pass unless the change is a "
+            "deliberately documented breaking change under a new version marker")
+
+    for v in suite.get("vectors") or []:
+        if v.get("min_format_version", 0) <= 1:
+            check(v["name"], v.get("input") or {}, v.get("signature", ""))
+    for nv in suite.get("negatives") or []:
+        if nv.get("min_format_version", 0) <= 1:
+            check(nv["name"], nv.get("input") or {}, nv.get("signature", ""),
+                  nv.get("prev_sha256", ""))
+
+    missing = set(_V1_FREEZE) - found
+    assert not missing, (
+        f"pinned in _V1_FREEZE but no longer present in vectors.json at "
+        f"format_version 1 -- a frozen vector must not be silently removed: {missing}")
 
 
 # --- Round-1 review fixes -------------------------------------------------
