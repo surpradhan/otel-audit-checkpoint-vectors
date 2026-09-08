@@ -1097,6 +1097,115 @@ func TestNullEpochMarshalPathDropsNoField(t *testing.T) {
 	}
 }
 
+// TestTipScalarsCollapseNullAndAbsentIdentically pins the Go-side half of
+// #40: entry_count, sequence_number, stream_id and tip_hash are plain
+// non-pointer fields on Tip, so a present `null` and an absent key decode to
+// the identical zero value and canonicalize to identical bytes -- no
+// EpochNull-style tracking exists for any of the four. py/validate.py's
+// canonical() used to serialize each tip's raw dict untouched, with no such
+// folding, so it produced GENUINELY DIFFERENT bytes for the two -- fixed on
+// the Python side (tip_entry_count/tip_sequence_number/tip_stream_id/
+// tip_tip_hash). This test locks in the Go behavior the Python fix exists to
+// match, so a future change to Tip (a pointer field, a custom decoder) that
+// silently breaks this parity fails here, not only as a cross-implementation
+// surprise discovered later.
+func TestTipScalarsCollapseNullAndAbsentIdentically(t *testing.T) {
+	const genesis = `"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"`
+	// Each of the four fields' ordinary values, keyed by name so the loop
+	// below can build a tip body carrying every field EXCEPT the one under
+	// test -- never all four unconditionally. An earlier version of this
+	// test spliced a `"<field>":null` PREFIX in front of a fixed suffix that
+	// unconditionally listed all four fields' real values, so the field
+	// under test appeared TWICE in the JSON object (once null, once real).
+	// encoding/json resolves a duplicate object key last-value-wins, so the
+	// injected null was silently discarded before decode ever saw it --
+	// confirmed directly with a standalone probe
+	// (`{"entry_count":null,"entry_count":1}` decodes to EntryCount==1, not
+	// 0) -- making withNull and absent decode to the IDENTICAL struct for
+	// every field, and this test compared a document to itself. Building
+	// `rest` without the field under test makes a duplicate key structurally
+	// impossible.
+	fieldValues := map[string]string{
+		"entry_count":     `"entry_count":1`,
+		"sequence_number": `"sequence_number":1`,
+		"stream_id":       `"stream_id":"x"`,
+		"tip_hash":        `"tip_hash":"aa"`,
+	}
+	fields := []string{"entry_count", "sequence_number", "stream_id", "tip_hash"}
+	for _, field := range fields {
+		t.Run(field, func(t *testing.T) {
+			var others []string
+			for _, f := range fields {
+				if f != field {
+					others = append(others, fieldValues[f])
+				}
+			}
+			rest := strings.Join(others, ",")
+			withNull := `{"prev_hash":` + genesis + `,"seq":2,"timestamp":"2026-01-01T00:00:00Z","tips":[{"epoch":0,"` + field + `":null,` + rest + `}]}`
+			absent := `{"prev_hash":` + genesis + `,"seq":2,"timestamp":"2026-01-01T00:00:00Z","tips":[{"epoch":0,` + rest + `}]}`
+			var cpNull, cpAbsent Checkpoint
+			if err := json.Unmarshal([]byte(withNull), &cpNull); err != nil {
+				t.Fatalf("null variant: %v", err)
+			}
+			if err := json.Unmarshal([]byte(absent), &cpAbsent); err != nil {
+				t.Fatalf("absent variant: %v", err)
+			}
+			cbNull, err := canonical(cpNull)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cbAbsent, err := canonical(cpAbsent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(cbNull) != string(cbAbsent) {
+				t.Fatalf("%s: null and absent must canonicalize identically\n null:   %s\n absent: %s",
+					field, cbNull, cbAbsent)
+			}
+		})
+	}
+}
+
+// TestEpochNullVsAbsentStillDivergesOnTheGoSide is the deliberate opposite of
+// the test above: epoch must NOT collapse the way the other four fields do.
+// Go tracks epoch's null-vs-absent distinction explicitly (Tip.EpochNull,
+// see TestNullEpochMarshalPathDropsNoField) and canonicalizes the two
+// differently on purpose -- absence is legal only pre-v2, an explicit null is
+// a distinct, format-version-gated shape the whole point of EpochNull exists
+// to preserve. A future edit that "generalizes" #40's fix pattern to epoch
+// too, on either side, would break that on purpose; this pins the Go side of
+// the same regression guard py/test_validate.py's
+// test_epoch_null_vs_absent_still_diverges_in_canonical_bytes pins for
+// Python.
+func TestEpochNullVsAbsentStillDivergesOnTheGoSide(t *testing.T) {
+	withNull := `{"prev_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","seq":2,"timestamp":"2026-01-01T00:00:00Z","tips":[{"epoch":null,"entry_count":1,"sequence_number":1,"stream_id":"x","tip_hash":"aa"}]}`
+	absent := `{"prev_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","seq":2,"timestamp":"2026-01-01T00:00:00Z","tips":[{"entry_count":1,"sequence_number":1,"stream_id":"x","tip_hash":"aa"}]}`
+	var cpNull, cpAbsent Checkpoint
+	if err := json.Unmarshal([]byte(withNull), &cpNull); err != nil {
+		t.Fatalf("null variant: %v", err)
+	}
+	if err := json.Unmarshal([]byte(absent), &cpAbsent); err != nil {
+		t.Fatalf("absent variant: %v", err)
+	}
+	cbNull, err := canonical(cpNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cbAbsent, err := canonical(cpAbsent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cbNull) == string(cbAbsent) {
+		t.Fatalf("epoch must NOT canonicalize identically for null vs absent: both produced %s", cbNull)
+	}
+	if !bytes.Contains(cbNull, []byte(`"epoch":null`)) {
+		t.Fatalf("a null epoch must serialize explicitly: %s", cbNull)
+	}
+	if bytes.Contains(cbAbsent, []byte(`"epoch"`)) {
+		t.Fatalf("an absent epoch must stay absent: %s", cbAbsent)
+	}
+}
+
 // wantShorterLaterCanonical is the canonical form of a checkpoint whose two
 // tips are "aa" and "b". The same literal appears in py/test_validate.py as
 // WANT_SHORTER_LATER_CANONICAL: the two references must agree on these exact

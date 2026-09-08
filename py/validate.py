@@ -27,6 +27,50 @@ def tip_epoch(t: dict) -> int:
     return 0 if ep is None else ep
 
 
+def tip_entry_count(t: dict) -> int:
+    """A tip's entry_count, treating a present null the same as absent: 0.
+
+    Mirrors cp_seq's fold below, for the same reason: Go's non-pointer
+    `EntryCount int` field decodes JSON null as a documented no-op, leaving
+    the zero value, and `.get("entry_count", 0)` at a use site only supplies
+    0 when the key is ABSENT, not when it is present and null (#40)."""
+    v = t.get("entry_count")
+    return 0 if v is None else v
+
+
+def tip_sequence_number(t: dict) -> int:
+    """A tip's sequence_number, treating a present null the same as absent:
+    0. Mirrors tip_entry_count, for the same reason and the same Go field
+    shape (`SequenceNumber int`)."""
+    v = t.get("sequence_number")
+    return 0 if v is None else v
+
+
+def tip_stream_id(t: dict) -> str:
+    """A tip's stream_id, treating a present null the same as absent: "".
+
+    Go's non-pointer `StreamID string` field decodes JSON null as the same
+    documented no-op, leaving "" -- unlike epoch, which Go tracks explicitly
+    (`Tip.EpochNull`) and canonicalizes a present null DIFFERENTLY from an
+    absent one on purpose (absence is legal only pre-v2; an explicit null is
+    a distinct, format-version-gated shape). tip_identity below is this
+    fold's first, security-relevant use: without it, a checkpoint with one
+    tip missing stream_id and another carrying an explicit null compares a
+    str against a None inside canonical()'s own sort and raises TypeError,
+    confirmed directly (#40) -- a traceback here where Go never had two
+    documents to begin with."""
+    v = t.get("stream_id")
+    return "" if v is None else v
+
+
+def tip_tip_hash(t: dict) -> str:
+    """A tip's tip_hash, treating a present null the same as absent: "".
+    Mirrors tip_stream_id, for the same reason and the same Go field shape
+    (`TipHash string`)."""
+    v = t.get("tip_hash")
+    return "" if v is None else v
+
+
 def cp_seq(cp: dict) -> int:
     """A checkpoint's seq, treating a present null the same as absent: 0.
 
@@ -55,13 +99,14 @@ def tip_identity(t: dict) -> tuple:
     so sorting on stream_id alone would let input order leak into signed
     bytes.
 
-    Missing keys read as Go's zero value rather than raising. A third party
-    feeding either reference implementation a checkpoint with a key missing
-    must get the same verdict from both: Go's struct decoding yields "" and
-    rejects cleanly, so a KeyError here would be the two references
-    disagreeing on third-party input -- the exact defect class this suite
-    publishes vectors against."""
-    return (t.get("stream_id", ""), tip_epoch(t))
+    Reads through tip_stream_id/tip_epoch, not a raw .get(): a missing key
+    reading as Go's zero value is only half of that guarantee -- a PRESENT
+    but null one must read the same way, and `.get(key, default)` supplies
+    its default only for an absent key, never a present null. Before this
+    fold, a checkpoint with one tip missing stream_id and another carrying
+    an explicit null compared a str against a None here and raised
+    TypeError, not a clean verdict (#40)."""
+    return (tip_stream_id(t), tip_epoch(t))
 
 
 def canonical(cp: dict) -> bytes:
@@ -83,8 +128,22 @@ def canonical(cp: dict) -> bytes:
             raise ValueError(f"duplicate tip identity {ident}: "
                              "canonical bytes would depend on input order")
         seen.add(ident)
+    # entry_count/sequence_number/stream_id/tip_hash are folded to Go's zero
+    # value for an explicit null: Go's non-pointer struct fields decode a
+    # present null and an absent key to the identical value either way, so
+    # this reference's canonical bytes must not distinguish them either, or
+    # a checkpoint mutated from one to the other keeps its Go-verified
+    # signature while failing here (#40). epoch is deliberately NOT folded
+    # here -- Go tracks it explicitly (`Tip.EpochNull`) and canonicalizes a
+    # present null DIFFERENTLY from an absent one on purpose, so this
+    # reference must preserve that distinction, not collapse it.
+    folded_tips = [
+        {**t, "entry_count": tip_entry_count(t), "sequence_number": tip_sequence_number(t),
+         "stream_id": tip_stream_id(t), "tip_hash": tip_tip_hash(t)}
+        for t in tips
+    ]
     cp = dict(cp)
-    cp["tips"] = sorted(tips, key=tip_identity)
+    cp["tips"] = sorted(folded_tips, key=tip_identity)
     # For a strings-and-integers schema, RFC 8785 JCS reduces to sorted keys,
     # compact separators, UTF-8, and standard JSON string escaping.
     return json.dumps(cp, sort_keys=True, ensure_ascii=False,
@@ -122,7 +181,9 @@ def check_epoch_presence(cp: dict, min_ver: int):
     traceback in one reference where the other prints a diagnosis is the two
     disagreeing on third-party input."""
     for t in (cp.get("tips") or []):
-        sid = t.get("stream_id", "")
+        sid = tip_stream_id(t)  # only ever interpolated into a message below, but
+        # folded anyway for the same reason every OTHER stream_id read in this file
+        # now is: a raw .get(key, "") reads a present null as None, not "" (#40).
         # Present-but-null is neither an epoch nor an absent epoch. Rejecting
         # it explicitly is what keeps `"epoch": null` from meaning "epoch 0" at
         # version 2 and "legal, no epoch" at version 1 -- and it is the reading
@@ -205,7 +266,8 @@ def check_integer_range(cp: dict, min_ver: int):
     if min_ver >= 3 and not (_MIN_SAFE_INT <= seq <= _MAX_SAFE_INT):
         return f"seq {seq} is outside the I-JSON-safe integer range [{_MIN_SAFE_INT}, {_MAX_SAFE_INT}]"
     for t in (cp.get("tips") or []):
-        sid = t.get("stream_id", "")
+        sid = tip_stream_id(t)  # message-only here too; folded for the same
+        # consistency reason as check_epoch_presence's own read just above.
         for field in ("entry_count", "sequence_number"):
             val = t.get(field)
             if val is not None and (isinstance(val, bool) or not isinstance(val, int)):
@@ -869,7 +931,14 @@ def check_tier_b(chain: list) -> tuple:
         # advisory_two_streams_new_epoch is the vector that pins this.
         for t in sorted(cp.get("tips") or [], key=tip_identity):
             ident = tip_identity(t)
-            sid = t.get("stream_id", "")
+            # Through tip_stream_id, not a raw .get(): this is a SECOND, independent
+            # read of the same field tip_identity already folds internally (#40). A
+            # present-but-null stream_id used to reach `last_epoch[sid]` keyed on
+            # None -- inconsistent with seen_identity's key, which already folds via
+            # tip_identity -- and "B4:" + sid raised TypeError outright once a B4
+            # warning fired for it, reachable end to end through a real signed chain
+            # (verify_prefixes -> check_tier_b), not merely by calling this directly.
+            sid = tip_stream_id(t)
             if ident in seen_identity:
                 return (f"B3: stream {sid!r} epoch {tip_epoch(t)} "
                         f"committed in checkpoint {seen_identity[ident]} and again in {seq}", warns)
