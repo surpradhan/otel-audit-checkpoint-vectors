@@ -361,8 +361,10 @@ def _freeze_key(cp: dict, signature: str, prev_sha256: str = "") -> bytes:
     field ever contained an embedded NUL -- the exact class of bug tipKey's
     own doc comment in main.go describes fixing elsewhere. Safe here only
     because every field is either a short hex/UUID/timestamp literal
-    genFrozenV1 hardcodes, or base64/hex derived deterministically from one
-    (signature, prev_sha256) -- never third-party or attacker-derived input;
+    genFrozenV1 hardcodes, or hex/base64 derived deterministically from one
+    -- prev_hash on the two non-genesis chained positives is itself the
+    prior checkpoint's sha256 digest, and signature/prev_sha256 are
+    ed25519/sha256 output -- never third-party or attacker-derived input;
     this function must not be reused anywhere that assumption doesn't hold.
 
     `str(field)` coerces any JSON type to text, so a value that stringifies
@@ -374,16 +376,21 @@ def _freeze_key(cp: dict, signature: str, prev_sha256: str = "") -> bytes:
     directly, not assumed -- see check_schema/check_epoch_presence) --
     entry_count/sequence_number/stream_id/tip_hash have no type check
     anywhere in validate.py, only the unknown-member-NAME check every tip
-    member goes through. A wrong-typed entry_count on a v1 vector would
-    still fail `python3 py/validate.py vectors.json`, just through a
-    different, later mechanism: a `str` where canonical() expects an `int`
-    changes the canonical bytes, so the positive-vector loop in main() would
-    report a canonical mismatch against the published `canonical` field --
-    unless the whole entry were also hand-re-derived and re-signed with the
-    published test seed (signing_seed_hex is public, by design, so anyone
-    can do this), which is a deliberate-forgery scenario well outside an
-    accidental edit to genFrozenV1 and outside what this test claims to
-    catch."""
+    member goes through. A wrong-typed entry_count would still fail
+    `python3 py/validate.py vectors.json`, just through a different, later,
+    and per-shape mechanism: on one of the three positive v1 vectors, a
+    `str` where canonical() expects an `int` changes the canonical bytes, so
+    the positive-vector loop in main() reports a canonical mismatch against
+    the published `canonical` field; on a negative v1 vector instead, the
+    changed bytes make the ORIGINAL signature stop verifying (negatives
+    carry no `canonical` field to compare against), so reject_reason()
+    reports "signature" instead of the vector's real `expect` reason --
+    still caught, just via a third mechanism, verified directly for both
+    shapes. Either way, this only holds for a plain edit to entry_count:
+    hand-re-deriving and re-signing the whole entry with the published test
+    seed (signing_seed_hex is public, by design, so anyone can do this) is a
+    deliberate-forgery scenario well outside an accidental edit to
+    genFrozenV1 and outside what this test claims to catch."""
     parts = [cp.get("prev_hash", ""), str(cp.get("seq", 0)), cp.get("timestamp", "")]
     for t in (cp.get("tips") or []):
         ep = t.get("epoch")
