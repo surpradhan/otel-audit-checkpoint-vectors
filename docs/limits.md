@@ -4,13 +4,21 @@ What this repo's Tier A and Tier B vectors do **not**, and cannot, prove.
 
 Tiers A and B (see the design spec's [Taxonomy](superpowers/specs/2026-08-26-checkpoint-detection-semantics-design.md#4-taxonomy))
 cover what one verifier can conclude from one chain: canonical bytes reproduce,
-a signature verifies, and the chain is internally consistent. The four limits
-below are different in kind, not degree — each is undetectable *by construction*
-for a single verifier holding a single chain, quantified over every possible
-verifier algorithm, not just the two shipped here. No fixture can test a claim
-of that shape; Certificate Transparency, TUF, in-toto, SLSA and C2PA all draw
-the same line for their own equivalent limits, in prose rather than a fixture
-suite. So this document, not a vector category, is where these live.
+a signature verifies, and the chain is internally consistent. No fixture can
+test any of the four limits below, but not for one uniform reason. Full
+rewrite and split-view are impossible for *any* single-verifier, single-chain
+algorithm, however written — a well-forged rewrite is, by construction,
+indistinguishable from a genuine history to anyone examining only that one
+chain, so the claim is quantified over every possible verifier algorithm, not
+just the two shipped here. Never-committed streams is a data-completeness
+limit rather than an algorithmic one: nothing about how cleverly a verifier
+reads the log helps when the information was never written to it in the first
+place. Staleness is different in kind from the other three — see its own
+section below, which a same-verifier check could close, just not one this
+repo has built. Certificate Transparency, TUF, in-toto, SLSA and C2PA all draw
+some version of this line for their own equivalent limits, in prose rather
+than a fixture suite. So this document, not a vector category, is where these
+live.
 
 ## Split-view / equivocation
 
