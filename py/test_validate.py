@@ -691,8 +691,8 @@ def test_b4_stream_id_read_is_folded_the_same_way_as_tip_identity():
     tip_identity but not this second read site -- same root cause, same
     field, same PR, so fixed here rather than filed separately."""
     chain = _link(
-        _cp(1, _pos_ts(0), [_tip_with(stream_id=None, epoch=0)]),
-        _cp(2, _pos_ts(10), [_tip_with(stream_id=None, epoch=1)]))
+        _cp(1, _pos_ts(0), [_tip(None, 0, 1, 1, "aa")]),
+        _cp(2, _pos_ts(10), [_tip(None, 1, 1, 1, "bb")]))
     err, warns = validate.check_tier_b(chain)  # must not raise
     assert err is None, f"an epoch change on a null-stream_id tip is advisory, not a rejection: {err}"
     assert warns == ["B4:"], f"warnings = {warns}, want ['B4:'] -- folded to the empty string"

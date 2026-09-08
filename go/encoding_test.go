@@ -1111,10 +1111,38 @@ func TestNullEpochMarshalPathDropsNoField(t *testing.T) {
 // surprise discovered later.
 func TestTipScalarsCollapseNullAndAbsentIdentically(t *testing.T) {
 	const genesis = `"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"`
-	for _, field := range []string{"entry_count", "sequence_number", "stream_id", "tip_hash"} {
+	// Each of the four fields' ordinary values, keyed by name so the loop
+	// below can build a tip body carrying every field EXCEPT the one under
+	// test -- never all four unconditionally. An earlier version of this
+	// test spliced a `"<field>":null` PREFIX in front of a fixed suffix that
+	// unconditionally listed all four fields' real values, so the field
+	// under test appeared TWICE in the JSON object (once null, once real).
+	// encoding/json resolves a duplicate object key last-value-wins, so the
+	// injected null was silently discarded before decode ever saw it --
+	// confirmed directly with a standalone probe
+	// (`{"entry_count":null,"entry_count":1}` decodes to EntryCount==1, not
+	// 0) -- making withNull and absent decode to the IDENTICAL struct for
+	// every field, and this test compared a document to itself. Building
+	// `rest` without the field under test makes a duplicate key structurally
+	// impossible.
+	fieldValues := map[string]string{
+		"entry_count":     `"entry_count":1`,
+		"sequence_number": `"sequence_number":1`,
+		"stream_id":       `"stream_id":"x"`,
+		"tip_hash":        `"tip_hash":"aa"`,
+	}
+	fields := []string{"entry_count", "sequence_number", "stream_id", "tip_hash"}
+	for _, field := range fields {
 		t.Run(field, func(t *testing.T) {
-			withNull := `{"prev_hash":` + genesis + `,"seq":2,"timestamp":"2026-01-01T00:00:00Z","tips":[{"` + field + `":null,"epoch":0,"entry_count":1,"sequence_number":1,"stream_id":"x","tip_hash":"aa"}]}`
-			absent := `{"prev_hash":` + genesis + `,"seq":2,"timestamp":"2026-01-01T00:00:00Z","tips":[{"epoch":0,"entry_count":1,"sequence_number":1,"stream_id":"x","tip_hash":"aa"}]}`
+			var others []string
+			for _, f := range fields {
+				if f != field {
+					others = append(others, fieldValues[f])
+				}
+			}
+			rest := strings.Join(others, ",")
+			withNull := `{"prev_hash":` + genesis + `,"seq":2,"timestamp":"2026-01-01T00:00:00Z","tips":[{"epoch":0,"` + field + `":null,` + rest + `}]}`
+			absent := `{"prev_hash":` + genesis + `,"seq":2,"timestamp":"2026-01-01T00:00:00Z","tips":[{"epoch":0,` + rest + `}]}`
 			var cpNull, cpAbsent Checkpoint
 			if err := json.Unmarshal([]byte(withNull), &cpNull); err != nil {
 				t.Fatalf("null variant: %v", err)
