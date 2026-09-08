@@ -119,6 +119,27 @@ func TestCheckEncodingRejectsTruncatedEscape(t *testing.T) {
 	}
 }
 
+// TestCheckEncodingRejectsPermissiveHexDigitVariants pins that strconv.ParseUint's
+// own strictness for the \uXXXX window rejects everything a more permissive
+// numeric parser might accept -- a sign, an underscore digit-group separator,
+// a 0x prefix, or embedded whitespace. Found in review: Python's stdlib
+// int(x, 16) is a permissive superset of what this accepts here, so the
+// Python reference needed an explicit strict-hex-digit gate (_hex4_value) to
+// match; this pins the Go side already had the tighter behavior by
+// construction, not by accident.
+func TestCheckEncodingRejectsPermissiveHexDigitVariants(t *testing.T) {
+	for _, raw := range []string{
+		`{"stream_id":"\u+800"}`, // leading sign
+		`{"stream_id":"\uD_00"}`, // digit-group separator
+		`{"stream_id":"\u-800"}`, // leading sign
+		`{"stream_id":"\u 800"}`, // embedded whitespace
+	} {
+		if reason := checkEncoding([]byte(raw)); reason != "encoding" {
+			t.Errorf("permissive-parser-only hex variant %q: reason = %q, want \"encoding\"", raw, reason)
+		}
+	}
+}
+
 // resolveInput is what actually wires checkEncoding into the pipeline; these
 // tests exercise it directly rather than only through a published vector.
 func TestResolveInputPassesThroughWhenNoRawHex(t *testing.T) {
@@ -136,6 +157,27 @@ func TestResolveInputRejectsInvalidHex(t *testing.T) {
 	_, reason := resolveInput(Checkpoint{}, "not valid hex!!")
 	if reason != "schema" {
 		t.Errorf("invalid hex: reason = %q, want \"schema\"", reason)
+	}
+}
+
+// TestResolveInputRejectsWhitespaceInOtherwiseValidHex pins a real
+// accept/reject divergence found in review: Python's stdlib bytes.fromhex()
+// silently ignores embedded whitespace, which encoding/hex.DecodeString
+// (used here) does not -- proven against the actual committed
+// valid_surrogate_pair vector's own input_raw_hex with one space spliced in:
+// this rejects it as "schema", while the pre-fix Python reference decoded
+// it to byte-identical content and accepted it. This test uses a
+// synthetic (not the real vector's) hex string so it stays meaningful even
+// if valid_surrogate_pair's own bytes ever change.
+func TestResolveInputRejectsWhitespaceInOtherwiseValidHex(t *testing.T) {
+	raw := []byte(`{"prev_hash":"` + sha256Empty + `","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":[]}`)
+	clean := hex.EncodeToString(raw)
+	spaced := clean[:10] + " " + clean[10:]
+	if _, reason := resolveInput(Checkpoint{}, clean); reason != "" {
+		t.Fatalf("clean hex: reason = %q, want \"\" (test setup is broken)", reason)
+	}
+	if _, reason := resolveInput(Checkpoint{}, spaced); reason != "schema" {
+		t.Errorf("hex with one embedded space: reason = %q, want \"schema\"", reason)
 	}
 }
 

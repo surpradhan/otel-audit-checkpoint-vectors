@@ -377,6 +377,36 @@ def unknown_members(obj, allowed, what: str):
     return None
 
 
+def _hex4_value(b: bytes) -> int:
+    """Parses exactly 4 strict hex digits (0-9, A-F, a-f only) into an int,
+    or raises ValueError -- for check_encoding's \\uXXXX window. Not
+    int(bytes_or_str, 16): that stdlib constructor is a permissive
+    superset of what Go's strconv.ParseUint(s, 16, 32) accepts for the
+    equivalent window -- it additionally allows a leading `+`/`-` sign,
+    `_` digit-group separators, a `0x`/`0X` prefix, and surrounding
+    whitespace, every one of which consumes at least one of the 4
+    available bytes here and so caps what int() can extract from a
+    malformed window at 0xFFF, always below the surrogate range -- but
+    still a real reason-token divergence (Go says "encoding", Python's
+    lenient parse either succeeds wrongly or falls through to a
+    downstream "schema" once json.loads' own strict grammar catches it),
+    proven directly against checkEncoding, not merely reasoned about.
+    Mirrors Go's strconv.ParseUint call sites exactly."""
+    if len(b) != 4:
+        raise ValueError(f"not 4 bytes: {b!r}")
+    value = 0
+    for c in b:
+        if 0x30 <= c <= 0x39:
+            value = value * 16 + (c - 0x30)
+        elif 0x41 <= c <= 0x46:
+            value = value * 16 + (c - 0x41 + 10)
+        elif 0x61 <= c <= 0x66:
+            value = value * 16 + (c - 0x61 + 10)
+        else:
+            raise ValueError(f"not a hex digit: {bytes([c])!r}")
+    return value
+
+
 def check_encoding(raw: bytes) -> str:
     """A4's explicit validation step on raw bytes, run before any JSON
     parsing -- never as an emergent property of the JSON stack, which is
@@ -427,7 +457,7 @@ def check_encoding(raw: bytes) -> str:
             if i + 6 > n:
                 return "encoding"  # truncated \uXXXX
             try:
-                code = int(raw[i + 2:i + 6], 16)
+                code = _hex4_value(raw[i + 2:i + 6])
             except ValueError:
                 return "encoding"  # \u not followed by 4 hex digits
             if 0xD800 <= code <= 0xDBFF:
@@ -437,7 +467,7 @@ def check_encoding(raw: bytes) -> str:
                 # -- is a lone high surrogate.
                 if i + 12 <= n and raw[i + 6] == 0x5C and raw[i + 7] == 0x75:
                     try:
-                        low = int(raw[i + 8:i + 12], 16)
+                        low = _hex4_value(raw[i + 8:i + 12])
                     except ValueError:
                         low = -1
                     if 0xDC00 <= low <= 0xDFFF:
@@ -454,6 +484,25 @@ def check_encoding(raw: bytes) -> str:
         else:
             i += 1
     return ""
+
+
+_HEX_ALPHABET = "0123456789abcdefABCDEF"
+
+
+def _is_strict_hex(s: str) -> bool:
+    """True iff `s` is exactly what Go's encoding/hex.DecodeString accepts:
+    an even-length string of hex digits only. Not a check bytes.fromhex()
+    already makes redundant -- it doesn't. bytes.fromhex() silently ignores
+    embedded ASCII whitespace (that's documented CPython behavior, not a
+    bug in it), which Go's decoder rejects outright. Proven to matter, not
+    just theoretical: the committed valid_surrogate_pair vector's own
+    input_raw_hex, with one space spliced in, is REJECTED by Go's
+    resolveInput ("schema") and was ACCEPTED by this function before this
+    check existed, decoding to byte-identical content -- a genuine
+    accept/reject divergence between the two references on realistic input,
+    not a contrived one. Gating on this exact alphabet, before
+    bytes.fromhex ever runs, closes it."""
+    return len(s) % 2 == 0 and all(c in _HEX_ALPHABET for c in s)
 
 
 def resolve_input(input_obj, input_raw_hex: str):
@@ -473,6 +522,8 @@ def resolve_input(input_obj, input_raw_hex: str):
     Go's resolveInput."""
     if not input_raw_hex:
         return input_obj, ""
+    if not _is_strict_hex(input_raw_hex):
+        return {}, "schema"
     try:
         raw = bytes.fromhex(input_raw_hex)
     except (ValueError, TypeError):

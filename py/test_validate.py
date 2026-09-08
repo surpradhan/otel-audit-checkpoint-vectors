@@ -2360,6 +2360,26 @@ def test_check_encoding_rejects_truncated_escape():
         assert validate.check_encoding(raw.encode()) == "encoding", raw
 
 
+def test_check_encoding_rejects_permissive_hex_digit_variants():
+    """Found in review: int(x, 16) is a permissive superset of what
+    _hex4_value (and Go's strconv.ParseUint, which this must match) accepts
+    for the \\uXXXX window -- it additionally allows a leading sign, `_`
+    digit-group separators, a `0x` prefix, and surrounding whitespace, any
+    of which consumes one of the 4 available bytes and so caps the value
+    int() could extract at 0xFFF, always below the surrogate range. Never
+    an accept/reject divergence on its own for that reason, but a real
+    reason-token divergence (Go/the fixed reference say "encoding") that
+    _hex4_value now closes at the source instead of relying on that
+    ceiling as an accident of the surrogate range's own numeric bounds."""
+    for raw in (
+        r'{"stream_id":"\u+800"}',  # leading sign
+        r'{"stream_id":"\uD_00"}',  # digit-group separator
+        r'{"stream_id":"\u-800"}',  # leading sign
+        r'{"stream_id":"\u 800"}',  # embedded whitespace
+    ):
+        assert validate.check_encoding(raw.encode()) == "encoding", raw
+
+
 # resolve_input is what actually wires check_encoding into the pipeline;
 # these tests exercise it directly rather than only through a published
 # vector.
@@ -2374,6 +2394,26 @@ def test_resolve_input_passes_through_when_no_raw_hex():
 def test_resolve_input_rejects_invalid_hex():
     _, reason = validate.resolve_input({}, "not valid hex!!")
     assert reason == "schema"
+
+
+def test_resolve_input_rejects_whitespace_in_otherwise_valid_hex():
+    """Found in review: bytes.fromhex() silently ignores embedded ASCII
+    whitespace (documented CPython behavior), which Go's
+    encoding/hex.DecodeString does not -- a real accept/reject divergence,
+    proven against the actual committed valid_surrogate_pair vector's own
+    input_raw_hex with one space spliced in: Go's resolveInput rejected it
+    ("schema") while this function, pre-fix, decoded it to byte-identical
+    content and accepted it. Uses a synthetic hex string, not the real
+    vector's, so this stays meaningful even if valid_surrogate_pair's own
+    bytes ever change."""
+    raw = ('{"prev_hash":"' + validate.hashlib.sha256(b"").hexdigest() +
+           '","seq":1,"timestamp":"2026-01-01T00:00:00Z","tips":[]}').encode()
+    clean = raw.hex()
+    spaced = clean[:10] + " " + clean[10:]
+    _, clean_reason = validate.resolve_input({}, clean)
+    assert clean_reason == "", "test setup is broken: clean hex must resolve"
+    _, spaced_reason = validate.resolve_input({}, spaced)
+    assert spaced_reason == "schema"
 
 
 def test_resolve_input_rejects_encoding_failure_before_parsing():
