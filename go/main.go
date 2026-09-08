@@ -526,6 +526,7 @@ func gen() Suite {
 		genPositional,
 		genCrossProduct,
 		genMemberShapeAndEncoding,
+		genGenesis,
 		genIntegerRange,
 	} {
 		vs, ns := group(priv)
@@ -1575,6 +1576,80 @@ func genMemberShapeAndEncoding(priv ed25519.PrivateKey) ([]Vector, []NegativeVec
 	return vectors, negatives
 }
 
+// genGenesis builds three negatives for A6 (spec §4, §7): a checkpoint's seq
+// is 1 if and only if its prev_hash is the genesis constant. The first two
+// set no PrevSHA256 -- unlike broken_chain, which carries the same
+// seq-1-with-non-genesis-prev_hash SHAPE as genesisWrongPrevHash below but is
+// rejected by an entirely different, pre-existing mechanism (a mismatch
+// against a specific expected predecessor). Leaving PrevSHA256 unset is what
+// makes those two vectors exercise checkGenesis itself rather than that
+// older check arriving first. The third pins the rule at a chain PREFIX
+// position, matching this suite's existing practice for schema-adjacent
+// rules (chain_prefix_missing_epoch, middle_chain_prefix_missing_epoch):
+// nothing published would otherwise catch an implementation that wires A6
+// into a vector's own input but forgets its prefixes. All negatives; A6
+// needs no additional must-accept vector, since every existing positive
+// already satisfies the rule (checked directly against the published suite
+// before this comment was written, not assumed).
+func genGenesis(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
+	var negatives []NegativeVector
+
+	// genesis_wrong_seq: prev_hash correctly names the genesis constant, but
+	// seq is not 1 -- the direction of A6 no existing vector covers at all,
+	// since every genesis-hash-carrying checkpoint in the suite already has
+	// seq 1 and every other checkpoint already has a non-genesis prev_hash.
+	wrongSeqCP := Checkpoint{PrevHash: sha256Empty, Seq: 2, Timestamp: "2027-01-01T00:00:00Z", Tips: []Tip{}}
+	negatives = append(negatives, NegativeVector{
+		Name: "genesis_wrong_seq", Expect: "genesis",
+		Reason:           "prev_hash is the genesis constant (sha256 of the empty string), claiming to be the first checkpoint of the chain, but seq is 2, not 1",
+		Input:            wrongSeqCP,
+		Signature:        signCP(priv, wrongSeqCP).Signature,
+		MinFormatVersion: 3,
+	})
+
+	// genesis_wrong_prev_hash: seq is 1, claiming to be the first checkpoint
+	// of the chain, but prev_hash is not the genesis constant. Same shape as
+	// broken_chain (also seq 1, also a non-genesis prev_hash) but reaches a
+	// different check: broken_chain sets PrevSHA256 to the genesis hash and
+	// is rejected because its OWN prev_hash disagrees with that specific
+	// expected value ("chain"); this vector carries no PrevSHA256 at all, so
+	// the only thing that can catch it is checkGenesis itself, evaluated
+	// with no chain context -- pinning that A6 holds standalone, not merely
+	// as a side effect of chain-linkage checking.
+	wrongPrevHashCP := Checkpoint{PrevHash: strings.Repeat("9", 64), Seq: 1, Timestamp: "2027-01-01T00:00:05Z", Tips: []Tip{}}
+	negatives = append(negatives, NegativeVector{
+		Name: "genesis_wrong_prev_hash", Expect: "genesis",
+		Reason:           "seq is 1, claiming to be the first checkpoint of the chain, but prev_hash is not the genesis constant. Distinct from broken_chain: this vector sets no prev_sha256, so only the intrinsic genesis rule -- not chain-linkage against a specific expected predecessor -- catches it",
+		Input:            wrongPrevHashCP,
+		Signature:        signCP(priv, wrongPrevHashCP).Signature,
+		MinFormatVersion: 3,
+	})
+
+	// chain_prefix_wrong_genesis: the CHAIN PREFIX, not the vector's own
+	// input, is the one that violates A6 -- its prev_hash is the genesis
+	// constant, but its seq is 5, not 1. The tail checkpoint above it is
+	// ordinary and correctly linked; only the prefix is malformed, so this
+	// pins that verifyPrefixes runs checkGenesis on every prefix, not only
+	// rejectReason on the final input. Carries one ordinary tip, not an
+	// empty array -- gratuitously invalidating the design spec's "no
+	// zero-tip checkpoint appears as a chain prefix" note (§4, Tier B "Not
+	// pinned") is not this vector's job.
+	badGenesisPrefixCP := Checkpoint{PrevHash: sha256Empty, Seq: 5, Timestamp: "2027-01-01T00:00:10Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", TipHash: "c9" + strings.Repeat("00", 31)},
+	}}
+	prefixTailCP := Checkpoint{PrevHash: cpHash(badGenesisPrefixCP), Seq: 6, Timestamp: "2027-01-01T00:00:15Z", Tips: []Tip{}}
+	negatives = append(negatives, NegativeVector{
+		Name: "chain_prefix_wrong_genesis", Expect: "genesis",
+		Reason:           "the chain prefix's prev_hash is the genesis constant, claiming to be the first checkpoint of the chain, but its seq is 5, not 1. The vector's own input is ordinary and correctly linked to that prefix -- only the prefix itself violates A6",
+		Input:            prefixTailCP,
+		Signature:        signCP(priv, prefixTailCP).Signature,
+		Chain:            []SignedCheckpoint{signCP(priv, badGenesisPrefixCP)},
+		MinFormatVersion: 3,
+	})
+
+	return nil, negatives
+}
+
 // genIntegerRange builds A5's two vectors (spec §4, §7): entry_count at the
 // boundary I-JSON (RFC 7493 §2.2) allows without precision loss, 2^53-1, must
 // be accepted; one past it, 2^53, must be rejected. The value-RANGE
@@ -2036,6 +2111,34 @@ func checkSchema(cp Checkpoint, minVer int) error {
 	return checkIntegerRange(cp, minVer)
 }
 
+// checkGenesis is Tier A rule A6 (spec §4): a checkpoint claims to be the
+// genesis of the chain -- seq 1 -- if and only if its prev_hash is the
+// genesis constant, sha256(""). seq is a single counter for the whole audit
+// trail (B1: it increments by exactly 1 at every transition of the assembled
+// chain), so seq 1 can only ever be a claim to BE the genesis checkpoint --
+// never a claim about position within whatever chain window a validator
+// happens to have been handed. mid_chain_window_no_genesis (seq 400, a
+// non-genesis prev_hash) is the vector that already pins the rule is
+// evaluated against the absolute value, not a checkpoint's index in the
+// chain array; this rule is what makes that distinction load-bearing rather
+// than incidental.
+//
+// Deliberately NOT part of checkSchema: broken_chain (a published, frozen
+// negative) has seq 1 and a non-genesis prev_hash, rejected today purely by
+// the prev_sha256 linkage check -- the last step of rejectReason. Folding
+// this rule into checkSchema, which runs first, would flip broken_chain's
+// reject reason from "chain" to "genesis" and require superseding a frozen
+// vector. Called after that linkage check instead, so broken_chain never
+// reaches it.
+func checkGenesis(cp Checkpoint) error {
+	isGenesisSeq := cp.Seq == 1
+	isGenesisHash := cp.PrevHash == sha256Empty
+	if isGenesisSeq != isGenesisHash {
+		return fmt.Errorf("seq and prev_hash disagree about genesis: seq=%d, prev_hash is the genesis constant=%v", cp.Seq, isGenesisHash)
+	}
+	return nil
+}
+
 // verifyPrefixes checks a vector's preceding chain context and returns the
 // prefix checkpoints in order, or the reason they are rejected ("" on success).
 //
@@ -2049,6 +2152,9 @@ func verifyPrefixes(pub ed25519.PublicKey, chain []SignedCheckpoint, minVer int)
 	for _, sc := range chain {
 		if err := checkSchema(sc.Input, minVer); err != nil {
 			return nil, "schema"
+		}
+		if err := checkGenesis(sc.Input); err != nil {
+			return nil, "genesis"
 		}
 		cb, err := canonical(sc.Input)
 		if err != nil {
@@ -2093,6 +2199,9 @@ func rejectReason(pub ed25519.PublicKey, nv NegativeVector) string {
 	}
 	if nv.PrevSHA256 != "" && input.PrevHash != nv.PrevSHA256 {
 		return "chain"
+	}
+	if err := checkGenesis(input); err != nil {
+		return "genesis"
 	}
 	return ""
 }
@@ -2203,6 +2312,9 @@ func validate(path string) error {
 			return fmt.Errorf("[%s] must be accepted, but input_raw_hex was rejected (%s)", v.Name, reason)
 		}
 		if err := checkSchema(input, v.MinFormatVersion); err != nil {
+			return fmt.Errorf("[%s] %v", v.Name, err)
+		}
+		if err := checkGenesis(input); err != nil {
 			return fmt.Errorf("[%s] %v", v.Name, err)
 		}
 		cb, err := canonical(input)

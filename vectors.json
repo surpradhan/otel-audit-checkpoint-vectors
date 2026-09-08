@@ -2152,6 +2152,64 @@
       "min_format_version": 2
     },
     {
+      "name": "genesis_wrong_seq",
+      "expect": "genesis",
+      "reason": "prev_hash is the genesis constant (sha256 of the empty string), claiming to be the first checkpoint of the chain, but seq is 2, not 1",
+      "input": {
+        "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "seq": 2,
+        "timestamp": "2027-01-01T00:00:00Z",
+        "tips": []
+      },
+      "signature": "SLj6AJ+LkEoMf5Qw1Q0vM1oJviHAV+8h0Xwgh7VbaQnijXhD5SXiDJgLg7IpBoL0cbMHiYVPQjLUBGsGdJpACA==",
+      "min_format_version": 3
+    },
+    {
+      "name": "genesis_wrong_prev_hash",
+      "expect": "genesis",
+      "reason": "seq is 1, claiming to be the first checkpoint of the chain, but prev_hash is not the genesis constant. Distinct from broken_chain: this vector sets no prev_sha256, so only the intrinsic genesis rule -- not chain-linkage against a specific expected predecessor -- catches it",
+      "input": {
+        "prev_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+        "seq": 1,
+        "timestamp": "2027-01-01T00:00:05Z",
+        "tips": []
+      },
+      "signature": "sm0cx2+yP7rSRp7wJ0KCV5393Pw4f8Z9C+1uZwy6oCiIrUElfdT3zrozZVtD3y2VmNeh8O4huBXQwFclP/SkAA==",
+      "min_format_version": 3
+    },
+    {
+      "name": "chain_prefix_wrong_genesis",
+      "expect": "genesis",
+      "reason": "the chain prefix's prev_hash is the genesis constant, claiming to be the first checkpoint of the chain, but its seq is 5, not 1. The vector's own input is ordinary and correctly linked to that prefix -- only the prefix itself violates A6",
+      "input": {
+        "prev_hash": "8a13b953deaf7f30d7bf011d5697db0e3769a5d9c39a444e0c6e4728aa67a4ee",
+        "seq": 6,
+        "timestamp": "2027-01-01T00:00:15Z",
+        "tips": []
+      },
+      "signature": "g1kJN7WQhamMAAcz0FxpE+KXScoxstrDTBG7DVki7rWHBMB9ugS2wMfk1B3B1XfLFfM/IP6ebOMzKBdvIf6uBw==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 5,
+            "timestamp": "2027-01-01T00:00:10Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                "tip_hash": "c900000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "5CHasTXHsNFOz3rW2mt7juw69gh2ImMEE+AoxKkcX9D2rGgVYZB/BEDf+/L5mgdthEjsDQoyYFcaODoQax0WAw=="
+        }
+      ],
+      "min_format_version": 3
+    },
+    {
       "name": "integer_out_of_range",
       "expect": "schema",
       "reason": "a tip's entry_count is 9007199254740992, one past the largest integer I-JSON (RFC 7493 §2.2) allows without precision loss on an IEEE 754 double",

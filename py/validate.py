@@ -679,6 +679,41 @@ def check_schema(cp, min_ver: int):
     return check_integer_range(cp, min_ver)
 
 
+# The genesis constant: SHA-256 of the empty string. Derived rather than
+# copied from Go's hardcoded sha256Empty literal, so this reference's
+# agreement with it is evidence, not an assumption baked into a shared
+# constant.
+_GENESIS_HASH = hashlib.sha256(b"").hexdigest()
+
+
+def check_genesis(cp) -> str:
+    """Tier A rule A6 (spec §4): a checkpoint claims to be the genesis of the
+    chain -- seq 1 -- if and only if its prev_hash is the genesis constant.
+    seq is a single counter for the whole audit trail (B1: it increments by
+    exactly 1 at every transition of the assembled chain), so seq 1 can only
+    ever be a claim to BE the genesis checkpoint -- never a claim about
+    position within whatever chain window a validator happens to have been
+    handed. mid_chain_window_no_genesis (seq 400, a non-genesis prev_hash) is
+    the vector that already pins the rule is evaluated against the absolute
+    value, not a checkpoint's index in the chain array; this rule is what
+    makes that distinction load-bearing rather than incidental.
+
+    Deliberately NOT part of check_schema: broken_chain (a published, frozen
+    negative) has seq 1 and a non-genesis prev_hash, rejected today purely by
+    the prev_sha256 linkage check -- the last step of reject_reason. Folding
+    this rule into check_schema, which runs first, would flip broken_chain's
+    reject reason from "chain" to "genesis" and require superseding a frozen
+    vector. Called after that linkage check instead, so broken_chain never
+    reaches it. Mirrors Go's checkGenesis; both report a failure as
+    "genesis"."""
+    is_genesis_seq = cp.get("seq") == 1
+    is_genesis_hash = cp.get("prev_hash") == _GENESIS_HASH
+    if is_genesis_seq != is_genesis_hash:
+        return (f"seq and prev_hash disagree about genesis: seq={cp.get('seq')!r}, "
+                f"prev_hash is the genesis constant={is_genesis_hash}")
+    return ""
+
+
 def decode_signature(s) -> bytes:
     """Decode a base64 signature, requiring the encoding to be the CANONICAL
     one. Raises ValueError (or TypeError for a non-string) otherwise; every
@@ -743,6 +778,9 @@ def verify_prefixes(pub, chain: list, min_ver: int) -> tuple:
         err = check_schema(cp, min_ver)
         if err:
             return ([], "schema")
+        err = check_genesis(cp)
+        if err:
+            return ([], "genesis")
         try:
             scb = canonical(cp)
         except ValueError:
@@ -891,6 +929,8 @@ def reject_reason(pub, nv):
             return "tier_b"
     if nv.get("prev_sha256") and cp.get("prev_hash", "") != nv["prev_sha256"]:
         return "chain"
+    if check_genesis(cp):
+        return "genesis"
     return ""
 
 
@@ -990,6 +1030,10 @@ def main() -> int:
         # agree on that order; this one lagged, and a check order a third party
         # can observe is part of what the two references must share.
         err = check_schema(cp_input, v.get("min_format_version", 0))
+        if err:
+            print(f"FAIL [{entry_name(v)}] {err}")
+            return 1
+        err = check_genesis(cp_input)
         if err:
             print(f"FAIL [{entry_name(v)}] {err}")
             return 1
