@@ -754,6 +754,46 @@ func genTierB(priv ed25519.PrivateKey) ([]Vector, []NegativeVector) {
 		MinFormatVersion: 2,
 	})
 
+	// R4: the tip sort compares stream_id by Unicode CODE POINT, not by
+	// UTF-16 code unit -- a different axis than JCS's own key-sort rule (RFC
+	// 8785 §3.2.3), which this suite's schema never exercises because every
+	// JSON object key here is ASCII (see README's "Scope of what 'full RFC
+	// 8785' means"). A non-BMP character and a U+E000-U+FFFF one are the
+	// adversarial pair: in UTF-16 the non-BMP character is a surrogate PAIR
+	// whose high half (U+D800-U+DBFF) is numerically BELOW U+E000-U+FFFF, so
+	// a comparator that reuses UTF-16 code-unit order -- the mistake this
+	// vector exists to catch, realistic for anyone porting this suite to a
+	// UTF-16-native language (JavaScript, Java, C#) -- ranks the non-BMP tip
+	// FIRST. Code-point order ranks it SECOND: U+10000 > U+E000 as a plain
+	// integer. Go's strings.Compare and Python's str comparison already
+	// agree with the code-point rule natively; nothing here changes that,
+	// this only pins it against a wrong port.
+	//
+	// U+E000 (start of the Private Use Area) and U+10000 (the first non-BMP
+	// code point) are the plainest boundary values on each side of the
+	// divergence -- neither is otherwise special to a stream_id. Bare
+	// characters, not UUID-wrapped, so the comparison is decided by exactly
+	// the code point under test, the same reason stream_id_prefix_pair above
+	// uses "abc"/"abc-1" rather than a UUID. Given in the wrong
+	// (UTF-16-code-unit) order, so the sort has to fix it.
+	nonBMPPrefix := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-01-01T00:00:30Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", TipHash: "0d" + strings.Repeat("00", 31)},
+	}}
+	nonBMPTail := Checkpoint{PrevHash: cpHash(nonBMPPrefix), Seq: 2, Timestamp: "2026-01-01T00:00:35Z", Tips: []Tip{
+		{EntryCount: 2, Epoch: ptr(0), SequenceNumber: 2, StreamID: "\U00010000", TipHash: "e1" + strings.Repeat("00", 31)},
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "", TipHash: "e2" + strings.Repeat("00", 31)},
+	}}
+	nonBMPCanon := mustCanonical(nonBMPTail, "non_bmp_and_pua_stream_id_order")
+	vectors = append(vectors, Vector{
+		Name:             "non_bmp_and_pua_stream_id_order",
+		Input:            nonBMPTail,
+		Canonical:        string(nonBMPCanon),
+		SHA256:           mustSum(nonBMPCanon),
+		Signature:        signB64(priv, nonBMPCanon),
+		Chain:            []SignedCheckpoint{signCP(priv, nonBMPPrefix)},
+		MinFormatVersion: 2,
+	})
+
 	// Tier B, all at format_version 2. Each carries one preceding checkpoint.
 	tbBase := Checkpoint{PrevHash: sha256Empty, Seq: 1, Timestamp: "2026-03-01T00:00:00Z", Tips: []Tip{
 		{EntryCount: 7, Epoch: ptr(0), SequenceNumber: 7, StreamID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TipHash: "aa" + strings.Repeat("00", 31)},

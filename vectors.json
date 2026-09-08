@@ -160,6 +160,53 @@
       "min_format_version": 2
     },
     {
+      "name": "non_bmp_and_pua_stream_id_order",
+      "input": {
+        "prev_hash": "0f1ad478d937ef94d48c1e8c1f460da354d1262b90b431873002ee3e09067679",
+        "seq": 2,
+        "timestamp": "2026-01-01T00:00:35Z",
+        "tips": [
+          {
+            "entry_count": 2,
+            "epoch": 0,
+            "sequence_number": 2,
+            "stream_id": "𐀀",
+            "tip_hash": "e100000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "entry_count": 1,
+            "epoch": 0,
+            "sequence_number": 1,
+            "stream_id": "",
+            "tip_hash": "e200000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "canonical": "{\"prev_hash\":\"0f1ad478d937ef94d48c1e8c1f460da354d1262b90b431873002ee3e09067679\",\"seq\":2,\"timestamp\":\"2026-01-01T00:00:35Z\",\"tips\":[{\"entry_count\":1,\"epoch\":0,\"sequence_number\":1,\"stream_id\":\"\",\"tip_hash\":\"e200000000000000000000000000000000000000000000000000000000000000\"},{\"entry_count\":2,\"epoch\":0,\"sequence_number\":2,\"stream_id\":\"𐀀\",\"tip_hash\":\"e100000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "sha256": "a2f0151191410a54044eb02339a620be16b75b17bcff07cf65caad0cfaf231a9",
+      "signature": "ZODIvFRtUAvMmwwKuBjwTh4WSQXQv+0AEHrMXJozAq32r5hu10+bIATiYuwKh+SwhVbNyVuNp7XuL59JS4bcAQ==",
+      "chain": [
+        {
+          "input": {
+            "prev_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "seq": 1,
+            "timestamp": "2026-01-01T00:00:30Z",
+            "tips": [
+              {
+                "entry_count": 1,
+                "epoch": 0,
+                "sequence_number": 1,
+                "stream_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                "tip_hash": "0d00000000000000000000000000000000000000000000000000000000000000"
+              }
+            ]
+          },
+          "signature": "CzzpquPdnCZsGBoY2AgwZXglExbBHAIdAP0JEHQXU+VzgQO8Klu0f5hNwjJ6RWeHNJIktQz2hM1vLWBgxk04Aw=="
+        }
+      ],
+      "min_format_version": 2
+    },
+    {
       "name": "advisory_stream_recommitted_new_epoch",
       "input": {
         "prev_hash": "ae307a040704afda289269d83b50282b8a4a7d996be9aa440848423f9f1e976b",

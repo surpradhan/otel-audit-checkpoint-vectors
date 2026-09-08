@@ -229,7 +229,7 @@ No published vector can express this — see [Not pinned](#rules-hold-at-every-p
 
 ## Positive vectors (a conformant validator MUST accept these)
 
-The 16 positive vectors, one line each:
+The 17 positive vectors, one line each:
 
 - `genesis_empty_tips` — the first checkpoint of the positives' own hash
   chain, with an empty `tips` array.
@@ -245,6 +245,15 @@ The 16 positive vectors, one line each:
   stand in a proper prefix relationship, supplied out of sort order; proves
   the tip-identity comparator is prefix-free (see "Rules hold at every
   position" below).
+- `non_bmp_and_pua_stream_id_order` — two tips, stream_ids U+E000 and U+10000
+  (the first non-BMP code point), supplied in UTF-16-code-unit order rather
+  than the published one. Code point order ranks U+E000 first; a comparator
+  that instead reused UTF-16 code-unit order — the mistake this vector exists
+  to catch, realistic for a port to a UTF-16-native language — would rank the
+  non-BMP tip first instead, since its high surrogate is numerically below
+  U+E000. Go's `strings.Compare` and Python's `str` comparison already agree
+  with the code-point rule natively; this vector pins it against a wrong port
+  rather than fixing anything here.
 - `advisory_stream_recommitted_new_epoch` — the declared at-least-once path:
   a stream re-committed under a new epoch, accepted with one `B4` warning.
 - `advisory_timestamp_regression` — a timestamp regression against the
@@ -766,7 +775,7 @@ otherwise leave every rule intact and every gate green. Both validators print
 a line like
 
 ```
-checked: 16 positive (12 through Tier B) + 31 negative
+checked: 17 positive (13 through Tier B) + 31 negative
 ```
 
 and fail if those counts do not match an independent pre-pass over the suite.
@@ -794,21 +803,22 @@ python3 py/validate.py vectors.json
 **Scope of what "full RFC 8785" above actually means here.** Every published
 canonical *key name* is ASCII, drawn from a 40-character alphabet, so the
 suite's key ordering is exercised only over ASCII keys — where UTF-16
-code-unit order, code-point order and byte order all coincide, and nothing
-here distinguishes the UTF-16 code-unit key ordering RFC 8785 §3.2.3
+code-unit order, code-point order and byte order all coincide. It exercises
+none of JCS's string-escaping rules, and nothing here distinguishes the
+UTF-16 code-unit key ordering RFC 8785 §3.2.3
 requires from a plain code-point sort. That distinction is exactly where
 Python's `sort_keys=True` stops being general JCS.
 
-`valid_surrogate_pair` is the one exception at the *value* level: its
-`stream_id` is 😀 (U+1F600), published as literal 4-byte UTF-8 rather
-than a `\u` escape, because JCS only requires escaping a small fixed set of
-characters (control characters, `"`, `\`) and a supplementary-plane
-character is not one of them. That is real coverage of JCS's
-string-escaping rule, at exactly one code point — not general JCS
-string-escaping conformance, and not a second exception to the key-ordering
-scope above, since a tip's `stream_id` is an array-element *value*, sorted by
-this repo's own R4 rule, not a JSON object key subject to RFC 8785 §3.2.3 at
-all.
+`valid_surrogate_pair` and `non_bmp_and_pua_stream_id_order` are exceptions
+at the *value* level: their stream_ids (😀 U+1F600; and U+E000 and U+10000,
+the first non-BMP code point, respectively) are published as literal UTF-8
+rather than `\u` escapes, because JCS only requires escaping a small fixed
+set of characters (control characters, `"`, `\`) and none of these are among
+them. That is real coverage of JCS's string-escaping rule, at these specific
+code points — not general JCS string-escaping conformance, and not a second
+exception to the key-ordering scope above, since a tip's `stream_id` is an
+array-element *value*, sorted by this repo's own R4 rule, not a JSON object
+key subject to RFC 8785 §3.2.3 at all.
 
 The suite therefore exercises JCS's compact separators throughout. The two
 implementations are also not symmetric in kind: Go canonicalizes through
