@@ -1654,6 +1654,8 @@ def test_null_checkpoint_body_scalars_fold_to_zero_value_in_tier_b():
 # document in Go, only one of the two in Python.
 _TIP_NULL_FOLD_FIELDS = ("entry_count", "sequence_number", "stream_id", "tip_hash")
 
+_ABSENT = object()
+
 
 def _tip_with(**overrides) -> dict:
     """An otherwise-ordinary tip, minus any key named in `overrides` whose
@@ -1666,9 +1668,6 @@ def _tip_with(**overrides) -> dict:
         else:
             t[k] = v
     return t
-
-
-_ABSENT = object()
 
 
 def test_tip_scalars_fold_to_identical_canonical_bytes_null_vs_absent():

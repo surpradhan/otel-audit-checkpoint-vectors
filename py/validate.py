@@ -181,7 +181,9 @@ def check_epoch_presence(cp: dict, min_ver: int):
     traceback in one reference where the other prints a diagnosis is the two
     disagreeing on third-party input."""
     for t in (cp.get("tips") or []):
-        sid = t.get("stream_id", "")
+        sid = tip_stream_id(t)  # only ever interpolated into a message below, but
+        # folded anyway for the same reason every OTHER stream_id read in this file
+        # now is: a raw .get(key, "") reads a present null as None, not "" (#40).
         # Present-but-null is neither an epoch nor an absent epoch. Rejecting
         # it explicitly is what keeps `"epoch": null` from meaning "epoch 0" at
         # version 2 and "legal, no epoch" at version 1 -- and it is the reading
@@ -264,7 +266,8 @@ def check_integer_range(cp: dict, min_ver: int):
     if min_ver >= 3 and not (_MIN_SAFE_INT <= seq <= _MAX_SAFE_INT):
         return f"seq {seq} is outside the I-JSON-safe integer range [{_MIN_SAFE_INT}, {_MAX_SAFE_INT}]"
     for t in (cp.get("tips") or []):
-        sid = t.get("stream_id", "")
+        sid = tip_stream_id(t)  # message-only here too; folded for the same
+        # consistency reason as check_epoch_presence's own read just above.
         for field in ("entry_count", "sequence_number"):
             val = t.get(field)
             if val is not None and (isinstance(val, bool) or not isinstance(val, int)):

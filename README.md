@@ -814,8 +814,8 @@ walk on the checkpoint itself.
   `test_wrong_typed_checkpoint_body_scalars_reject_cleanly_through_the_validator`
   (`py/test_validate.py`) assert all of this instead. The tip-level
   counterpart of this null-vs-absent question is below; unlike this
-  checkpoint-level case, it reached `canonical()` itself, not only
-  `check_tier_b`.
+  checkpoint-level *fix*, which only ever needed to reach `check_tier_b`,
+  the tip-level one below had to reach `canonical()` itself too.
 
 - **A null tip scalar (`entry_count`, `sequence_number`, `stream_id`,
   `tip_hash`) canonicalizing differently from an absent one.** None of
