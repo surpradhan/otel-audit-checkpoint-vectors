@@ -117,6 +117,22 @@ Version 3 adds one further optional field:
   by rejecting every `\ud` escape wholesale, which is over-rejection, not
   conformance — see "Positive vectors" below. Rejected: `encoding`.
 
+  **This is not a hypothetical failure mode for the canonicalizer this repo
+  itself depends on.** `gowebpki/jcs v1.0.1` — the exact version pinned here —
+  canonicalizes `"\ud800\ud800"` and `"\udfff\udfff"` (two distinguishable,
+  malformed surrogate escapes) to identical bytes, both times silently
+  substituting `ef bf bd` (U+FFFD) rather than erroring: confirmed directly
+  against the pinned version, not merely cited. Two distinguishable records
+  would canonicalize to one byte string and carry one signature under a
+  validator that trusted the library alone for encoding validity — precisely
+  the case A4's explicit, pre-parse byte-level check exists to close, ahead of
+  any JCS or JSON-stack involvement. Reported by
+  [astrogilda](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/50079#issuecomment-5374471203)
+  against an 86-vector differential corpus run at the pinned commit
+  (`gowebpki/jcs` `1a4242a`, exactly v1.0.1); the corpus and the reference
+  verifier astrogilda maintains for RFC 8785/7493 conformance more broadly are
+  at [astrogilda/aee-conformance](https://github.com/astrogilda/aee-conformance).
+
 ## Canonical form
 
 A checkpoint is a JSON object:
