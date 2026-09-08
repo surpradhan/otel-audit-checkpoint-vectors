@@ -896,18 +896,24 @@ def entry_name(e: dict) -> str:
     are third-party input like any other, so this reference must return a
     string, never raise.
 
-    Safe in TYPE, but that alone is not enough: `name` is never itself
-    subject to check_encoding (only a checkpoint payload is), so it can
-    carry a raw, unpaired surrogate code point -- a str that IS type-safe
-    but is not valid UTF-8. Every call site formats this return value into
-    an f-string that eventually reaches print(), which encodes to real
-    stdout and raises UnicodeEncodeError on exactly that shape of string
-    -- invisible to this file's own tests, which capture output via
-    io.StringIO and never encode at all (#36). The replace-on-encode round
-    trip below closes that gap the same way Python's own `errors="replace"`
-    closes it anywhere else: never raise, same promise as the type contract
+    Safe in TYPE, but that alone was not enough (#36): a raw, unpaired
+    surrogate code point is a str that IS type-safe but is not valid UTF-8,
+    and every call site formats this return value into an f-string that
+    eventually reaches print(), which encodes to real stdout and raises
+    UnicodeEncodeError on exactly that shape of string -- invisible to this
+    file's own tests, which capture output via io.StringIO and never encode
+    at all. A4's whole-file check (main(), before json.loads) now also
+    covers this position -- it has no concept of which member a string
+    literal belongs to, so a `name` field is caught exactly as `description`
+    and a checkpoint's `stream_id` are (see
+    test_whole_file_encoding_is_checked_before_parsing and
+    test_whole_file_encoding_catches_the_checkpoint_payload_case) -- so this
+    path is not reachable through main() today. The replace-on-encode round
+    trip below is kept anyway, as this function's own direct contract
+    regardless of caller: never raise, same promise as the type contract
     above, just for a different reason a caller cannot see from the return
-    type alone."""
+    type alone. test_entry_name_survives_a_raw_lone_surrogate_on_real_encode
+    exercises it directly -- the only way left to reach it."""
     name = e.get("name", "")
     name = name if isinstance(name, str) else str(name)
     return name.encode("utf-8", "replace").decode("utf-8")

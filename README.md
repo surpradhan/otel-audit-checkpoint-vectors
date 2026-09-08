@@ -714,12 +714,20 @@ walk on the checkpoint itself.
   A4's whole-file check (above) rejects one anywhere in the file, but like
   unknown members, that means no vector can carry one without failing every
   other vector's verdict alongside it — the whole file refuses to load, not
-  one entry. `go/encoding_test.go`'s `TestWholeFileEncodingIsCheckedBeforeParsing`
-  and `py/test_validate.py`'s `test_whole_file_encoding_is_checked_before_parsing`
-  splice a lone `\ud800` into a checkpoint payload field and into an envelope
-  field (`description`) never subject to any other check, and require both
-  references to reject cleanly — not silently normalize it away (Go) or crash
-  the reporting layer while printing a verdict about it (Python, [#36](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36)).
+  one entry. Two pairs of tests cover this, one per class of position: for an
+  envelope field never subject to any other check, `go/encoding_test.go`'s
+  `TestWholeFileEncodingIsCheckedBeforeParsing` and `py/test_validate.py`'s
+  `test_whole_file_encoding_is_checked_before_parsing` splice a lone `\ud800`
+  into `description`; for a checkpoint payload field,
+  `TestWholeFileEncodingCatchesTheCheckpointPayloadCase` and
+  `test_whole_file_encoding_catches_the_checkpoint_payload_case` splice the
+  same escape into `stream_id` in a properly re-signed fixture (a naive
+  splice into an already-signed one is rejected by the pre-existing
+  canonical/signature check regardless of whether this one exists, proving
+  nothing about this check specifically). All four require both references
+  to reject cleanly — not silently normalize it away (Go) or crash the
+  reporting layer while printing a verdict about it (Python,
+  [#36](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36)).
 
 - **Wrong-typed scalars, at the level of the published vectors.** `"epoch":
   "1"`, `"epoch": true`, `"epoch": 1.0` and a null `tips` *element* are

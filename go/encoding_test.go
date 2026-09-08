@@ -502,21 +502,33 @@ func TestWholeFileEncodingIsCheckedBeforeParsing(t *testing.T) {
 // TestWholeFileEncodingCatchesTheCheckpointPayloadCase pins the same
 // property (#36) for the class the issue names explicitly: a lone surrogate
 // escape reaching a typed CHECKPOINT field, not only an envelope field like
-// description above. This needs a properly self-consistent, RE-SIGNED
-// fixture, not a splice into gen()'s already-published output: mutating a
-// checkpoint's stream_id changes its canonical bytes, so a naive splice
-// into already-signed bytes would ALSO fail the pre-existing canonical/
-// signature check -- a real error, but the wrong one, satisfying a bare
-// `err != nil` assertion even with no whole-file encoding check at all.
-// Confirmed directly: that naive construction, run against pre-#36 main,
-// already returns a non-nil error ("canonical mismatch"), so it cannot
-// distinguish "the new check fired" from "a pre-existing check fired for
-// an unrelated reason" -- exactly the gap this test closes. Signing the
-// malformed bytes directly (matching genA4's own placeholder-then-splice
-// technique, since encoding/json's own encoder cannot be made to emit an
-// intentionally-malformed \u escape -- it would escape the backslash
-// instead) makes every OTHER check pass on its own terms, so only the new
-// whole-file check can be why this is rejected.
+// description above. This needs a properly RE-SIGNED fixture, not a splice
+// into gen()'s already-published output: mutating a checkpoint's stream_id
+// changes its canonical bytes, so a naive splice into already-signed bytes
+// would ALSO fail the pre-existing canonical/signature check -- a real
+// error, but the wrong one, satisfying a bare `err != nil` assertion even
+// with no whole-file encoding check at all. Confirmed directly: that naive
+// construction, run against pre-#36 main, already returns a non-nil error
+// ("canonical mismatch"), so it cannot distinguish "the new check fired"
+// from "a pre-existing check fired for an unrelated reason" -- exactly the
+// gap this test closes.
+//
+// Signing the malformed bytes directly (matching genA4's own
+// placeholder-then-splice technique, since encoding/json's own encoder
+// cannot be made to emit an intentionally-malformed \u escape -- it would
+// escape the backslash instead) does NOT make every other check pass on its
+// own terms -- that is impossible here, by this PR's own thesis: decoding
+// this fixture substitutes U+FFFD for the lone surrogate irreversibly, so
+// re-canonicalizing the decoded struct can never reproduce the exact
+// spliced bytes this fixture's "canonical" field holds, and a canonical
+// mismatch is the unavoidable fallback if the whole-file check is bypassed
+// -- confirmed directly, by disabling that check's call site and observing
+// exactly that rejection. What the signing buys is narrower but sufficient:
+// if the whole-file check regresses, the fallback rejection is
+// deterministically labeled "canonical", so asserting the actual error is
+// NOT that label (nor "signature", ruled out the same way) is what isolates
+// the new check -- not round-trip fidelity of the fixture, which no
+// construction of this input could ever have.
 func TestWholeFileEncodingCatchesTheCheckpointPayloadCase(t *testing.T) {
 	priv := ed25519.NewKeyFromSeed(testSeed())
 	pub := priv.Public().(ed25519.PublicKey)

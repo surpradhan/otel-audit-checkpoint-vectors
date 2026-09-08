@@ -1873,31 +1873,43 @@ def test_whole_file_encoding_catches_the_checkpoint_payload_case():
     """Pins the same property (#36) for the class the issue names
     explicitly: a lone surrogate escape reaching a typed CHECKPOINT field,
     not only an envelope field like description above. This needs a
-    properly self-consistent, RE-SIGNED fixture, not a splice into the real
-    suite's already-published bytes: mutating a checkpoint's stream_id
-    changes its canonical bytes, and canonical()'s own .encode("utf-8")
-    already raises on a lone surrogate regardless of the new check -- a
-    real error, but the WRONG one for what this test needs to isolate,
-    satisfying a bare `rc != 0` assertion even with no whole-file check at
-    all (confirmed directly: a naive splice-without-resigning construction,
-    run with the new whole-file check disabled, is STILL rejected -- via
-    "canonical:", not the new message). Signing bytes that were spliced
-    directly (matching go/encoding_test.go's own placeholder-then-splice
-    technique, since json.dumps cannot be made to emit an intentionally
-    malformed \\u escape -- it would escape the backslash instead) makes
-    every OTHER check pass on its own terms, so only the new whole-file
-    check can be why this is rejected. Mirrors
+    properly RE-SIGNED fixture, not a splice into the real suite's
+    already-published bytes: mutating a checkpoint's stream_id changes its
+    canonical bytes, and canonical()'s own .encode("utf-8") already raises
+    on a lone surrogate regardless of the new check -- a real error, but the
+    WRONG one for what this test needs to isolate, satisfying a bare
+    `rc != 0` assertion even with no whole-file check at all (confirmed
+    directly: a naive splice-without-resigning construction, run with the
+    new whole-file check disabled, is STILL rejected -- via "canonical:",
+    not the new message).
+
+    Signing bytes that were spliced directly (matching go/encoding_test.go's
+    own placeholder-then-splice technique, since json.dumps cannot be made
+    to emit an intentionally malformed \\u escape -- it would escape the
+    backslash instead) does NOT make every other check pass on its own
+    terms -- that is impossible here, by this PR's own thesis: parsing this
+    fixture keeps the literal lone surrogate in the Python str (unlike Go),
+    but canonical()'s own re-encode of that str can never succeed either, so
+    a "canonical: ..." rejection (a caught UnicodeEncodeError, not a
+    mismatch) is the unavoidable fallback if the whole-file check is
+    bypassed -- confirmed directly, by disabling that check's call site and
+    observing exactly that rejection. What the signing buys is narrower but
+    sufficient: if the whole-file check regresses, the fallback rejection is
+    deterministically labeled "canonical", so asserting the actual error is
+    NOT that label (nor "signature", ruled out the same way) is what
+    isolates the new check -- not round-trip fidelity of the fixture, which
+    no construction of this input could ever have. Mirrors
     TestWholeFileEncodingCatchesTheCheckpointPayloadCase."""
     import base64 as _b64
     priv = _priv()
     real = _load_real_suite()
 
-    # seq=2, not 1: check_genesis requires seq==1 to pair with the genesis
-    # prev_hash specifically, and _cp's default prev is a plain non-genesis
-    # placeholder -- seq 2 sidesteps that rule instead of having to satisfy
-    # it, same as the unrelated min_format_version bug the Go side of this
-    # fix hit and fixed the same way (see TestWholeFileEncodingCatchesThe
-    # CheckpointPayloadCase).
+    # seq=2, not 1: check_genesis requires seq==1 to pair specifically with
+    # the genesis prev_hash, and _cp's default prev is a plain non-genesis
+    # placeholder -- seq 2 takes the check's other legal branch (both false)
+    # rather than the genesis one (both true) that go/encoding_test.go's
+    # Seq:1 + sha256Empty uses; either is a valid way to satisfy the same
+    # rule.
     placeholder = "WHOLE_FILE_PLACEHOLDER_MARKER"
     cp = _cp(2, _pos_ts(100), [_tip(placeholder, 0, 1, 1, "aa")])
     base = validate.canonical(cp)
@@ -1943,7 +1955,33 @@ def test_whole_file_encoding_catches_the_checkpoint_payload_case():
         f"surrogate escape in a checkpoint payload was accepted\n{output}")
     assert "canonical" not in output and "signature" not in output, (
         "rejected for a canonical/signature reason, not the whole-file "
-        f"encoding check -- the fixture is not properly self-consistent\n{output}")
+        f"encoding check -- this fixture does not isolate that check\n{output}")
+
+
+def test_entry_name_survives_a_raw_lone_surrogate_on_real_encode():
+    """entry_name()'s fix for #36 finding 2 has no test elsewhere that can
+    catch a reversion: this file's own harness captures output via
+    io.StringIO (see _run_main_on_raw), and StringIO.write() never encodes
+    at all, so it cannot exercise the UnicodeEncodeError entry_name() exists
+    to prevent. This test calls entry_name() directly instead -- the only
+    way left to reach it with a raw surrogate, now that A4's whole-file
+    check rejects one in a "name" field before json.loads ever runs (see
+    entry_name()'s own docstring) -- and performs a REAL .encode("utf-8"),
+    the same operation print() performs against a real stdout, proving the
+    fix actually prevents the crash rather than merely returning a str."""
+    raw = "prefix-\ud800-suffix"
+    # The premise: encoding the RAW name directly would crash, or this test
+    # cannot prove entry_name() is the thing preventing that crash.
+    try:
+        raw.encode("utf-8")
+        raise AssertionError(
+            "test bug: the raw name must not be encodable, or this test cannot prove anything")
+    except UnicodeEncodeError:
+        pass
+    result = validate.entry_name({"name": raw})
+    encoded = result.encode("utf-8")  # must not raise
+    assert encoded.decode("utf-8") == result, \
+        f"entry_name()'s return value did not round-trip through UTF-8: {result!r}"
 
 
 # The same literal appears in go/encoding_test.go as wantNULCanonical: the two
