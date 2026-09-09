@@ -653,6 +653,62 @@ def check_encoding(raw: bytes) -> str:
     return ""
 
 
+class _DuplicateKeyError(ValueError):
+    """Raised by _reject_duplicate_keys; caught only inside
+    check_duplicate_keys, never allowed to propagate as an uncaught
+    traceback -- this file's own standing rule for third-party input."""
+
+
+def _reject_duplicate_keys(pairs: list) -> dict:
+    """An object_pairs_hook for json.loads: pairs is every (key, value) in
+    ONE JSON object, in document order, BEFORE Python's own dict
+    construction silently collapses a repeat. Raises _DuplicateKeyError on
+    the first repeat; json.loads calls this once per object at every
+    nesting level, so a repeat anywhere raises, and the SAME key name
+    appearing in two DIFFERENT objects is correctly not a repeat (each
+    call gets its own fresh `pairs` list, scoped to one object)."""
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _DuplicateKeyError(f"duplicate key {key!r}")
+        seen.add(key)
+    return dict(pairs)
+
+
+def check_duplicate_keys(raw: bytes) -> str:
+    """Reports whether any single JSON object in raw, at any nesting level,
+    repeats a member name. Plain json.loads(raw) can't see this: it
+    collapses a repeated key ordinary last-value-wins, including for a
+    literal null (`{"a":5,"a":null}` -> {"a": None}) -- a PLAIN,
+    unconditional last-value-wins, unlike Go's own resolution: Go's
+    non-pointer struct fields treat null as a documented no-op rather than
+    a value that can win, so ITS resolution is really "last NON-NULL
+    occurrence wins" (confirmed directly: `{"a":5,"a":null}` and
+    `{"a":null,"a":5}` both decode to 5 in Go, and `{"a":5,"a":null,
+    "a":7}` decodes to 7, not simply "the null loses"). The two references'
+    NATIVE resolutions genuinely differ, and RFC 8259 SS4 itself only says
+    object names SHOULD be unique, leaving a violator's resolution
+    unspecified -- there is no "correct" answer to canonicalize toward.
+    Rather than pin one language's resolution order as the cross-language
+    contract, both references reject the ambiguity outright (#47), the same
+    choice already made for unknown members and for every wrong-typed-
+    scalar class, at every level of this schema, not just the checkpoint
+    payload.
+
+    Whole-file, not per-entry, and run in the same position as A4: like
+    unknown members, no vector can carry a duplicate key without failing
+    the whole file to load, so this has no A-number and no published
+    vector -- see README's "Not pinned" section. Mirrors Go's
+    checkDuplicateKeys."""
+    try:
+        json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except _DuplicateKeyError:
+        return "duplicate_key"
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ""  # a different malformation; not this check's job to report
+    return ""
+
+
 _HEX_ALPHABET = "0123456789abcdefABCDEF"
 
 
@@ -698,6 +754,17 @@ def resolve_input(input_obj, input_raw_hex: str):
     reason = check_encoding(raw)
     if reason:
         return {}, reason
+    # #47: a duplicate key inside input_raw_hex's own decoded bytes is the
+    # same ambiguity check_duplicate_keys rejects at the whole-file level,
+    # just reached through this payload specifically -- input_raw_hex's own
+    # value is an ordinary, well-formed hex string in the outer suite
+    # file, so only the DECODED checkpoint can carry the malformation, the
+    # same relationship ill_formed_utf8_bytes/lone_surrogate_escape already
+    # have with the whole-file A4 check. Reported as "encoding" too: this
+    # is another way input_raw_hex's decoded bytes fail to be an
+    # unambiguous document, not a conceptually different failure.
+    if check_duplicate_keys(raw):
+        return {}, "encoding"
     try:
         cp = json.loads(raw)
     except json.JSONDecodeError:
@@ -1107,6 +1174,18 @@ def main() -> int:
     if check_encoding(raw):
         print(f"FAIL: {sys.argv[1]} is not valid UTF-8, or contains an "
               "unpaired surrogate escape somewhere in a string literal")
+        return 1
+    # #47, over the whole file, same reasoning and same position as A4 just
+    # above: plain json.loads resolves a duplicate object key silently
+    # (ordinary last-value-wins, including for a literal null), and Go's
+    # own native resolution differs (null is a documented no-op rather
+    # than a value that can win, so it's really last-NON-NULL-value-wins)
+    # -- the two references would disagree with each other about what such
+    # a document even means. See check_duplicate_keys's own docstring for
+    # the full reasoning and why this has no A-number.
+    if check_duplicate_keys(raw):
+        print(f"FAIL: {sys.argv[1]} contains a JSON object with a "
+              "duplicate member name somewhere")
         return 1
     # json.loads already rejects a file carrying trailing data after the
     # suite object ("Extra data") -- but as an uncaught traceback, which is

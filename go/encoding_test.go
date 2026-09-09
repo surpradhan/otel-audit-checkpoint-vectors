@@ -578,6 +578,121 @@ func TestWholeFileEncodingCatchesTheCheckpointPayloadCase(t *testing.T) {
 	}
 }
 
+// TestWholeFileDuplicateKeyIsCheckedBeforeParsing pins #47's extension to
+// the whole file, mirroring TestWholeFileEncodingIsCheckedBeforeParsing's own
+// two-position shape (an envelope field never subject to any other check,
+// and a checkpoint-payload field) -- but unlike that test, BOTH positions
+// here can use the simple splice-into-already-signed-bytes construction,
+// with no re-signing needed at either one. A duplicate key with an
+// IDENTICAL value is invisible to canonical()'s own round trip: decoding
+// (by either language's native, pre-#47 resolution) yields the same struct
+// either way, since there is only ever one real value to resolve to, so
+// re-canonicalizing it reproduces the ORIGINAL, unmodified canonical bytes
+// exactly -- confirmed directly before writing this test. That is why a
+// naive splice suffices here where #36's own surrogate-escape case needed
+// genA4's placeholder-then-sign technique: a malformed escape permanently
+// changes the decoded value (Go substitutes U+FFFD), where an
+// identical-value duplicate changes nothing decode can observe. If the new
+// check were bypassed, BOTH positions below would therefore validate
+// cleanly, not merely fail for some other, mislabeled reason -- the
+// strongest form this kind of test can take.
+func TestWholeFileDuplicateKeyIsCheckedBeforeParsing(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	clean := filepath.Join(dir, "clean.json")
+	if err := os.WriteFile(clean, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(clean); err != nil {
+		t.Fatalf("the unmodified suite must validate: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		anchor string
+		dup    string
+	}{
+		// An envelope field never subject to any other check. A short,
+		// COMPLETE key:value pair, not a prefix of a longer string value
+		// like description's own -- the splice below assumes the anchor is
+		// the whole pair, and inserting mid-string (as description's long
+		// value would) produces invalid JSON rather than a duplicate key.
+		{"algorithm", `"algorithm":"ed25519"`, ""},
+		// A checkpoint-payload field, inside some real vector's signed
+		// input -- the class #47 itself names. epoch:0 is common enough to
+		// be guaranteed present in the generated suite without depending
+		// on any one vector's exact shape.
+		{"checkpoint_payload", `"epoch":0`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := bytes.Index(raw, []byte(tc.anchor))
+			if idx < 0 {
+				t.Fatalf("anchor %q not found in generated suite", tc.anchor)
+			}
+			// Splice a duplicate of the anchor's own key, with the anchor's
+			// OWN value, right after it -- e.g. `"epoch":0` becomes
+			// `"epoch":0,"epoch":0`. Same key, same value, so nothing about
+			// the checkpoint's MEANING changes, only its raw byte shape.
+			colonIdx := bytes.IndexByte([]byte(tc.anchor), ':')
+			if colonIdx < 0 {
+				t.Fatalf("test bug: anchor %q has no ':'", tc.anchor)
+			}
+			keyPart := tc.anchor[:colonIdx] // e.g. `"epoch"`
+			insertAt := idx + len(tc.anchor)
+			dupBytes := []byte("," + keyPart + tc.anchor[colonIdx:])
+			spliced := append(append(append([]byte(nil), raw[:insertAt]...), dupBytes...), raw[insertAt:]...)
+			path := filepath.Join(t.TempDir(), "malformed.json")
+			if err := os.WriteFile(path, spliced, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := validate(path)
+			if err == nil {
+				t.Fatalf("a suite with a duplicate %s key spliced in was accepted", tc.name)
+			}
+			if !strings.Contains(err.Error(), "duplicate member name") {
+				t.Fatalf("rejected for an unexpected reason, not the new duplicate-key check: %v", err)
+			}
+		})
+	}
+}
+
+// TestDuplicateKeyInsideInputRawHexIsRejected pins #47's resolveInput half:
+// a duplicate key inside input_raw_hex's own DECODED bytes is the same
+// ambiguity, reached through the payload input_raw_hex represents rather
+// than the outer suite file's own literal text. Mirrors
+// ill_formed_utf8_bytes/lone_surrogate_escape's own established relationship
+// to the whole-file A4 check.
+func TestDuplicateKeyInsideInputRawHexIsRejected(t *testing.T) {
+	cp := Checkpoint{PrevHash: sha256Empty, Seq: 2, Timestamp: "2027-03-01T00:00:00Z", Tips: []Tip{
+		{EntryCount: 1, Epoch: ptr(0), SequenceNumber: 1, StreamID: "x", TipHash: "aa" + strings.Repeat("00", 31)},
+	}}
+	base := mustCanonical(cp, "TestDuplicateKeyInsideInputRawHexIsRejected base")
+	spliced := bytes.Replace(base, []byte(`"seq":2`), []byte(`"seq":2,"seq":2`), 1)
+	if bytes.Equal(spliced, base) {
+		t.Fatal("test bug: anchor not found in base canonical bytes")
+	}
+	cp2, reason := resolveInput(Checkpoint{}, hex.EncodeToString(spliced))
+	if reason != "encoding" {
+		t.Fatalf("resolveInput(duplicate-key raw hex) = (%+v, %q), want reason \"encoding\"", cp2, reason)
+	}
+}
+
+// TestResolveInputPlainSyntaxErrorInRawHexStaysSchema is the resolveInput
+// counterpart to TestCheckDuplicateKeysDoesNotReportAPlainSyntaxErrorAsA
+// Duplicate: an input_raw_hex payload that's malformed for some OTHER
+// reason -- not a repeated key -- must keep its pre-#47 "schema" reason, not
+// be swept into "encoding" by checkDuplicateKeys misreporting the syntax
+// error as a duplicate. Found in round 1 review.
+func TestResolveInputPlainSyntaxErrorInRawHexStaysSchema(t *testing.T) {
+	raw := []byte(`{"seq":1,}`) // trailing comma: malformed, not a duplicate key
+	_, reason := resolveInput(Checkpoint{}, hex.EncodeToString(raw))
+	if reason != "schema" {
+		t.Fatalf("resolveInput(malformed non-duplicate raw hex) reason = %q, want \"schema\"", reason)
+	}
+}
+
 // public_key_hex missing, null, wrong-typed, or the wrong length must not
 // crash validate(): decoding leaves the Go string field at its zero value for
 // a missing or null member, and hex.DecodeString happily returns a short (or

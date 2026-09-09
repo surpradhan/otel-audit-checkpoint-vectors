@@ -729,6 +729,43 @@ walk on the checkpoint itself.
   reporting layer while printing a verdict about it (Python,
   [#36](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/36)).
 
+- **A JSON object carrying the same member name twice.** Neither reference
+  detected this at all until now — Go's `encoding/json.Unmarshal` and
+  Python's plain `json.loads` both silently resolve a duplicate key
+  natively, and their *native* resolutions genuinely differ: Go's
+  non-pointer struct fields treat an explicit `null` as a documented no-op
+  rather than a value that can win, so its resolution is really "the last
+  NON-NULL occurrence wins" (`{"a":5,"a":null,"a":7}` decodes `a` to `7`,
+  not simply "the null loses" — confirmed directly, since that framing
+  stops generalizing past two occurrences), while Python's is ordinary,
+  unconditional last-occurrence-wins, including for `null`. RFC 8259 §4
+  itself only says object names SHOULD be unique, leaving a violator's
+  resolution unspecified — there is no "correct" answer to canonicalize
+  toward, so rather than pin one language's resolution order as the
+  cross-language contract, both references now reject the ambiguity
+  outright, whole-file, the same choice already made for unknown members
+  and every wrong-typed-scalar class above. `go/duplicatekeys_test.go` and
+  the matching `test_check_duplicate_keys_*` functions in
+  `py/test_validate.py` pin the check directly (including that the SAME
+  member name recurring in two *different* objects — every checkpoint has
+  its own `seq`, for instance — is correctly not a violation);
+  `TestWholeFileDuplicateKeyIsCheckedBeforeParsing`/
+  `test_whole_file_duplicate_key_is_checked_before_parsing` pin it at the
+  whole-file level, for an envelope field and a checkpoint-payload field —
+  and, unlike the surrogate-escape bullet just above, neither position here
+  needs a re-signed fixture: a duplicate carrying its own already-published
+  value is invisible to `canonical()`'s own round trip (decoding it and
+  re-canonicalizing reproduces the original bytes exactly), so a naive
+  splice into the real suite's own already-signed text is already properly
+  self-consistent, and bypassing the check validates the mutated suite
+  cleanly rather than merely failing for some other, mislabeled reason.
+  `TestDuplicateKeyInsideInputRawHexIsRejected`/
+  `test_duplicate_key_inside_input_raw_hex_is_rejected` pin the same
+  ambiguity one level down, inside `input_raw_hex`'s own decoded bytes,
+  mirroring `ill_formed_utf8_bytes`/`lone_surrogate_escape`'s own
+  relationship to the whole-file A4 check
+  ([#47](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/47)).
+
 - **Wrong-typed scalars, at the level of the published vectors.** `"epoch":
   "1"`, `"epoch": true`, `"epoch": 1.0` and a null `tips` *element* are
   rejected by both references, but — like unknown members — by different

@@ -434,6 +434,20 @@ that gap by the same "raw bytes before parsing" reasoning this section already
 argues for, applied completely rather than only where the first two vectors
 happened to need it.
 
+A different structural ambiguity was found the same way, while grounding #40
+above (#47): a JSON object carrying the same member name twice. Neither
+reference's decoder rejected this, and each resolved it *differently* --
+Go's non-pointer struct fields treat `null` as a no-op rather than a value
+that can win, Python's plain `json.loads` doesn't. RFC 8259 §4 leaves a
+violator's resolution unspecified, so rather than pin one language's
+resolution order as the contract, both references now reject a duplicate key
+outright, whole-file, the same choice this section already describes for
+unknown members and every wrong-typed-scalar class. Unlike A4's own
+surrogate-escape defect, this needed genuinely new structural scanning in
+both languages (neither `Unmarshal` path, struct- or map-based, preserves
+duplicate-key information -- confirmed directly), not a decode-option flip;
+see `README.md`'s own "Not pinned" entry for the mechanism.
+
 **A4 needs a positive too.** A raw-text scan for lone surrogate escapes must
 still accept a *valid* surrogate pair, and must handle `\\u` and case variants.
 Without `valid_surrogate_pair` — a raw-hex **positive** containing
