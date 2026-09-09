@@ -2061,6 +2061,86 @@ func checkEncoding(raw []byte) string {
 	return ""
 }
 
+// checkMaxDepth walks the whole file's JSON structure and reports whether
+// it nests deeper than maxJSONDepth. A separate pass, unconditional, run
+// BEFORE checkDuplicateKeys -- not merged into checkNoDuplicateKeysAt's own
+// walk, which an earlier version of this check did -- so the two
+// references' precedence agrees when a document carries BOTH defects.
+// Python's own check_max_depth is necessarily a separate, unconditional
+// pre-parse pass: its crash-safety reasoning requires it to run before
+// check_duplicate_keys's own recursive walk ever touches the document at
+// all, so on the Python side max_depth always wins if present anywhere,
+// regardless of where a duplicate key also sits. Merging depth-tracking
+// into checkNoDuplicateKeysAt's own walk instead made Go's precedence
+// depend on which defect the walk encountered FIRST structurally --
+// confirmed empirically in review (#51) to disagree with Python for a
+// document with a shallow duplicate key positioned before a deep, unrelated
+// branch (Go said "duplicate_key", Python said "max_depth" for the
+// identical bytes). Go doesn't need a SEPARATE pass for crash-safety the
+// way Python does -- checkNoDuplicateKeysAt's own recursion never risked an
+// uncatchable crash, Go's stack grows dynamically -- but matching Python's
+// STRUCTURE, not just checking the same limit, is what makes the two
+// references' precedence provably identical on adversarial dual-defect
+// input, not merely equivalent-looking in isolation.
+func checkMaxDepth(raw []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if checkMaxDepthAt(dec, 1) {
+		return "max_depth"
+	}
+	return ""
+}
+
+// maxJSONDepth matches the depth limit encoding/json's own decoder enforces
+// internally (confirmed directly: it accepts up to 10,000 levels of `{`/`[`
+// nesting and cleanly rejects 10,001, with "invalid character '{' exceeded
+// max depth"). See py's _MAX_JSON_DEPTH for the matching constant and the
+// full reasoning (#51).
+const maxJSONDepth = 10_000
+
+// checkMaxDepthAt consumes exactly one JSON value from dec -- a scalar, an
+// object, or an array -- and reports whether it, or anything nested inside
+// it, exceeds maxJSONDepth. depth is the nesting level THIS value would
+// have if it turns out to be a container -- the outermost call passes 1,
+// matching encoding/json's own depth counting (a lone `{}` is one level)
+// and check_max_depth's identical convention on the Python side. A decode
+// error unrelated to depth (a plain JSON syntax error) is deliberately not
+// this check's job to report -- like checkNoDuplicateKeysAt's own
+// equivalent deferral just below, the real json.Unmarshal call that runs
+// afterward reports it.
+func checkMaxDepthAt(dec *json.Decoder, depth int) bool {
+	tok, err := dec.Token()
+	if err != nil {
+		return false
+	}
+	delim, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return false // a scalar: string, number, bool, or null
+	}
+	if depth > maxJSONDepth {
+		return true
+	}
+	switch delim {
+	case '{':
+		for dec.More() {
+			if _, err := dec.Token(); err != nil { // the member's key
+				return false
+			}
+			if checkMaxDepthAt(dec, depth+1) {
+				return true
+			}
+		}
+		dec.Token() // consume the closing '}'
+	case '[':
+		for dec.More() {
+			if checkMaxDepthAt(dec, depth+1) {
+				return true
+			}
+		}
+		dec.Token() // consume the closing ']'
+	}
+	return false
+}
+
 // checkDuplicateKeys walks the whole file's JSON structure, at every
 // nesting level, and reports whether any single object repeats a member
 // name. Neither Unmarshal path this file uses can see this: a struct
@@ -2092,42 +2172,14 @@ func checkEncoding(raw []byte) string {
 // unknown members, no vector can carry a duplicate key without failing
 // the whole file to load, so this has no A-number and no published
 // vector -- see README's "Not pinned" section.
-//
-// checkNoDuplicateKeysAt also enforces maxJSONDepth (#51): this walk uses
-// json.Decoder.Token(), which does NOT inherit Unmarshal's own internal
-// depth guard, so without an explicit one here an excessively deep
-// document would sail through this entire duplicate-key walk -- and pay
-// its full cost -- only to be rejected afterward by the real Unmarshal
-// call below, on its own internal, unstated limit. Python needs the same
-// explicit limit for a different, sharper reason (an uncaught
-// RecursionError, not merely a slow walk) -- see check_max_depth's own
-// docstring -- but the two references settle on the identical number so
-// they keep agreeing on which documents are even well-formed.
 func checkDuplicateKeys(raw []byte) string {
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	err := checkNoDuplicateKeysAt(dec, 1)
 	var dupErr *duplicateKeyError
-	switch {
-	case errors.Is(err, errMaxJSONDepthExceeded):
-		return "max_depth"
-	case errors.As(err, &dupErr):
+	if err := checkNoDuplicateKeysAt(dec); errors.As(err, &dupErr) {
 		return "duplicate_key"
-	default:
-		return ""
 	}
+	return ""
 }
-
-// maxJSONDepth matches the depth limit encoding/json's own decoder enforces
-// internally (confirmed directly: it accepts up to 10,000 levels of `{`/`[`
-// nesting and cleanly rejects 10,001, with "invalid character '{' exceeded
-// max depth"). See py's _MAX_JSON_DEPTH for the matching constant and the
-// full reasoning (#51).
-const maxJSONDepth = 10_000
-
-// errMaxJSONDepthExceeded is the ONE error checkNoDuplicateKeysAt returns
-// that checkDuplicateKeys reports as "max_depth", mirroring
-// duplicateKeyError's own relationship to "duplicate_key" just below.
-var errMaxJSONDepthExceeded = errors.New("exceeded max JSON depth")
 
 // duplicateKeyError is the ONE error checkNoDuplicateKeysAt returns that
 // checkDuplicateKeys reports as "duplicate_key". Every other error dec.Token()
@@ -2146,18 +2198,12 @@ type duplicateKeyError struct{ key string }
 func (e *duplicateKeyError) Error() string { return fmt.Sprintf("duplicate key %q", e.key) }
 
 // checkNoDuplicateKeysAt consumes exactly one JSON value from dec -- a
-// scalar, an object, or an array -- and returns an error if any object it
-// contains, at any depth, repeats a member name, or if the value nests
-// deeper than maxJSONDepth. dec.Token() is the only primitive in
-// encoding/json that exposes raw structure without collapsing it first,
-// which is why this walks the token stream directly rather than decoding
-// into any Go value.
-//
-// depth is the nesting level THIS value would have if it turns out to be
-// a container -- the outermost call passes 1, matching encoding/json's
-// own depth counting (a lone `{}` is one level) and check_max_depth's
-// identical convention on the Python side.
-func checkNoDuplicateKeysAt(dec *json.Decoder, depth int) error {
+// scalar, an object, or an array -- and returns an error if any object
+// it contains, at any depth, repeats a member name. dec.Token() is the
+// only primitive in encoding/json that exposes raw structure without
+// collapsing it first, which is why this walks the token stream
+// directly rather than decoding into any Go value.
+func checkNoDuplicateKeysAt(dec *json.Decoder) error {
 	tok, err := dec.Token()
 	if err != nil {
 		return err
@@ -2165,9 +2211,6 @@ func checkNoDuplicateKeysAt(dec *json.Decoder, depth int) error {
 	delim, isDelim := tok.(json.Delim)
 	if !isDelim {
 		return nil // a scalar: string, number, bool, or null
-	}
-	if depth > maxJSONDepth {
-		return errMaxJSONDepthExceeded
 	}
 	switch delim {
 	case '{':
@@ -2185,7 +2228,7 @@ func checkNoDuplicateKeysAt(dec *json.Decoder, depth int) error {
 				return &duplicateKeyError{key: key}
 			}
 			seen[key] = true
-			if err := checkNoDuplicateKeysAt(dec, depth+1); err != nil {
+			if err := checkNoDuplicateKeysAt(dec); err != nil {
 				return err
 			}
 		}
@@ -2193,7 +2236,7 @@ func checkNoDuplicateKeysAt(dec *json.Decoder, depth int) error {
 		return err
 	case '[':
 		for dec.More() {
-			if err := checkNoDuplicateKeysAt(dec, depth+1); err != nil {
+			if err := checkNoDuplicateKeysAt(dec); err != nil {
 				return err
 			}
 		}
@@ -2225,18 +2268,28 @@ func resolveInput(input Checkpoint, inputRawHex string) (Checkpoint, string) {
 	if reason := checkEncoding(raw); reason != "" {
 		return Checkpoint{}, reason
 	}
-	// #47/#51: a duplicate key, or excessive nesting, inside input_raw_hex's
-	// own decoded bytes is the same ambiguity/risk checkDuplicateKeys
-	// rejects at the whole-file level (see its own doc comment), just
-	// reached through this payload specifically -- input_raw_hex's own
+	// #51: excessive nesting inside input_raw_hex's own decoded bytes is the
+	// same structural risk checkMaxDepth rejects at the whole-file level,
+	// just reached through this payload specifically -- and
+	// checkDuplicateKeys's own recursive walk just below is equally a
+	// separate concern, so this runs first, matching checkMaxDepth's own
+	// doc comment on why the two checks stay two separate passes rather
+	// than one combined walk. Reported as "encoding" too, matching
+	// checkDuplicateKeys's own reasoning just below: another way
+	// input_raw_hex's decoded bytes fail to be a document this reference
+	// can safely process, not a conceptually different failure.
+	if reason := checkMaxDepth(raw); reason != "" {
+		return Checkpoint{}, "encoding"
+	}
+	// #47: a duplicate key inside input_raw_hex's own decoded bytes is the
+	// same ambiguity checkDuplicateKeys rejects at the whole-file level,
+	// just reached through this payload specifically -- input_raw_hex's own
 	// value is an ordinary, well-formed hex string in the outer suite
-	// file, so only the DECODED checkpoint can carry either malformation,
-	// the same relationship ill_formed_utf8_bytes/lone_surrogate_escape
-	// already have with the whole-file A4 check. Both reported as
-	// "encoding" here: each is another way input_raw_hex's decoded bytes
-	// fail to be a document this reference can safely process, not a
-	// conceptually different failure -- callers don't need to distinguish
-	// which one fired, unlike validate()'s own whole-file message.
+	// file, so only the DECODED checkpoint can carry the malformation, the
+	// same relationship ill_formed_utf8_bytes/lone_surrogate_escape already
+	// have with the whole-file A4 check. Reported as "encoding" too: this
+	// is another way input_raw_hex's decoded bytes fail to be an
+	// unambiguous document, not a conceptually different failure.
 	if reason := checkDuplicateKeys(raw); reason != "" {
 		return Checkpoint{}, "encoding"
 	}
@@ -2394,23 +2447,25 @@ func validate(path string) error {
 	if reason := checkEncoding(data); reason != "" {
 		return fmt.Errorf("the suite file is not valid UTF-8, or contains an unpaired surrogate escape somewhere in a string literal")
 	}
+	// #51, over the whole file, same position as A4/#47 just above:
+	// checkNoDuplicateKeysAt's own recursive walk just below is equally a
+	// separate concern from depth, so this runs first -- see checkMaxDepth's
+	// own doc comment for why this stays a SEPARATE pass rather than being
+	// folded into checkDuplicateKeys's walk (an earlier version of this
+	// check did that, and it made Go's precedence disagree with Python's on
+	// a document carrying both defects).
+	if reason := checkMaxDepth(data); reason != "" {
+		return fmt.Errorf("the suite file is nested more than %d levels deep somewhere", maxJSONDepth)
+	}
 	// #47, over the whole file, same reasoning and same position as A4 just
 	// above: encoding/json's own decode resolves a duplicate object key
 	// silently (last-non-null-value-wins for a struct field, ordinary
 	// last-value-wins for a map), and Python's plain json.loads resolves
 	// the same ambiguity a DIFFERENT way -- the two references would
 	// disagree with each other about what such a document even means,
-	// before gowebpki/jcs is ever reached. checkDuplicateKeys also catches
-	// excessive nesting (#51), for the reasoning in its own doc comment --
-	// distinguished here so a max-depth failure isn't misreported as a
-	// duplicate key. See checkDuplicateKeys's own doc comment for the full
-	// reasoning and why neither case has an A-number.
-	switch reason := checkDuplicateKeys(data); reason {
-	case "":
-		// no failure
-	case "max_depth":
-		return fmt.Errorf("the suite file is nested more than %d levels deep somewhere", maxJSONDepth)
-	default:
+	// before gowebpki/jcs is ever reached. See checkDuplicateKeys's own
+	// doc comment for the full reasoning and why this has no A-number.
+	if reason := checkDuplicateKeys(data); reason != "" {
 		return fmt.Errorf("the suite file contains a JSON object with a duplicate member name somewhere")
 	}
 	// Strict decoding, in TWO stages: the envelope eagerly, the entries only

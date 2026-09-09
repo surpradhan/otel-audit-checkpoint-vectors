@@ -700,6 +700,51 @@ func TestWholeFileMaxDepthIsCheckedBeforeParsing(t *testing.T) {
 	}
 }
 
+// TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent pins the actual
+// caller-level property #51 round 1 found missing: validate() must report
+// "max_depth", not "duplicate_key", for a document carrying BOTH defects --
+// because checkMaxDepth runs first, unconditionally, before
+// checkDuplicateKeys ever does (see checkMaxDepth's own doc comment). An
+// earlier version of this fix combined depth-tracking into
+// checkDuplicateKeys's own walk, which made Go's answer depend on
+// structural position (whichever defect the walk reached first), and for
+// exactly this document -- the duplicate key coming BEFORE the excessive
+// depth in byte order -- that gave "duplicate_key", disagreeing with
+// Python's own check_max_depth, which is necessarily a separate,
+// unconditional pre-pass and therefore always answers "max_depth" for the
+// identical bytes regardless of where either defect sits. Mirrors Python's
+// test_max_depth_wins_over_duplicate_key_when_both_are_present.
+func TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := `"algorithm":"ed25519"`
+	idx := bytes.Index(raw, []byte(anchor))
+	if idx < 0 {
+		t.Fatalf("anchor %q not found in generated suite", anchor)
+	}
+	// Splice in a SECOND "algorithm" member (a duplicate key) whose own
+	// value is excessively deep -- one splice, two independent defects: the
+	// key "algorithm" now appears twice (checkDuplicateKeys's own concern),
+	// and the second occurrence's value nests past maxJSONDepth
+	// (checkMaxDepth's own concern, unrelated to the duplicate).
+	dup := `,"algorithm":` + nestedArrayJSON(maxJSONDepth+1)
+	insertAt := idx + len(anchor)
+	spliced := append(append(append([]byte(nil), raw[:insertAt]...), []byte(dup)...), raw[insertAt:]...)
+	path := filepath.Join(t.TempDir(), "malformed.json")
+	if err := os.WriteFile(path, spliced, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = validate(path)
+	if err == nil {
+		t.Fatal("a suite with both a duplicate key and excessive depth was accepted")
+	}
+	if !strings.Contains(err.Error(), "nested more than") {
+		t.Fatalf("a document with both defects was rejected for the wrong reason (want max_depth): %v", err)
+	}
+}
+
 // TestDuplicateKeyInsideInputRawHexIsRejected pins #47's resolveInput half:
 // a duplicate key inside input_raw_hex's own DECODED bytes is the same
 // ambiguity, reached through the payload input_raw_hex represents rather
