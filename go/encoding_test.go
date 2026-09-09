@@ -1040,6 +1040,57 @@ func TestWrongTypedTipScalarsAreRejectedWhileDecoding(t *testing.T) {
 	}
 }
 
+// TestWrongTypedTipStringScalarsAreRejectedWhileDecoding pins strict decoding
+// for stream_id and tip_hash -- free here, since StreamID/TipHash are plain
+// (non-pointer) string fields and Go's decoder already refuses any
+// non-string for them, the same way TestWrongTypedTipScalarsAreRejectedWhile
+// Decoding already pins for entry_count/sequence_number. Recorded as a
+// permanent test regardless, mirroring Python's
+// test_wrong_typed_stream_id_and_tip_hash_returns_a_reason -- that reference
+// had never inspected either field's TYPE at all before #45 (only its member
+// NAME, via _TIP_MEMBERS), so nothing there enforced this until now, and
+// this is the Go side's half of the same stated, tested contract.
+func TestWrongTypedTipStringScalarsAreRejectedWhileDecoding(t *testing.T) {
+	// Mirrors TestWrongTypedTipScalarsAreRejectedWhileDecoding's own body()
+	// closure exactly, same reasoning: `other` is fixed at an ordinary value
+	// so the JSON object never contains the field-under-test's key twice.
+	body := func(field, other, raw string) string {
+		return `{"epoch":0,"entry_count":1,"sequence_number":1,"` + other + `":"x","` + field + `":` + raw + `}`
+	}
+	fields := map[string]string{"stream_id": "tip_hash", "tip_hash": "stream_id"}
+	for field, other := range fields {
+		for _, raw := range []string{`12345`, `[1]`, `true`, `1.0`, `{"a":1}`} {
+			var tip Tip
+			if err := json.Unmarshal([]byte(body(field, other, raw)), &tip); err == nil {
+				t.Errorf("%s %s was accepted; %s must be a string", field, raw, field)
+			}
+		}
+		// The contrast: an ordinary string decodes to itself, and an
+		// explicit null decodes to the zero value "" -- neither field is a
+		// pointer, so null is a documented no-op, same as every other
+		// scalar this file pins. Asserted on the actual decoded value, not
+		// merely a nil error, matching the entry_count/sequence_number
+		// precedent's own discipline against a duplicate-key regression.
+		for _, tc := range []struct {
+			raw  string
+			want string
+		}{{`""`, ""}, {`"y"`, "y"}, {`null`, ""}} {
+			var tip Tip
+			if err := json.Unmarshal([]byte(body(field, other, tc.raw)), &tip); err != nil {
+				t.Errorf("%s %s must decode without error, got: %v", field, tc.raw, err)
+				continue
+			}
+			got := tip.StreamID
+			if field == "tip_hash" {
+				got = tip.TipHash
+			}
+			if got != tc.want {
+				t.Errorf("%s %s decoded to %q, want %q", field, tc.raw, got, tc.want)
+			}
+		}
+	}
+}
+
 // The two marshal paths must agree on EVERY member except `epoch`. The null
 // path used to re-declare all five fields in a parallel anonymous struct, so a
 // sixth field added to Tip would appear in the signed bytes of an ordinary tip

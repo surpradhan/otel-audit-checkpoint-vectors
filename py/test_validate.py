@@ -1525,6 +1525,39 @@ def test_wrong_typed_entry_count_and_sequence_number_reject_while_decoding():
                 f"{field}={ok_val!r} must stay legal"
 
 
+def test_wrong_typed_stream_id_and_tip_hash_returns_a_reason():
+    """stream_id and tip_hash reached check_schema completely unvalidated
+    before #45: `_TIP_MEMBERS` only declared the member NAME as allowed, and
+    canonical()/tip_identity() read whatever value was present without
+    inspecting it, so a wrong-typed value here either flowed silently into
+    the signed bytes (a lone tip) or crashed the tip sort with an uncaught
+    TypeError (two or more tips of mismatched types) where Go's
+    `StreamID`/`TipHash string` struct fields already refuse the whole file
+    at decode. Confirmed both pre-fix failure shapes directly against
+    pre-#45 `main` before writing this test -- a silent accept for the
+    single-tip case, and the exact `TypeError: '<' not supported between
+    instances of 'int' and 'str'` #45's own issue body reports for the
+    mixed-tip case. Mirrors TestWrongTypedTipStringScalarsAreRejectedWhile
+    Decoding."""
+    for field in ("stream_id", "tip_hash"):
+        for bad in (12345, [1], True, False, 1.0, {"a": 1}):
+            tip = _tip(_pos_stream(1), 0, 1, 1, "aa")
+            tip[field] = bad
+            cp = _cp(1, _pos_ts(100), [tip])
+            err = validate.check_schema(cp, 2)
+            assert err is not None, f"{field}={bad!r} was accepted; {field} must be a string"
+        # The contrast: an ordinary value and an explicit null both stay
+        # legal, matching Go's non-pointer zero-value no-op -- and matching
+        # #40's own null-folding fold, which exists specifically because
+        # this stays legal.
+        for ok_val in ("x", "", None):
+            tip = _tip(_pos_stream(1), 0, 1, 1, "aa")
+            tip[field] = ok_val
+            cp = _cp(1, _pos_ts(100), [tip])
+            assert validate.check_schema(cp, 2) is None, \
+                f"{field}={ok_val!r} must stay legal"
+
+
 # --- check_integer_range (A5): every integer field must fall within I-JSON's
 # safe range. Mirrors go/integerrange_test.go.
 

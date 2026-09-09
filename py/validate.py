@@ -759,6 +759,21 @@ def check_schema(cp, min_ver: int):
         err = unknown_members(t, _TIP_MEMBERS, "a tip")
         if err:
             return err
+        # Go's StreamID/TipHash string fields refuse a wrong type at decode,
+        # same reasoning as timestamp/prev_hash above -- entry_count/
+        # sequence_number's equivalent gate lives in check_integer_range
+        # instead because THAT function's own range check needs the value
+        # typed first as a prerequisite; these two have no such downstream
+        # need, so gated here, matching timestamp/prev_hash's own inline
+        # shape rather than adding a third gating function for it (#45).
+        # None (absent or explicit null) stays legal, the same reasoning as
+        # every other scalar gate in this file: #40's tip_stream_id/
+        # tip_tip_hash folds exist specifically because this stays legal.
+        sid = tip_stream_id(t)  # message-only
+        for field in ("stream_id", "tip_hash"):
+            val = t.get(field)
+            if val is not None and not isinstance(val, str):
+                return f"stream {sid!r}: {field} must be a string, got {type(val).__name__}"
     err = check_epoch_presence(cp, min_ver)
     if err:
         return err
