@@ -870,10 +870,24 @@ walk on the checkpoint itself.
   (`py/test_validate.py`) assert all of this
   ([#40](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/40)).
   A `stream_id`/`tip_hash` carrying the WRONG TYPE entirely (not null, an
-  int or other non-string) is a related but distinct gap — neither field has
-  a type-gate at all, unlike `entry_count`/`sequence_number` — tracked
-  separately as
-  [#45](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/45).
+  int or other non-string) was a related but distinct, now-fixed gap: unlike
+  `entry_count`/`sequence_number` (type-gated inside `check_integer_range`
+  since #28, a natural place for it there since that function's own range
+  check needs the value typed first anyway), neither string field ever had a
+  type-gate at all — `_TIP_MEMBERS` only declared the member NAME as
+  allowed, and `canonical()`/`tip_identity()` read whatever value was
+  present unchecked. A lone wrong-typed tip flowed silently into the signed
+  bytes; two or more tips of mismatched types crashed `canonical()`'s own
+  sort with an uncaught `TypeError`, not a clean rejection. `check_schema`
+  now gates both, unconditionally, in the same inline shape as
+  `timestamp`/`prev_hash`'s own string gate above (no downstream numeric
+  computation to bundle it with, unlike `entry_count`/`sequence_number`, so
+  it doesn't live inside `check_integer_range` too).
+  `TestWrongTypedTipStringScalarsAreRejectedWhileDecoding`
+  (`go/encoding_test.go`) and
+  `test_wrong_typed_stream_id_and_tip_hash_returns_a_reason`
+  (`py/test_validate.py`) assert this
+  ([#45](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/45)).
 
 - **The version-1-carrying-`epoch` direction.** A version-2 tip missing
   `epoch` is published as a vector (`missing_epoch_in_v2`); the mirror-image
