@@ -2108,6 +2108,77 @@ def test_whole_file_encoding_is_checked_before_parsing():
         f"rejected without a FAIL line; a traceback is not a verdict\n{output}"
 
 
+def _nested_object_json(depth):
+    """depth levels of {"a":...} nesting around a scalar, e.g.
+    _nested_object_json(2) == '{"a":{"a":0}}' -- a lone {} is nesting level
+    1, matching _MAX_JSON_DEPTH's own counting convention and Go's identical
+    one (nestedObjectJSON)."""
+    return '{"a":' * depth + "0" + "}" * depth
+
+
+def _nested_array_json(depth):
+    """_nested_object_json's array-nesting counterpart -- _MAX_JSON_DEPTH
+    applies to `[` exactly as it does to `{`. Mirrors Go's
+    nestedArrayJSON."""
+    return "[" * depth + "0" + "]" * depth
+
+
+def test_whole_file_max_depth_is_checked_before_parsing():
+    """#51's extension to the whole file, in the same position as A4/#47
+    (check_max_depth runs before check_duplicate_keys -- see main()'s own
+    comment for why the order matters: check_duplicate_keys's own recursive
+    walk is equally exposed to the uncaught RecursionError this check
+    exists to prevent). Unlike the duplicate-key splice below, the
+    spliced-in value doesn't need to be realistic: check_max_depth is a
+    purely structural, schema-agnostic check that runs before any real
+    parsing ever sees the document, so an ordinary envelope field's value
+    can simply become an excessively deep array -- the check must fire on
+    raw structure alone, regardless of where in the document it occurs or
+    what a real vector would ever put there. Mirrors Go's
+    TestWholeFileMaxDepthIsCheckedBeforeParsing."""
+    body = json.dumps(_load_real_suite())
+    rc, output = _run_main_on_raw(body)
+    assert rc == 0, f"the unmodified suite must validate\n{output}"
+    anchor = '"algorithm": "ed25519"'
+    assert anchor in body, f"test bug: anchor {anchor!r} not found in the real suite"
+    too_deep = _nested_array_json(validate._MAX_JSON_DEPTH + 1)
+    spliced = body.replace(anchor, '"algorithm": ' + too_deep, 1)
+    rc, output = _run_main_on_raw(spliced)
+    assert rc != 0, f"a suite with an excessively deep value spliced in was accepted\n{output}"
+    assert "nested more than" in output, \
+        f"rejected for an unexpected reason, not the new max-depth check\n{output}"
+
+
+def test_max_depth_wins_over_duplicate_key_when_both_are_present():
+    """The actual caller-level property #51 round 1 found missing: main()
+    must report the max-depth message, not the duplicate-key one, for a
+    document carrying BOTH defects -- because check_max_depth always runs
+    as a separate, unconditional pre-parse pass before check_duplicate_keys
+    ever does (see check_max_depth's own docstring), regardless of which
+    defect appears first in the document's own byte order.
+
+    Mirrors Go's TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent, which
+    pins the identical property against a document Go's own (now-fixed)
+    implementation used to get wrong: an earlier version of the Go fix
+    combined depth-tracking into checkDuplicateKeys's own walk, which made
+    Go's answer depend on which defect its walk reached FIRST structurally
+    -- and for a document with the duplicate key positioned before the
+    excessive depth, the shape this test also uses, that gave
+    "duplicate_key", a real, confirmed disagreement with this reference,
+    which always answers "max_depth" regardless of document order since its
+    own check is a separate, unconditional pass."""
+    body = json.dumps(_load_real_suite())
+    anchor = '"algorithm": "ed25519"'
+    assert anchor in body, f"test bug: anchor {anchor!r} not found in the real suite"
+    too_deep = _nested_array_json(validate._MAX_JSON_DEPTH + 1)
+    dup = ',"algorithm": ' + too_deep
+    spliced = body.replace(anchor, anchor + dup, 1)
+    rc, output = _run_main_on_raw(spliced)
+    assert rc != 0, f"a suite with both a duplicate key and excessive depth was accepted\n{output}"
+    assert "nested more than" in output, \
+        f"a document with both defects was rejected for the wrong reason (want max_depth)\n{output}"
+
+
 def test_whole_file_duplicate_key_is_checked_before_parsing():
     """#47's extension to the whole file, mirroring
     test_whole_file_encoding_is_checked_before_parsing's own two-position
@@ -2170,6 +2241,40 @@ def test_duplicate_key_inside_input_raw_hex_is_rejected():
     got_cp, reason = validate.resolve_input({}, spliced.hex())
     assert reason == "encoding", \
         f"resolve_input(duplicate-key raw hex) = ({got_cp!r}, {reason!r}), want reason 'encoding'"
+
+
+def test_excessive_depth_inside_input_raw_hex_is_rejected():
+    """#51's resolve_input half, mirroring
+    test_duplicate_key_inside_input_raw_hex_is_rejected's own relationship
+    to the whole-file check above: excessive nesting reached through
+    input_raw_hex's own decoded bytes is the same structural defect
+    check_max_depth rejects at the whole-file level, just reached through
+    this payload specifically. The payload itself doesn't need to resemble
+    a real checkpoint -- check_max_depth is schema-agnostic -- so an
+    excessively deep array on its own is a sufficient, minimal payload.
+    Mirrors Go's TestExcessiveDepthInsideInputRawHexIsRejected."""
+    raw = _nested_array_json(validate._MAX_JSON_DEPTH + 1).encode()
+    got_cp, reason = validate.resolve_input({}, raw.hex())
+    assert reason == "encoding", \
+        f"resolve_input(excessively deep raw hex) = ({got_cp!r}, {reason!r}), want reason 'encoding'"
+
+
+def test_resolve_input_accepts_nesting_well_past_pythons_incidental_ceiling():
+    """The actual gap #51 closes, pinned directly against resolve_input
+    rather than only against check_max_depth's own boundary in isolation:
+    without _raised_recursion_limit, this reference's plain json.loads
+    inside resolve_input hits Python's own incidental ~1000-level
+    RecursionError ceiling and its except clause maps that to "schema" --
+    exactly the accept/reject gap #51 exists to close, since Go accepts
+    this same depth cleanly. depth=5000 is comfortably past that incidental
+    ceiling and comfortably under _MAX_JSON_DEPTH (10000, matching Go's own
+    real limit), so this must come back accepted (reason ""), not
+    "schema"."""
+    depth = 5000
+    raw = ('{"a":' + _nested_array_json(depth) + "}").encode()
+    cp, reason = validate.resolve_input({}, raw.hex())
+    assert reason == "", \
+        f"resolve_input(nested well under _MAX_JSON_DEPTH) = ({cp!r}, {reason!r}), want reason ''"
 
 
 def test_resolve_input_plain_syntax_error_in_raw_hex_stays_schema():
@@ -3214,6 +3319,247 @@ def test_check_duplicate_keys_does_not_report_a_plain_syntax_error_as_a_duplicat
     ):
         assert validate.check_duplicate_keys(raw) == "", \
             f"{raw!r}: this is a syntax error, not a duplicate key"
+
+
+# _check_structural_limits (#51 round 2): a single combinator making the
+# check_max_depth-before-check_duplicate_keys ordering invariant structural
+# rather than conventional -- see its own docstring. These four cases pin
+# its own contract directly, independent of any particular caller;
+# test_max_depth_wins_over_duplicate_key_when_both_are_present already pins
+# the SAME property through main() end to end, so these are a narrower,
+# faster-to-read companion, not a replacement. Mirrors Go's
+# TestCheckStructuralLimits* functions.
+
+def test_check_structural_limits_returns_max_depth_when_only_depth_is_excessive():
+    raw = _nested_object_json(validate._MAX_JSON_DEPTH + 1).encode()
+    assert validate._check_structural_limits(raw) == "max_depth"
+
+
+def test_check_structural_limits_returns_duplicate_key_when_only_a_key_is_duplicated():
+    assert validate._check_structural_limits(b'{"a":1,"a":2}') == "duplicate_key"
+
+
+def test_check_structural_limits_returns_max_depth_when_both_defects_are_present():
+    inner = b'{"a":1,"a":2}'
+    nested = ('{"a":' * (validate._MAX_JSON_DEPTH + 1)).encode() + inner + \
+        ("}" * (validate._MAX_JSON_DEPTH + 1)).encode()
+    assert validate._check_structural_limits(nested) == "max_depth", \
+        "check_max_depth must win"
+
+
+def test_check_structural_limits_returns_empty_for_an_ordinary_document():
+    assert validate._check_structural_limits(b'{"a":1,"b":[1,2,3]}') == ""
+
+
+# check_max_depth (#51): a byte-level, pre-parse depth guard, matched to
+# Go's own real encoding/json limit. Mirrors go/duplicatekeys_test.go's own
+# TestCheckDuplicateKeys*MaxDepth* functions -- see check_max_depth's own
+# docstring for why this reference needs an explicit limit at all (a plain
+# json.loads has none of its own, and crashes via an incidental,
+# undocumented ~1000-level RecursionError long before reaching it).
+
+def test_check_max_depth_accepts_exactly_max_depth():
+    raw = _nested_object_json(validate._MAX_JSON_DEPTH).encode()
+    assert validate.check_max_depth(raw) == "", \
+        f"nesting exactly _MAX_JSON_DEPTH ({validate._MAX_JSON_DEPTH}) levels deep was rejected"
+
+
+def test_check_max_depth_rejects_one_over_max_depth():
+    raw = _nested_object_json(validate._MAX_JSON_DEPTH + 1).encode()
+    assert validate.check_max_depth(raw) == "max_depth"
+
+
+def test_check_max_depth_applies_to_arrays_too():
+    raw = _nested_array_json(validate._MAX_JSON_DEPTH + 1).encode()
+    assert validate.check_max_depth(raw) == "max_depth"
+
+
+def test_check_max_depth_applies_to_mixed_object_array_nesting():
+    """The depth counter must not special-case one bracket type -- alternating
+    {/[ is the case that would catch a regression to only counting one of
+    the two. Mirrors Go's
+    TestCheckDuplicateKeysMaxDepthAppliesToMixedObjectArrayNesting."""
+    half = validate._MAX_JSON_DEPTH // 2 + 1
+    nested = ('{"a":[' * half) + "0" + ("]}" * half)
+    assert validate.check_max_depth(nested.encode()) == "max_depth"
+
+
+def test_check_max_depth_accepts_an_ordinary_shallow_document():
+    assert validate.check_max_depth(b'{"a":[1,2,{"b":3}]}') == ""
+
+
+def test_check_max_depth_accepts_a_scalar():
+    assert validate.check_max_depth(b'"hello"') == ""
+
+
+def test_check_max_depth_does_not_count_brackets_inside_a_string_literal():
+    """Byte-oriented and string-literal-aware, mirroring check_encoding's own
+    in-string/escape tracking: a `{`/`[` inside a string VALUE is not
+    structural and must not be counted toward depth. Go has no equivalent
+    test -- checkNoDuplicateKeysAt walks encoding/json's own tokens, which
+    are already string-aware by construction, so this class of bug isn't
+    reachable on the Go side the way it is for this reference's hand-rolled
+    byte scanner (the same asymmetry check_encoding/checkEncoding already
+    have)."""
+    raw = ('{"a":"' + "[" * (validate._MAX_JSON_DEPTH + 1) + '"}').encode()
+    assert validate.check_max_depth(raw) == "", \
+        "brackets inside a string literal were counted as structural nesting"
+
+
+def test_check_max_depth_does_not_count_an_escaped_quote_as_ending_a_string():
+    """A `\\"` inside a string must not be mistaken for the closing quote --
+    if it were, the bracket-heavy 'string' that follows would be scanned as
+    real structure instead. Mirrors check_encoding's own escape-skipping
+    logic (i += 2 over the escaped character)."""
+    raw = ('{"a":"\\"' + "[" * (validate._MAX_JSON_DEPTH + 1) + '"}').encode()
+    assert validate.check_max_depth(raw) == "", \
+        "an escaped quote was treated as ending the string early"
+
+
+# _pure_python_loads (#51 round 1): a drop-in json.loads replacement that
+# forces Python's pure-Python JSON scanner instead of the default
+# C-accelerated one -- see its own docstring for why _raised_recursion_limit
+# needs this paired with it on CPython 3.12+.
+
+def test_pure_python_loads_parses_ordinary_json():
+    assert validate._pure_python_loads(b'{"a":1,"b":[1,2,3]}') == {"a": 1, "b": [1, 2, 3]}
+
+
+def test_pure_python_loads_applies_object_pairs_hook():
+    """check_duplicate_keys's own call site relies on this specifically --
+    a plain json.loads(raw) call (no hook) would still parse successfully
+    even if this wiring silently broke, so this pins the hook actually
+    reaching the decoder, not just that parsing works at all."""
+    seen = []
+    validate._pure_python_loads(b'{"a":1,"b":2}', object_pairs_hook=seen.append)
+    assert len(seen) == 1
+    assert seen[0] == [("a", 1), ("b", 2)]
+
+
+def test_pure_python_loads_raises_json_decode_error_on_malformed_input():
+    """A drop-in replacement for json.loads must fail the same way json.loads
+    does -- callers' existing `except json.JSONDecodeError` clauses depend
+    on this."""
+    try:
+        validate._pure_python_loads(b'{"a":1,}')
+        assert False, "a trailing comma was accepted"
+    except json.JSONDecodeError:
+        pass
+
+
+def test_pure_python_loads_rejects_a_leading_bom_unlike_json_loads():
+    """Found in review (#51 round 2): unlike json.loads itself (which
+    sniffs byte order and silently strips a leading UTF-8 BOM),
+    _pure_python_loads decodes raw as strict UTF-8 and therefore rejects
+    one -- pinning this as a deliberate, harmless divergence rather than
+    an unnoticed one. Every real caller already runs check_encoding on raw
+    first, which treats a BOM the same strict way, so this never reaches a
+    caller expecting json.loads's own permissive behavior; it also happens
+    to match Go's own encoding/json.Unmarshal, which rejects a BOM outright
+    (confirmed directly), so this reference ends up MORE consistent with
+    Go here, not less."""
+    bom_prefixed = b'\xef\xbb\xbf{"a":1}'
+    assert json.loads(bom_prefixed) == {"a": 1}, \
+        "test bug: json.loads no longer accepts a leading BOM"
+    try:
+        validate._pure_python_loads(bom_prefixed)
+        assert False, "a leading BOM was accepted"
+    except json.JSONDecodeError:
+        pass
+
+
+# _raised_recursion_limit (#51): the mechanism that lets this reference's
+# real json.loads calls actually SUCCEED at everything check_max_depth
+# allows through, rather than merely catching the RecursionError check_max_
+# depth's own explicit limit is meant to make unreachable. check_max_depth
+# alone only rejects what's past _MAX_JSON_DEPTH -- without this, anything
+# between Python's incidental ~1000-level ceiling and _MAX_JSON_DEPTH would
+# still be wrongly rejected, the actual accept/reject gap #51 exists to
+# close. Confirmed safe via isolated subprocess testing up to 1,000,000
+# levels (always a catchable RecursionError, never an uncatchable native
+# crash) before this was written.
+
+def test_raised_recursion_limit_allows_parsing_up_to_max_json_depth():
+    """Without _raised_recursion_limit, plain json.loads cannot even reach
+    _MAX_JSON_DEPTH: it hits Python's own incidental ~1000-level ceiling
+    first. Parsing exactly _MAX_JSON_DEPTH levels -- the same depth
+    check_max_depth itself accepts -- and reading the value back out proves
+    the combination actually works, not merely that the limit was set.
+
+    Deliberately calls _pure_python_loads, not plain json.loads -- found in
+    review (#51 round 1): on CPython 3.12+, plain json.loads uses a
+    C-accelerated scanner with its OWN internal recursion ceiling that
+    sys.setrecursionlimit() cannot raise past (confirmed directly: it caps
+    out a few hundred levels short of _MAX_JSON_DEPTH regardless of how high
+    the requested limit is set), so _raised_recursion_limit alone -- without
+    _pure_python_loads -- does NOT close the gap it exists to close on that
+    Python version. This is the test that would have caught it: it failed
+    on CPython 3.12 with plain json.loads even after this fix landed
+    everywhere else, which is exactly how the bug was found."""
+    raw = _nested_object_json(validate._MAX_JSON_DEPTH).encode()
+    with validate._raised_recursion_limit():
+        parsed = validate._pure_python_loads(raw)
+    depth = 0
+    obj = parsed
+    while isinstance(obj, dict):
+        depth += 1
+        obj = obj["a"]
+    assert depth == validate._MAX_JSON_DEPTH, \
+        f"round-tripped depth = {depth}, want {validate._MAX_JSON_DEPTH}"
+
+
+def test_raised_recursion_limit_restores_the_original_limit():
+    """A deliberately-chosen, known baseline (777) rather than an ambient
+    sys.getrecursionlimit() read: if _raised_recursion_limit's own restore
+    were broken, an earlier test's own already-elevated (and equally
+    unrestored) limit could still coincidentally equal whatever this test
+    read as "old" before entering, making the assertion below pass
+    vacuously regardless of test order -- confirmed directly: with the
+    restore step removed, this test only fails when it is not the first to
+    touch the process-wide limit. Setting and later checking against a
+    specific value this reference would never pick on its own is what makes
+    this test discriminate regardless of what ran before it."""
+    true_old = sys.getrecursionlimit()
+    sys.setrecursionlimit(777)
+    try:
+        with validate._raised_recursion_limit():
+            # Exact equality against the real formula, not a hardcoded
+            # multiplier literal -- found in review (#51 round 2): this
+            # assertion was still checking `* 2` after the real multiplier
+            # moved to `* 4` (the fix for the round-1 CI failure), a stale
+            # bound nothing caught because it happened to still hold (`* 4`
+            # is also `>= * 2`). Asserting equality against
+            # max(777, _MAX_JSON_DEPTH * 4) directly tracks whatever
+            # _raised_recursion_limit's own formula actually is instead of
+            # a copy of one of its literals.
+            assert sys.getrecursionlimit() == max(777, validate._MAX_JSON_DEPTH * 4)
+        assert sys.getrecursionlimit() == 777, \
+            "the recursion limit was not restored to its pre-context-manager value"
+    finally:
+        sys.setrecursionlimit(true_old)
+
+
+def test_raised_recursion_limit_restores_the_limit_even_on_an_exception():
+    """finally-based restoration, not merely restoration on the happy path
+    -- check_duplicate_keys/resolve_input/main() all run real, possibly-
+    failing parses inside this context manager, and a raised process-wide
+    recursion limit must never leak past one of their exceptions. Uses the
+    same known-baseline technique as
+    test_raised_recursion_limit_restores_the_original_limit, for the same
+    reason: an ambient sys.getrecursionlimit() read would let this test
+    pass vacuously if an earlier test already left the limit elevated."""
+    true_old = sys.getrecursionlimit()
+    sys.setrecursionlimit(777)
+    try:
+        try:
+            with validate._raised_recursion_limit():
+                raise ValueError("boom")
+        except ValueError:
+            pass
+        assert sys.getrecursionlimit() == 777, \
+            "the recursion limit was not restored after an exception propagated through it"
+    finally:
+        sys.setrecursionlimit(true_old)
 
 
 # resolve_input is what actually wires check_encoding into the pipeline;

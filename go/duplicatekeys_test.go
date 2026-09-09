@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // checkDuplicateKeys is the raw-structure pre-parse step #47 requires. These
 // tests pin the property directly: a repeated member name anywhere in the
@@ -100,5 +103,112 @@ func TestCheckDuplicateKeysDoesNotReportAPlainSyntaxErrorAsADuplicate(t *testing
 		if reason := checkDuplicateKeys([]byte(raw)); reason != "" {
 			t.Errorf("%q: reason = %q, want \"\" -- this is a syntax error, not a duplicate key", raw, reason)
 		}
+	}
+}
+
+// nestedObjectJSON returns depth levels of `{"a":...}` nesting around a
+// scalar, e.g. nestedObjectJSON(2) == `{"a":{"a":0}}` -- a lone `{}` is
+// nesting level 1, matching maxJSONDepth's own counting convention and
+// check_max_depth's identical one on the Python side (#51).
+func nestedObjectJSON(depth int) string {
+	return strings.Repeat(`{"a":`, depth) + "0" + strings.Repeat("}", depth)
+}
+
+// nestedArrayJSON is nestedObjectJSON's array-nesting counterpart --
+// maxJSONDepth applies to `[` exactly as it does to `{`.
+func nestedArrayJSON(depth int) string {
+	return strings.Repeat("[", depth) + "0" + strings.Repeat("]", depth)
+}
+
+// TestCheckMaxDepthAcceptsExactlyMaxDepth and
+// TestCheckMaxDepthRejectsOneOverMaxDepth pin the exact boundary #51
+// requires: maxJSONDepth must match encoding/json's own real, internal
+// limit precisely, confirmed directly against json.Unmarshal itself (depth
+// 10000 decodes fine, depth 10001 fails with "invalid character '{'
+// exceeded max depth") before this constant was chosen.
+
+func TestCheckMaxDepthAcceptsExactlyMaxDepth(t *testing.T) {
+	if reason := checkMaxDepth([]byte(nestedObjectJSON(maxJSONDepth))); reason != "" {
+		t.Errorf("nesting exactly maxJSONDepth (%d) levels deep was rejected: %q", maxJSONDepth, reason)
+	}
+}
+
+func TestCheckMaxDepthRejectsOneOverMaxDepth(t *testing.T) {
+	if reason := checkMaxDepth([]byte(nestedObjectJSON(maxJSONDepth + 1))); reason != "max_depth" {
+		t.Errorf("nesting maxJSONDepth+1 (%d) levels deep: reason = %q, want \"max_depth\"", maxJSONDepth+1, reason)
+	}
+}
+
+func TestCheckMaxDepthAppliesToArraysToo(t *testing.T) {
+	if reason := checkMaxDepth([]byte(nestedArrayJSON(maxJSONDepth + 1))); reason != "max_depth" {
+		t.Errorf("an array nested maxJSONDepth+1 levels deep: reason = %q, want \"max_depth\"", reason)
+	}
+}
+
+func TestCheckMaxDepthAppliesToMixedObjectArrayNesting(t *testing.T) {
+	// The depth counter must thread through BOTH recursive branches
+	// (object-member-value and array-element), not just one -- alternating
+	// {/[ is the case that would catch a regression to incrementing depth
+	// in only one of the two switch cases.
+	half := maxJSONDepth/2 + 1
+	nested := strings.Repeat(`{"a":[`, half) + "0" + strings.Repeat("]}", half)
+	if reason := checkMaxDepth([]byte(nested)); reason != "max_depth" {
+		t.Errorf("alternating object/array nesting past maxJSONDepth: reason = %q, want \"max_depth\"", reason)
+	}
+}
+
+func TestCheckMaxDepthDoesNotFireOnAnOrdinaryDuplicateKeyDocument(t *testing.T) {
+	// checkMaxDepth and checkDuplicateKeys are deliberately two independent
+	// passes (#51 round 1: see checkMaxDepth's own doc comment for why they
+	// were split apart from an earlier, combined design) -- checkMaxDepth
+	// itself must have no opinion about a duplicate key, however shallow.
+	if reason := checkMaxDepth([]byte(`{"a":1,"a":2}`)); reason != "" {
+		t.Errorf("an ordinary shallow duplicate-key document was rejected by checkMaxDepth: %q", reason)
+	}
+}
+
+func TestCheckDuplicateKeysDoesNotFireOnAnExcessivelyDeepDuplicateFreeDocument(t *testing.T) {
+	// The mirror image: checkDuplicateKeys itself must have no opinion
+	// about depth, however deep -- it no longer tracks depth at all since
+	// #51 round 1 split checkMaxDepth out as its own pass. This document is
+	// deep enough that, before that split, checkDuplicateKeys's own
+	// (removed) depth counter would have rejected it as "max_depth"; now it
+	// walks all the way through and correctly finds nothing.
+	if reason := checkDuplicateKeys([]byte(nestedObjectJSON(maxJSONDepth + 1))); reason != "" {
+		t.Errorf("an excessively deep, duplicate-free document was rejected by checkDuplicateKeys: %q", reason)
+	}
+}
+
+// checkStructuralLimits (#51 round 2): a single combinator making the
+// checkMaxDepth-before-checkDuplicateKeys ordering invariant structural
+// rather than conventional -- see its own doc comment. These three cases
+// pin its own contract directly, independent of any particular caller;
+// TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent (encoding_test.go)
+// already pins the SAME property through validate() end to end, so these
+// are a narrower, faster-to-read companion, not a replacement.
+
+func TestCheckStructuralLimitsReturnsMaxDepthWhenOnlyDepthIsExcessive(t *testing.T) {
+	if reason := checkStructuralLimits([]byte(nestedObjectJSON(maxJSONDepth + 1))); reason != "max_depth" {
+		t.Errorf("reason = %q, want \"max_depth\"", reason)
+	}
+}
+
+func TestCheckStructuralLimitsReturnsDuplicateKeyWhenOnlyAKeyIsDuplicated(t *testing.T) {
+	if reason := checkStructuralLimits([]byte(`{"a":1,"a":2}`)); reason != "duplicate_key" {
+		t.Errorf("reason = %q, want \"duplicate_key\"", reason)
+	}
+}
+
+func TestCheckStructuralLimitsReturnsMaxDepthWhenBothDefectsArePresent(t *testing.T) {
+	inner := `{"a":1,"a":2}`
+	nested := strings.Repeat(`{"a":`, maxJSONDepth+1) + inner + strings.Repeat("}", maxJSONDepth+1)
+	if reason := checkStructuralLimits([]byte(nested)); reason != "max_depth" {
+		t.Errorf("reason = %q, want \"max_depth\" -- checkMaxDepth must win", reason)
+	}
+}
+
+func TestCheckStructuralLimitsReturnsEmptyForAnOrdinaryDocument(t *testing.T) {
+	if reason := checkStructuralLimits([]byte(`{"a":1,"b":[1,2,3]}`)); reason != "" {
+		t.Errorf("reason = %q, want \"\"", reason)
 	}
 }

@@ -448,6 +448,38 @@ both languages (neither `Unmarshal` path, struct- or map-based, preserves
 duplicate-key information -- confirmed directly), not a decode-option flip;
 see `README.md`'s own "Not pinned" entry for the mechanism.
 
+A related crash-safety gap was found while reviewing #47 above (#51):
+Python's plain `json.loads` has no depth limit of its own and crashes with
+an uncaught `RecursionError` on deeply nested JSON, well before Go's
+`encoding/json` decoder's own real, documented 10,000-level limit (confirmed
+directly: Go accepts depth 10,000, rejects 10,001; Python's incidental
+ceiling sits around its own `sys.getrecursionlimit()` default of 1,000, an
+accident of the call stack rather than a deliberate choice). Merely catching
+that `RecursionError` where it happens to land would still leave a real
+accept/reject gap between the two references for anything nested between
+roughly 1,000 and 10,000 levels — the same class of live cross-language
+divergence this section already treats as unacceptable elsewhere, not just a
+crash to silence. Both references now enforce the SAME explicit 10,000-level
+limit instead, each as its own separate, unconditional pass rather than
+folded into an existing walk: Go gained `checkMaxDepth`, deliberately kept
+independent of the #47 duplicate-key walk (`checkNoDuplicateKeysAt`) even
+though that walk already visits every level of the document and could in
+principle have carried a depth counter too, while Python gained a dedicated
+pre-parse depth scan plus a mechanism that temporarily raises its own
+recursion ceiling, paired with a second mechanism that forces Python's
+pure-Python JSON scanner, so its real parses can actually *succeed* on
+everything that scan allows through — not merely fail cleanly instead of
+crashing, which alone would still leave that same accept/reject gap open
+(found in review: the recursion-ceiling raise alone is not sufficient on
+CPython 3.12+, whose default C-accelerated scanner ignores it). Keeping
+Go's two checks structurally independent, rather than reusing one walk for
+both concerns the way an earlier draft did, was itself a correction found in
+review: reusing the walk made Go's answer for a document with BOTH defects
+depend on which one its single pass reached first structurally, disagreeing
+with Python's own necessarily-unconditional precedence. See `README.md`'s
+own "Not pinned" entry for the mechanism and the exact test
+coverage.
+
 **A4 needs a positive too.** A raw-text scan for lone surrogate escapes must
 still accept a *valid* surrogate pair, and must handle `\\u` and case variants.
 Without `valid_surrogate_pair` — a raw-hex **positive** containing

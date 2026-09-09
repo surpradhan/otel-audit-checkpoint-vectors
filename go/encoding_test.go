@@ -658,6 +658,93 @@ func TestWholeFileDuplicateKeyIsCheckedBeforeParsing(t *testing.T) {
 	}
 }
 
+// TestWholeFileMaxDepthIsCheckedBeforeParsing pins #51's extension to the
+// whole file, in the same position as A4/#47 (checkDuplicateKeys, which now
+// also enforces maxJSONDepth -- see its own doc comment). Unlike the
+// duplicate-key splice above, the spliced-in value doesn't need to be
+// realistic: maxJSONDepth is a purely structural, schema-agnostic check
+// that runs before any real parsing ever sees the document, so an ordinary
+// envelope field's value can simply become an excessively deep array --
+// the check must fire on raw structure alone, regardless of where in the
+// document it occurs or what a real vector would ever put there.
+func TestWholeFileMaxDepthIsCheckedBeforeParsing(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	clean := filepath.Join(dir, "clean.json")
+	if err := os.WriteFile(clean, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate(clean); err != nil {
+		t.Fatalf("the unmodified suite must validate: %v", err)
+	}
+	anchor := `"algorithm":"ed25519"`
+	idx := bytes.Index(raw, []byte(anchor))
+	if idx < 0 {
+		t.Fatalf("anchor %q not found in generated suite", anchor)
+	}
+	replacement := `"algorithm":` + nestedArrayJSON(maxJSONDepth+1)
+	spliced := append(append(append([]byte(nil), raw[:idx]...), []byte(replacement)...), raw[idx+len(anchor):]...)
+	path := filepath.Join(dir, "malformed.json")
+	if err := os.WriteFile(path, spliced, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = validate(path)
+	if err == nil {
+		t.Fatal("a suite with an excessively deep value spliced in was accepted")
+	}
+	if !strings.Contains(err.Error(), "nested more than") {
+		t.Fatalf("rejected for an unexpected reason, not the new max-depth check: %v", err)
+	}
+}
+
+// TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent pins the actual
+// caller-level property #51 round 1 found missing: validate() must report
+// "max_depth", not "duplicate_key", for a document carrying BOTH defects --
+// because checkMaxDepth runs first, unconditionally, before
+// checkDuplicateKeys ever does (see checkMaxDepth's own doc comment). An
+// earlier version of this fix combined depth-tracking into
+// checkDuplicateKeys's own walk, which made Go's answer depend on
+// structural position (whichever defect the walk reached first), and for
+// exactly this document -- the duplicate key coming BEFORE the excessive
+// depth in byte order -- that gave "duplicate_key", disagreeing with
+// Python's own check_max_depth, which is necessarily a separate,
+// unconditional pre-pass and therefore always answers "max_depth" for the
+// identical bytes regardless of where either defect sits. Mirrors Python's
+// test_max_depth_wins_over_duplicate_key_when_both_are_present.
+func TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent(t *testing.T) {
+	raw, err := json.Marshal(gen())
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := `"algorithm":"ed25519"`
+	idx := bytes.Index(raw, []byte(anchor))
+	if idx < 0 {
+		t.Fatalf("anchor %q not found in generated suite", anchor)
+	}
+	// Splice in a SECOND "algorithm" member (a duplicate key) whose own
+	// value is excessively deep -- one splice, two independent defects: the
+	// key "algorithm" now appears twice (checkDuplicateKeys's own concern),
+	// and the second occurrence's value nests past maxJSONDepth
+	// (checkMaxDepth's own concern, unrelated to the duplicate).
+	dup := `,"algorithm":` + nestedArrayJSON(maxJSONDepth+1)
+	insertAt := idx + len(anchor)
+	spliced := append(append(append([]byte(nil), raw[:insertAt]...), []byte(dup)...), raw[insertAt:]...)
+	path := filepath.Join(t.TempDir(), "malformed.json")
+	if err := os.WriteFile(path, spliced, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = validate(path)
+	if err == nil {
+		t.Fatal("a suite with both a duplicate key and excessive depth was accepted")
+	}
+	if !strings.Contains(err.Error(), "nested more than") {
+		t.Fatalf("a document with both defects was rejected for the wrong reason (want max_depth): %v", err)
+	}
+}
+
 // TestDuplicateKeyInsideInputRawHexIsRejected pins #47's resolveInput half:
 // a duplicate key inside input_raw_hex's own DECODED bytes is the same
 // ambiguity, reached through the payload input_raw_hex represents rather
@@ -690,6 +777,24 @@ func TestResolveInputPlainSyntaxErrorInRawHexStaysSchema(t *testing.T) {
 	_, reason := resolveInput(Checkpoint{}, hex.EncodeToString(raw))
 	if reason != "schema" {
 		t.Fatalf("resolveInput(malformed non-duplicate raw hex) reason = %q, want \"schema\"", reason)
+	}
+}
+
+// TestExcessiveDepthInsideInputRawHexIsRejected is #51's resolveInput half,
+// mirroring TestDuplicateKeyInsideInputRawHexIsRejected's own relationship
+// to the whole-file check just above: excessive nesting reached through
+// input_raw_hex's own decoded bytes is the same structural defect
+// checkDuplicateKeys rejects at the whole-file level, just reached through
+// this payload specifically. The payload itself doesn't need to resemble a
+// real checkpoint -- maxJSONDepth is schema-agnostic -- so an excessively
+// deep array on its own is a sufficient, minimal payload, the same
+// precedent TestResolveInputPlainSyntaxErrorInRawHexStaysSchema already
+// set for a raw, purpose-built (rather than checkpoint-shaped) payload.
+func TestExcessiveDepthInsideInputRawHexIsRejected(t *testing.T) {
+	raw := []byte(nestedArrayJSON(maxJSONDepth + 1))
+	cp2, reason := resolveInput(Checkpoint{}, hex.EncodeToString(raw))
+	if reason != "encoding" {
+		t.Fatalf("resolveInput(excessively deep raw hex) = (%+v, %q), want reason \"encoding\"", cp2, reason)
 	}
 }
 
