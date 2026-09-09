@@ -766,6 +766,45 @@ walk on the checkpoint itself.
   relationship to the whole-file A4 check
   ([#47](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/47)).
 
+- **A JSON document nested deeper than 10,000 levels.** Go's `encoding/json`
+  decoder enforces this depth limit internally and cleanly rejects anything
+  past it (confirmed directly: depth 10,000 decodes fine, depth 10,001 fails
+  with `invalid character '{' exceeded max depth`). Python's plain
+  `json.loads` has no depth limit of its own and instead crashes with an
+  uncaught `RecursionError`, well before 10,000 — around Python's own
+  incidental `sys.getrecursionlimit()` default of 1,000, an accident of the
+  call stack, not a deliberate choice. Merely catching that `RecursionError`
+  where it happens to land is not enough: it would still leave every
+  document nested between roughly 1,000 and 10,000 levels disagreed on by
+  the two references (Go accepting it, Python rejecting it) — the same live
+  cross-language divergence every other bullet here exists to close, not
+  just a crash to silence. Both references now enforce the SAME explicit
+  10,000-level limit: Go's `checkNoDuplicateKeysAt` (already walking the
+  whole document for the duplicate-key check above) gained a matching depth
+  counter, threaded through both its object and array recursion branches;
+  Python gained a dedicated pre-parse `check_max_depth` byte scan (mirroring
+  `check_encoding`'s own string-literal-aware style) plus
+  `_raised_recursion_limit`, which temporarily raises Python's own recursion
+  ceiling so its real `json.loads` calls can actually *succeed* on
+  everything `check_max_depth` allows through — not merely fail cleanly
+  instead of crashing, which alone would still leave that same accept/reject
+  gap open (confirmed safe via isolated subprocess testing up to 1,000,000
+  levels of nesting: always a catchable `RecursionError`, never an
+  uncatchable native crash). No published vector can express this either —
+  like unknown members and the duplicate-key case above, the whole file
+  fails to load, not one vector. `go/duplicatekeys_test.go`'s
+  `TestCheckDuplicateKeys*MaxDepth*` functions and `py/test_validate.py`'s
+  matching `test_check_max_depth_*` functions pin the exact boundary
+  directly (accepting exactly the limit, rejecting one level past it, for
+  both `{` and `[` nesting, and for the two mixed together);
+  `TestWholeFileMaxDepthIsCheckedBeforeParsing`/
+  `test_whole_file_max_depth_is_checked_before_parsing` and
+  `TestExcessiveDepthInsideInputRawHexIsRejected`/
+  `test_excessive_depth_inside_input_raw_hex_is_rejected` pin it at the
+  whole-file and `input_raw_hex` levels, mirroring the duplicate-key
+  bullet's own two-position shape
+  ([#51](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/51)).
+
 - **Wrong-typed scalars, at the level of the published vectors.** `"epoch":
   "1"`, `"epoch": true`, `"epoch": 1.0` and a null `tips` *element* are
   rejected by both references, but — like unknown members — by different
