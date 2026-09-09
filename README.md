@@ -778,31 +778,58 @@ walk on the checkpoint itself.
   document nested between roughly 1,000 and 10,000 levels disagreed on by
   the two references (Go accepting it, Python rejecting it) — the same live
   cross-language divergence every other bullet here exists to close, not
-  just a crash to silence. Both references now enforce the SAME explicit
-  10,000-level limit: Go's `checkNoDuplicateKeysAt` (already walking the
-  whole document for the duplicate-key check above) gained a matching depth
-  counter, threaded through both its object and array recursion branches;
-  Python gained a dedicated pre-parse `check_max_depth` byte scan (mirroring
-  `check_encoding`'s own string-literal-aware style) plus
-  `_raised_recursion_limit`, which temporarily raises Python's own recursion
-  ceiling so its real `json.loads` calls can actually *succeed* on
+  just a crash to silence.
+
+  Both references now enforce the SAME explicit 10,000-level limit, each as
+  its own **separate, unconditional pass** run before the duplicate-key
+  check above rather than combined into the same walk — deliberately, so
+  the two references' precedence agrees when a document carries both
+  defects (see below): Go's `checkMaxDepth` walks the whole document via
+  `json.Decoder.Token()`, independently of `checkDuplicateKeys`'s own walk;
+  Python's `check_max_depth` is a pre-parse byte scan (mirroring
+  `check_encoding`'s own string-literal-aware style), independently of
+  `check_duplicate_keys`. Python additionally needs `_raised_recursion_limit`
+  (which temporarily raises Python's own recursion ceiling) **paired with**
+  `_pure_python_loads` (which forces Python's pure-Python JSON scanner)
+  before its real `json.loads`-equivalent calls can actually *succeed* on
   everything `check_max_depth` allows through — not merely fail cleanly
   instead of crashing, which alone would still leave that same accept/reject
-  gap open (confirmed safe via isolated subprocess testing up to 1,000,000
-  levels of nesting: always a catchable `RecursionError`, never an
-  uncatchable native crash). No published vector can express this either —
-  like unknown members and the duplicate-key case above, the whole file
-  fails to load, not one vector. `go/duplicatekeys_test.go`'s
-  `TestCheckDuplicateKeys*MaxDepth*` functions and `py/test_validate.py`'s
-  matching `test_check_max_depth_*` functions pin the exact boundary
-  directly (accepting exactly the limit, rejecting one level past it, for
-  both `{` and `[` nesting, and for the two mixed together);
-  `TestWholeFileMaxDepthIsCheckedBeforeParsing`/
+  gap open. Both pieces are required together: found in review that raising
+  the limit alone is not sufficient on CPython 3.12+, whose default
+  C-accelerated scanner enforces its own internal recursion ceiling that
+  `sys.setrecursionlimit()` does not govern at all; the pure-Python scanner
+  does honor it, which is what makes raising it meaningful (confirmed safe
+  via isolated subprocess testing up to 1,000,000 levels of nesting under
+  this combination: always a catchable `RecursionError`, never an
+  uncatchable native crash).
+
+  A document carrying BOTH a duplicate key and excessive depth is only
+  reported one way, and the two references must agree on which: found in
+  review that an earlier version of the Go fix combined depth-tracking into
+  `checkDuplicateKeys`'s own walk, which made Go's answer depend on
+  structural position (whichever defect its single walk reached first) —
+  disagreeing with Python, whose `check_max_depth` is necessarily a
+  separate, unconditional pre-pass and therefore always answers
+  `max_depth` regardless of where either defect sits. Keeping both checks
+  as genuinely independent passes in both languages, always run in the
+  same max-depth-first order, is what makes this agree by construction
+  rather than by coincidence.
+
+  No published vector can express this either — like unknown members and
+  the duplicate-key case above, the whole file fails to load, not one
+  vector. `go/duplicatekeys_test.go`'s `TestCheckMaxDepth*` functions and
+  `py/test_validate.py`'s matching `test_check_max_depth_*` functions pin
+  the exact boundary directly (accepting exactly the limit, rejecting one
+  level past it, for both `{` and `[` nesting, and for the two mixed
+  together); `TestWholeFileMaxDepthIsCheckedBeforeParsing`/
   `test_whole_file_max_depth_is_checked_before_parsing` and
   `TestExcessiveDepthInsideInputRawHexIsRejected`/
   `test_excessive_depth_inside_input_raw_hex_is_rejected` pin it at the
   whole-file and `input_raw_hex` levels, mirroring the duplicate-key
-  bullet's own two-position shape
+  bullet's own two-position shape; `TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent`/
+  `test_max_depth_wins_over_duplicate_key_when_both_are_present` pin the
+  cross-language precedence property directly, on the same constructed
+  document in both languages
   ([#51](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/51)).
 
 - **Wrong-typed scalars, at the level of the published vectors.** `"epoch":
