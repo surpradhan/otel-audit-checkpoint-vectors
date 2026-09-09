@@ -2108,6 +2108,70 @@ def test_whole_file_encoding_is_checked_before_parsing():
         f"rejected without a FAIL line; a traceback is not a verdict\n{output}"
 
 
+def test_whole_file_duplicate_key_is_checked_before_parsing():
+    """#47's extension to the whole file, mirroring
+    test_whole_file_encoding_is_checked_before_parsing's own two-position
+    shape (an envelope field never subject to any other check, and a
+    checkpoint-payload field) -- but unlike that test, BOTH positions here
+    can use the simple splice-into-the-real-suite's-own-text construction,
+    with no re-signing needed at either one. A duplicate key with an
+    IDENTICAL value is invisible to canonical()'s own round trip: decoding
+    (by this reference's own native, pre-#47 resolution -- plain
+    last-value-wins, which for two identical values is a no-op either way)
+    yields the same dict either way, so re-canonicalizing it reproduces the
+    ORIGINAL, unmodified canonical bytes exactly -- confirmed directly
+    before writing this test. That is why a naive splice suffices here
+    where #36's own surrogate-escape case needed a properly re-signed
+    fixture for its checkpoint-payload position: a malformed escape
+    permanently changes the decoded value (this reference's own
+    canonical() raises on it), where an identical-value duplicate changes
+    nothing decode can observe. If the new check were bypassed, BOTH
+    positions below would therefore validate cleanly, not merely fail for
+    some other, mislabeled reason. Mirrors
+    TestWholeFileDuplicateKeyIsCheckedBeforeParsing."""
+    body = json.dumps(_load_real_suite())
+    rc, output = _run_main_on_raw(body)
+    assert rc == 0, f"the unmodified suite must validate\n{output}"
+    for label, anchor in (
+        # An envelope field never subject to any other check. A short,
+        # COMPLETE "key": value pair, not a prefix of a longer string value
+        # like description's own -- the splice below assumes the anchor is
+        # the whole pair.
+        ("algorithm", '"algorithm": "ed25519"'),
+        # A checkpoint-payload field, inside some real vector's signed
+        # input -- the class #47 itself names. epoch: 0 is common enough to
+        # be guaranteed present without depending on any one vector's exact
+        # shape.
+        ("checkpoint_payload", '"epoch": 0'),
+    ):
+        assert anchor in body, f"test bug: anchor {anchor!r} not found in the real suite"
+        colon = anchor.index(":")
+        key_part = anchor[:colon]  # e.g. '"algorithm"'
+        dup = "," + key_part + anchor[colon:]  # e.g. ,"algorithm": "ed25519"
+        spliced = body.replace(anchor, anchor + dup, 1)
+        rc, output = _run_main_on_raw(spliced)
+        assert rc != 0, f"a suite with a duplicate {label} key spliced in was accepted\n{output}"
+        assert "duplicate member name" in output, \
+            f"{label}: rejected for an unexpected reason, not the new duplicate-key check\n{output}"
+
+
+def test_duplicate_key_inside_input_raw_hex_is_rejected():
+    """#47's resolve_input half: a duplicate key inside input_raw_hex's own
+    DECODED bytes is the same ambiguity, reached through the payload
+    input_raw_hex represents rather than the outer suite file's own literal
+    text. Mirrors ill_formed_utf8_bytes/lone_surrogate_escape's own
+    established relationship to the whole-file A4 check, and Go's
+    TestDuplicateKeyInsideInputRawHexIsRejected."""
+    cp = _cp(2, _pos_ts(100), [_tip(_pos_stream(1), 0, 1, 1, "aa")])
+    base = validate.canonical(cp)
+    anchor = b'"seq":2'
+    assert anchor in base, f"test bug: anchor {anchor!r} not found in base canonical bytes"
+    spliced = base.replace(anchor, anchor + b',"seq":2', 1)
+    got_cp, reason = validate.resolve_input({}, spliced.hex())
+    assert reason == "encoding", \
+        f"resolve_input(duplicate-key raw hex) = ({got_cp!r}, {reason!r}), want reason 'encoding'"
+
+
 def test_whole_file_encoding_catches_the_checkpoint_payload_case():
     """Pins the same property (#36) for the class the issue names
     explicitly: a lone surrogate escape reaching a typed CHECKPOINT field,
@@ -3060,6 +3124,63 @@ def test_check_encoding_rejects_permissive_hex_digit_variants():
         r'{"stream_id":"\u0x12"}',   # 0x prefix -- 'x' is not a hex digit at any position
     ):
         assert validate.check_encoding(raw.encode()) == "encoding", raw
+
+
+# check_duplicate_keys (#47): a repeated member name anywhere in the
+# document is rejected, at every nesting level, while the same name
+# appearing once in two DIFFERENT objects is not a repeat at all. Mirrors
+# go/duplicatekeys_test.go's own TestCheckDuplicateKeys* functions.
+
+def test_check_duplicate_keys_accepts_an_ordinary_document():
+    assert validate.check_duplicate_keys(b'{"a":1,"b":2}') == ""
+
+
+def test_check_duplicate_keys_rejects_a_flat_duplicate():
+    assert validate.check_duplicate_keys(b'{"a":1,"a":2}') != ""
+
+
+def test_check_duplicate_keys_rejects_a_duplicate_even_with_an_identical_value():
+    """The class the whole-file tests below actually exercise: a duplicate
+    that changes nothing decode could observe is still an ambiguous
+    document -- two distinct byte sequences a validator might be handed,
+    not one."""
+    assert validate.check_duplicate_keys(b'{"a":1,"a":1}') != ""
+
+
+def test_check_duplicate_keys_rejects_a_null_duplicate():
+    assert validate.check_duplicate_keys(b'{"a":1,"a":null}') != ""
+
+
+def test_check_duplicate_keys_rejects_a_duplicate_inside_a_nested_object():
+    assert validate.check_duplicate_keys(b'{"tips":[{"a":1,"a":2}]}') != ""
+
+
+def test_check_duplicate_keys_rejects_a_duplicate_in_the_second_array_element():
+    """Not just the first element: the walk must actually visit every
+    element of an array, not stop after the first."""
+    assert validate.check_duplicate_keys(b'{"tips":[{"a":1},{"a":1,"b":2,"b":3}]}') != ""
+
+
+def test_check_duplicate_keys_accepts_the_same_key_name_in_different_objects():
+    """The defect class is a repeat WITHIN one object, not a name recurring
+    across the document -- every checkpoint has its own "seq", and this
+    suite's own envelope/vector/checkpoint schema all share member names
+    like "name". object_pairs_hook is called once per object with a fresh
+    `pairs` list each time, so this is the test that would catch a
+    regression to tracking keys across the whole document instead."""
+    assert validate.check_duplicate_keys(b'{"a":1,"tips":[{"a":1}]}') == ""
+
+
+def test_check_duplicate_keys_accepts_an_empty_object():
+    assert validate.check_duplicate_keys(b'{}') == ""
+
+
+def test_check_duplicate_keys_accepts_an_array_of_scalars():
+    assert validate.check_duplicate_keys(b'[1,2,3]') == ""
+
+
+def test_check_duplicate_keys_rejects_a_deeply_nested_duplicate():
+    assert validate.check_duplicate_keys(b'{"x":{"y":{"z":1,"z":2}}}') != ""
 
 
 # resolve_input is what actually wires check_encoding into the pipeline;

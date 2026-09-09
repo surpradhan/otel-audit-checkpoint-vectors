@@ -2060,6 +2060,94 @@ func checkEncoding(raw []byte) string {
 	return ""
 }
 
+// checkDuplicateKeys walks the whole file's JSON structure, at every
+// nesting level, and reports whether any single object repeats a member
+// name. Neither Unmarshal path this file uses can see this: a struct
+// decode with DisallowUnknownFields still resolves a repeated KNOWN
+// member last-value-wins for an ordinary value, and -- for a
+// NON-POINTER field specifically -- an explicit null is a documented
+// no-op rather than a value that can win at all, so the resolution is
+// really "last non-null occurrence wins" (confirmed directly:
+// `{"a":5,"a":null,"a":7}` decodes A to 7, and `{"a":null,"a":5,
+// "a":null}` decodes A to 5 -- not simply "the null loses," which
+// stops generalizing past two occurrences). A map-based decode (used
+// elsewhere in this file for exactly this kind of raw-shape
+// inspection, e.g. Tip.UnmarshalJSON's own EpochNull detection)
+// resolves the SAME way, ordinary last-value-wins, with no way to ask
+// "was this key repeated" either. Both silently accept a document
+// whose meaning is genuinely ambiguous -- RFC 8259 §4 itself only says
+// object names SHOULD be unique, leaving a violator's resolution
+// unspecified -- and the two references would disagree with each
+// other on what such a document's canonical bytes even are, since
+// Python's own native resolution (plain last-occurrence-wins,
+// including for null) differs from Go's. Rather than pin one
+// language's resolution order as the cross-language contract, both
+// references reject the ambiguity outright (#47) -- the same choice
+// already made for unknown members and for every wrong-typed-scalar
+// class, at every level of this schema, not just the checkpoint
+// payload.
+//
+// Whole-file, not per-entry, and run in the same position as A4: like
+// unknown members, no vector can carry a duplicate key without failing
+// the whole file to load, so this has no A-number and no published
+// vector -- see README's "Not pinned" section.
+func checkDuplicateKeys(raw []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := checkNoDuplicateKeysAt(dec); err != nil {
+		return "duplicate_key"
+	}
+	return ""
+}
+
+// checkNoDuplicateKeysAt consumes exactly one JSON value from dec -- a
+// scalar, an object, or an array -- and returns an error if any object
+// it contains, at any depth, repeats a member name. dec.Token() is the
+// only primitive in encoding/json that exposes raw structure without
+// collapsing it first, which is why this walks the token stream
+// directly rather than decoding into any Go value.
+func checkNoDuplicateKeysAt(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return nil // a scalar: string, number, bool, or null
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]bool)
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return fmt.Errorf("object key token was not a string: %v", keyTok)
+			}
+			if seen[key] {
+				return fmt.Errorf("duplicate key %q", key)
+			}
+			seen[key] = true
+			if err := checkNoDuplicateKeysAt(dec); err != nil {
+				return err
+			}
+		}
+		_, err := dec.Token() // consume the closing '}'
+		return err
+	case '[':
+		for dec.More() {
+			if err := checkNoDuplicateKeysAt(dec); err != nil {
+				return err
+			}
+		}
+		_, err := dec.Token() // consume the closing ']'
+		return err
+	}
+	return nil // '}' or ']' alone: unreachable here, Token() pairs them with '{'/'[' above
+}
+
 // resolveInput returns the checkpoint an entry actually means: Input as
 // given, or -- when InputRawHex is set -- the checkpoint that raw byte
 // string decodes to, after checkEncoding has passed it. The empty string
@@ -2081,6 +2169,18 @@ func resolveInput(input Checkpoint, inputRawHex string) (Checkpoint, string) {
 	}
 	if reason := checkEncoding(raw); reason != "" {
 		return Checkpoint{}, reason
+	}
+	// #47: a duplicate key inside input_raw_hex's own decoded bytes is the
+	// same ambiguity checkDuplicateKeys rejects at the whole-file level,
+	// just reached through this payload specifically -- input_raw_hex's
+	// own value is an ordinary, well-formed hex string in the outer suite
+	// file, so only the DECODED checkpoint can carry the malformation, the
+	// same relationship ill_formed_utf8_bytes/lone_surrogate_escape already
+	// have with the whole-file A4 check. Reported as "encoding" too: this
+	// is another way input_raw_hex's decoded bytes fail to be an
+	// unambiguous document, not a conceptually different failure.
+	if reason := checkDuplicateKeys(raw); reason != "" {
+		return Checkpoint{}, "encoding"
 	}
 	var cp Checkpoint
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -2235,6 +2335,17 @@ func validate(path string) error {
 	// with ill_formed_utf8_bytes/lone_surrogate_escape's own published bytes.
 	if reason := checkEncoding(data); reason != "" {
 		return fmt.Errorf("the suite file is not valid UTF-8, or contains an unpaired surrogate escape somewhere in a string literal")
+	}
+	// #47, over the whole file, same reasoning and same position as A4 just
+	// above: encoding/json's own decode resolves a duplicate object key
+	// silently (last-non-null-value-wins for a struct field, ordinary
+	// last-value-wins for a map), and Python's plain json.loads resolves
+	// the same ambiguity a DIFFERENT way -- the two references would
+	// disagree with each other about what such a document even means,
+	// before gowebpki/jcs is ever reached. See checkDuplicateKeys's own
+	// doc comment for the full reasoning and why this has no A-number.
+	if reason := checkDuplicateKeys(data); reason != "" {
+		return fmt.Errorf("the suite file contains a JSON object with a duplicate member name somewhere")
 	}
 	// Strict decoding, in TWO stages: the envelope eagerly, the entries only
 	// after the skip rule has had its say. See suiteFile for why the order
