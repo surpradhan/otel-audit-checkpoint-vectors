@@ -2149,6 +2149,36 @@ def test_whole_file_max_depth_is_checked_before_parsing():
         f"rejected for an unexpected reason, not the new max-depth check\n{output}"
 
 
+def test_max_depth_wins_over_duplicate_key_when_both_are_present():
+    """The actual caller-level property #51 round 1 found missing: main()
+    must report the max-depth message, not the duplicate-key one, for a
+    document carrying BOTH defects -- because check_max_depth always runs
+    as a separate, unconditional pre-parse pass before check_duplicate_keys
+    ever does (see check_max_depth's own docstring), regardless of which
+    defect appears first in the document's own byte order.
+
+    Mirrors Go's TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent, which
+    pins the identical property against a document Go's own (now-fixed)
+    implementation used to get wrong: an earlier version of the Go fix
+    combined depth-tracking into checkDuplicateKeys's own walk, which made
+    Go's answer depend on which defect its walk reached FIRST structurally
+    -- and for a document with the duplicate key positioned before the
+    excessive depth, the shape this test also uses, that gave
+    "duplicate_key", a real, confirmed disagreement with this reference,
+    which always answers "max_depth" regardless of document order since its
+    own check is a separate, unconditional pass."""
+    body = json.dumps(_load_real_suite())
+    anchor = '"algorithm": "ed25519"'
+    assert anchor in body, f"test bug: anchor {anchor!r} not found in the real suite"
+    too_deep = _nested_array_json(validate._MAX_JSON_DEPTH + 1)
+    dup = ',"algorithm": ' + too_deep
+    spliced = body.replace(anchor, anchor + dup, 1)
+    rc, output = _run_main_on_raw(spliced)
+    assert rc != 0, f"a suite with both a duplicate key and excessive depth was accepted\n{output}"
+    assert "nested more than" in output, \
+        f"a document with both defects was rejected for the wrong reason (want max_depth)\n{output}"
+
+
 def test_whole_file_duplicate_key_is_checked_before_parsing():
     """#47's extension to the whole file, mirroring
     test_whole_file_encoding_is_checked_before_parsing's own two-position
@@ -3356,6 +3386,37 @@ def test_check_max_depth_does_not_count_an_escaped_quote_as_ending_a_string():
         "an escaped quote was treated as ending the string early"
 
 
+# _pure_python_loads (#51 round 1): a drop-in json.loads replacement that
+# forces Python's pure-Python JSON scanner instead of the default
+# C-accelerated one -- see its own docstring for why _raised_recursion_limit
+# needs this paired with it on CPython 3.12+.
+
+def test_pure_python_loads_parses_ordinary_json():
+    assert validate._pure_python_loads(b'{"a":1,"b":[1,2,3]}') == {"a": 1, "b": [1, 2, 3]}
+
+
+def test_pure_python_loads_applies_object_pairs_hook():
+    """check_duplicate_keys's own call site relies on this specifically --
+    a plain json.loads(raw) call (no hook) would still parse successfully
+    even if this wiring silently broke, so this pins the hook actually
+    reaching the decoder, not just that parsing works at all."""
+    seen = []
+    validate._pure_python_loads(b'{"a":1,"b":2}', object_pairs_hook=seen.append)
+    assert len(seen) == 1
+    assert seen[0] == [("a", 1), ("b", 2)]
+
+
+def test_pure_python_loads_raises_json_decode_error_on_malformed_input():
+    """A drop-in replacement for json.loads must fail the same way json.loads
+    does -- callers' existing `except json.JSONDecodeError` clauses depend
+    on this."""
+    try:
+        validate._pure_python_loads(b'{"a":1,}')
+        assert False, "a trailing comma was accepted"
+    except json.JSONDecodeError:
+        pass
+
+
 # _raised_recursion_limit (#51): the mechanism that lets this reference's
 # real json.loads calls actually SUCCEED at everything check_max_depth
 # allows through, rather than merely catching the RecursionError check_max_
@@ -3368,14 +3429,25 @@ def test_check_max_depth_does_not_count_an_escaped_quote_as_ending_a_string():
 # crash) before this was written.
 
 def test_raised_recursion_limit_allows_parsing_up_to_max_json_depth():
-    """Without this context manager, plain json.loads cannot even reach
+    """Without _raised_recursion_limit, plain json.loads cannot even reach
     _MAX_JSON_DEPTH: it hits Python's own incidental ~1000-level ceiling
     first. Parsing exactly _MAX_JSON_DEPTH levels -- the same depth
     check_max_depth itself accepts -- and reading the value back out proves
-    the raised limit actually works, not merely that it was set."""
-    raw = _nested_object_json(validate._MAX_JSON_DEPTH)
+    the combination actually works, not merely that the limit was set.
+
+    Deliberately calls _pure_python_loads, not plain json.loads -- found in
+    review (#51 round 1): on CPython 3.12+, plain json.loads uses a
+    C-accelerated scanner with its OWN internal recursion ceiling that
+    sys.setrecursionlimit() cannot raise past (confirmed directly: it caps
+    out a few hundred levels short of _MAX_JSON_DEPTH regardless of how high
+    the requested limit is set), so _raised_recursion_limit alone -- without
+    _pure_python_loads -- does NOT close the gap it exists to close on that
+    Python version. This is the test that would have caught it: it failed
+    on CPython 3.12 with plain json.loads even after this fix landed
+    everywhere else, which is exactly how the bug was found."""
+    raw = _nested_object_json(validate._MAX_JSON_DEPTH).encode()
     with validate._raised_recursion_limit():
-        parsed = json.loads(raw)
+        parsed = validate._pure_python_loads(raw)
     depth = 0
     obj = parsed
     while isinstance(obj, dict):
