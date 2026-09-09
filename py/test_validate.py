@@ -2172,6 +2172,18 @@ def test_duplicate_key_inside_input_raw_hex_is_rejected():
         f"resolve_input(duplicate-key raw hex) = ({got_cp!r}, {reason!r}), want reason 'encoding'"
 
 
+def test_resolve_input_plain_syntax_error_in_raw_hex_stays_schema():
+    """The resolve_input counterpart to
+    test_check_duplicate_keys_does_not_report_a_plain_syntax_error_as_a_duplicate:
+    an input_raw_hex payload malformed for some OTHER reason -- not a
+    repeated key -- must keep its pre-#47 "schema" reason. Mirrors Go's
+    TestResolveInputPlainSyntaxErrorInRawHexStaysSchema."""
+    raw = b'{"seq":1,}'  # trailing comma: malformed, not a duplicate key
+    _, reason = validate.resolve_input({}, raw.hex())
+    assert reason == "schema", \
+        f"resolve_input(malformed non-duplicate raw hex) reason = {reason!r}, want 'schema'"
+
+
 def test_whole_file_encoding_catches_the_checkpoint_payload_case():
     """Pins the same property (#36) for the class the issue names
     explicitly: a lone surrogate escape reaching a typed CHECKPOINT field,
@@ -3181,6 +3193,27 @@ def test_check_duplicate_keys_accepts_an_array_of_scalars():
 
 def test_check_duplicate_keys_rejects_a_deeply_nested_duplicate():
     assert validate.check_duplicate_keys(b'{"x":{"y":{"z":1,"z":2}}}') != ""
+
+
+def test_check_duplicate_keys_does_not_report_a_plain_syntax_error_as_a_duplicate():
+    """This reference's own _reject_duplicate_keys/check_duplicate_keys
+    already gets this right by construction (a dedicated exception type,
+    caught separately from json.JSONDecodeError), unlike Go's own first
+    draft of the equivalent check, which conflated ANY decode error with
+    "duplicate_key" until round 1 review found it -- confirmed the two
+    references diverge for a merely syntactically broken (but
+    duplicate-free) file, and that the misreport propagated all the way to
+    resolve_input's own "reason" token for a malformed, non-duplicate
+    input_raw_hex payload. Pinning this reference's already-correct
+    behavior as a permanent regression guard, mirroring Go's own new
+    TestCheckDuplicateKeysDoesNotReportAPlainSyntaxErrorAsADuplicate."""
+    for raw in (
+        b'{"a":1,}',            # trailing comma
+        b'',                    # empty
+        b'{"a":"unterminated',  # unterminated string
+    ):
+        assert validate.check_duplicate_keys(raw) == "", \
+            f"{raw!r}: this is a syntax error, not a duplicate key"
 
 
 # resolve_input is what actually wires check_encoding into the pipeline;

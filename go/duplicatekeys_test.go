@@ -79,3 +79,26 @@ func TestCheckDuplicateKeysRejectsADeeplyNestedDuplicate(t *testing.T) {
 		t.Error("a duplicate three levels deep was accepted")
 	}
 }
+
+// TestCheckDuplicateKeysDoesNotReportAPlainSyntaxErrorAsADuplicate pins the
+// review-found distinction checkDuplicateKeys/duplicateKeyError exist for: a
+// document that's malformed for some OTHER reason -- not a repeated key --
+// must return "" here, not "duplicate_key". Without this, a merely
+// syntactically broken (but duplicate-free) file was misreported, and the
+// misreport propagated all the way to resolveInput's own "reason" token for
+// a malformed, non-duplicate input_raw_hex payload -- confirmed directly:
+// {"seq":1,} (a trailing comma) used to change resolveInput's reason from
+// "schema" to "encoding", a live reason-token divergence from Python, whose
+// object_pairs_hook already discriminated this correctly via a dedicated
+// exception type. Found in round 1 review.
+func TestCheckDuplicateKeysDoesNotReportAPlainSyntaxErrorAsADuplicate(t *testing.T) {
+	for _, raw := range []string{
+		`{"a":1,}`,           // trailing comma
+		``,                   // empty
+		`{"a":"unterminated`, // unterminated string
+	} {
+		if reason := checkDuplicateKeys([]byte(raw)); reason != "" {
+			t.Errorf("%q: reason = %q, want \"\" -- this is a syntax error, not a duplicate key", raw, reason)
+		}
+	}
+}

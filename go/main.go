@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -2093,11 +2094,28 @@ func checkEncoding(raw []byte) string {
 // vector -- see README's "Not pinned" section.
 func checkDuplicateKeys(raw []byte) string {
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	if err := checkNoDuplicateKeysAt(dec); err != nil {
+	var dupErr *duplicateKeyError
+	if err := checkNoDuplicateKeysAt(dec); errors.As(err, &dupErr) {
 		return "duplicate_key"
 	}
 	return ""
 }
+
+// duplicateKeyError is the ONE error checkNoDuplicateKeysAt returns that
+// checkDuplicateKeys reports as "duplicate_key". Every other error dec.Token()
+// can produce -- a plain JSON syntax error, unrelated to any repeated key --
+// is deliberately NOT this reason: it's a different malformation, not this
+// check's job to report, and the real json.Unmarshal/json.loads that runs
+// right after already reports it correctly. Without this distinction, a
+// syntactically broken but duplicate-free file (a trailing comma, say) was
+// misreported as "duplicate_key" here while Python's own object_pairs_hook
+// (which raises a SEPARATE exception type for its own duplicate-key case,
+// deferring on json.JSONDecodeError) reported the real syntax error --
+// exactly the class of reason-token divergence this whole file exists to
+// rule out. Found in review.
+type duplicateKeyError struct{ key string }
+
+func (e *duplicateKeyError) Error() string { return fmt.Sprintf("duplicate key %q", e.key) }
 
 // checkNoDuplicateKeysAt consumes exactly one JSON value from dec -- a
 // scalar, an object, or an array -- and returns an error if any object
@@ -2127,7 +2145,7 @@ func checkNoDuplicateKeysAt(dec *json.Decoder) error {
 				return fmt.Errorf("object key token was not a string: %v", keyTok)
 			}
 			if seen[key] {
-				return fmt.Errorf("duplicate key %q", key)
+				return &duplicateKeyError{key: key}
 			}
 			seen[key] = true
 			if err := checkNoDuplicateKeysAt(dec); err != nil {

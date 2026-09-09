@@ -679,6 +679,20 @@ func TestDuplicateKeyInsideInputRawHexIsRejected(t *testing.T) {
 	}
 }
 
+// TestResolveInputPlainSyntaxErrorInRawHexStaysSchema is the resolveInput
+// counterpart to TestCheckDuplicateKeysDoesNotReportAPlainSyntaxErrorAsA
+// Duplicate: an input_raw_hex payload that's malformed for some OTHER
+// reason -- not a repeated key -- must keep its pre-#47 "schema" reason, not
+// be swept into "encoding" by checkDuplicateKeys misreporting the syntax
+// error as a duplicate. Found in round 1 review.
+func TestResolveInputPlainSyntaxErrorInRawHexStaysSchema(t *testing.T) {
+	raw := []byte(`{"seq":1,}`) // trailing comma: malformed, not a duplicate key
+	_, reason := resolveInput(Checkpoint{}, hex.EncodeToString(raw))
+	if reason != "schema" {
+		t.Fatalf("resolveInput(malformed non-duplicate raw hex) reason = %q, want \"schema\"", reason)
+	}
+}
+
 // public_key_hex missing, null, wrong-typed, or the wrong length must not
 // crash validate(): decoding leaves the Go string field at its zero value for
 // a missing or null member, and hex.DecodeString happily returns a short (or
