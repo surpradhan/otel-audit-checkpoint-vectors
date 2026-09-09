@@ -991,7 +991,7 @@ func TestWrongTypedCheckpointBodyScalarsAreRejectedWhileDecoding(t *testing.T) {
 // SequenceNumber are plain (non-pointer) int fields and Go's decoder already
 // refuses any non-number for them, the same way it already does for every
 // other scalar this file pins. Recorded as a permanent test regardless,
-// mirroring Python's test_check_integer_range_rejects_wrong_typed_entry_count_and_sequence_number
+// mirroring Python's test_wrong_typed_entry_count_and_sequence_number_reject_while_decoding
 // -- that reference had never read either field's value at all before A5,
 // so nothing there enforced this until now, and this is the Go side's half
 // of the same stated, tested contract.
