@@ -284,7 +284,9 @@ def check_integer_range(cp: dict, min_ver: int):
     None (absent, or explicit null) stays legal, matching seq's own gate
     just above and Go's non-pointer int fields: a JSON null decoded into
     either is a documented no-op, leaving the zero value, not an error."""
-    seq = cp.get("seq") or 0
+    seq = cp_seq(cp)  # now that cp_seq exists (#44), use it instead of the
+    # equivalent-but-bespoke `or 0` this line used before -- one fold, named
+    # once, rather than the same behavior spelled two different ways.
     if min_ver >= 3 and not (_MIN_SAFE_INT <= seq <= _MAX_SAFE_INT):
         return f"seq {seq} is outside the I-JSON-safe integer range [{_MIN_SAFE_INT}, {_MAX_SAFE_INT}]"
     for t in (cp.get("tips") or []):
@@ -938,8 +940,15 @@ def check_tier_b(chain: list) -> tuple:
             except ValueError as e:
                 return (f"B2: checkpoint {seq}: previous checkpoint is malformed: {e}", warns)
             want = hashlib.sha256(prev_canon).hexdigest()
-            if cp.get("prev_hash", "") != want:
-                return (f"B2: checkpoint {seq} prev_hash={cp.get('prev_hash', '')} does not "
+            # Through cp_prev_hash, not a raw .get(): `want` is always a real
+            # 64-hex-char digest, so a present-null prev_hash (reads as None)
+            # and an absent one (the .get default, "") both compare unequal
+            # to it regardless -- this can never change the verdict -- but a
+            # present-null prev_hash used to print as `prev_hash=None` in the
+            # message below rather than `prev_hash=`, for no real reason now
+            # that cp_prev_hash exists (#44).
+            if cp_prev_hash(cp) != want:
+                return (f"B2: checkpoint {seq} prev_hash={cp_prev_hash(cp)} does not "
                         f"link to checkpoint {prev_seq} ({want})", warns)
         # Iterate tips in identity order, not input order. Warnings are
         # compared as ORDERED lists and a checkpoint's tips are explicitly
@@ -1038,7 +1047,10 @@ def reject_reason(pub, nv):
         tb_err, _ = check_tier_b(prefixes + [cp])
         if tb_err:
             return "tier_b"
-    if nv.get("prev_sha256") and cp.get("prev_hash", "") != nv["prev_sha256"]:
+    # nv["prev_sha256"] is real and truthy (guarded above), so a present-null
+    # or absent prev_hash reads unequal to it either way -- cp_prev_hash
+    # over a raw .get() changes nothing observable here, just consistency.
+    if nv.get("prev_sha256") and cp_prev_hash(cp) != nv["prev_sha256"]:
         return "chain"
     if check_genesis(cp):
         return "genesis"
