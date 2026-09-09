@@ -2181,6 +2181,25 @@ func checkDuplicateKeys(raw []byte) string {
 	return ""
 }
 
+// checkStructuralLimits runs checkMaxDepth then checkDuplicateKeys, in that
+// order, and returns the first non-empty reason -- checkMaxDepth ALWAYS
+// wins if both fire, matching Python's own check_max_depth-before-
+// check_duplicate_keys ordering exactly (see checkMaxDepth's own doc
+// comment for why the two must run in this order, not merely both exist
+// somewhere in the same call path). A single combinator, used at every call
+// site, makes this ordering invariant impossible to get wrong by
+// construction rather than by convention -- found in review (#51 round 2):
+// with checkDuplicateKeys itself carrying no depth-awareness at all, a
+// future call site invoking the two checks in the wrong order, or only one
+// of them, would silently reopen the exact cross-language precedence bug
+// round 1 found and fixed.
+func checkStructuralLimits(raw []byte) string {
+	if reason := checkMaxDepth(raw); reason != "" {
+		return reason
+	}
+	return checkDuplicateKeys(raw)
+}
+
 // duplicateKeyError is the ONE error checkNoDuplicateKeysAt returns that
 // checkDuplicateKeys reports as "duplicate_key". Every other error dec.Token()
 // can produce -- a plain JSON syntax error, unrelated to any repeated key --
@@ -2268,29 +2287,20 @@ func resolveInput(input Checkpoint, inputRawHex string) (Checkpoint, string) {
 	if reason := checkEncoding(raw); reason != "" {
 		return Checkpoint{}, reason
 	}
-	// #51: excessive nesting inside input_raw_hex's own decoded bytes is the
-	// same structural risk checkMaxDepth rejects at the whole-file level,
-	// just reached through this payload specifically -- and
-	// checkDuplicateKeys's own recursive walk just below is equally a
-	// separate concern, so this runs first, matching checkMaxDepth's own
-	// doc comment on why the two checks stay two separate passes rather
-	// than one combined walk. Reported as "encoding" too, matching
-	// checkDuplicateKeys's own reasoning just below: another way
-	// input_raw_hex's decoded bytes fail to be a document this reference
-	// can safely process, not a conceptually different failure.
-	if reason := checkMaxDepth(raw); reason != "" {
-		return Checkpoint{}, "encoding"
-	}
-	// #47: a duplicate key inside input_raw_hex's own decoded bytes is the
-	// same ambiguity checkDuplicateKeys rejects at the whole-file level,
-	// just reached through this payload specifically -- input_raw_hex's own
-	// value is an ordinary, well-formed hex string in the outer suite
-	// file, so only the DECODED checkpoint can carry the malformation, the
-	// same relationship ill_formed_utf8_bytes/lone_surrogate_escape already
-	// have with the whole-file A4 check. Reported as "encoding" too: this
-	// is another way input_raw_hex's decoded bytes fail to be an
-	// unambiguous document, not a conceptually different failure.
-	if reason := checkDuplicateKeys(raw); reason != "" {
+	// #47/#51: a duplicate key, or excessive nesting, inside input_raw_hex's
+	// own decoded bytes is the same structural risk checkStructuralLimits
+	// rejects at the whole-file level (see its own doc comment for why
+	// checkMaxDepth must run first), just reached through this payload
+	// specifically -- input_raw_hex's own value is an ordinary, well-formed
+	// hex string in the outer suite file, so only the DECODED checkpoint
+	// can carry either malformation, the same relationship
+	// ill_formed_utf8_bytes/lone_surrogate_escape already have with the
+	// whole-file A4 check. Reported as "encoding" either way: each is
+	// another way input_raw_hex's decoded bytes fail to be a document this
+	// reference can safely process, not a conceptually different failure --
+	// callers don't need to distinguish which one fired, unlike validate()'s
+	// own whole-file message.
+	if reason := checkStructuralLimits(raw); reason != "" {
 		return Checkpoint{}, "encoding"
 	}
 	var cp Checkpoint
@@ -2447,25 +2457,24 @@ func validate(path string) error {
 	if reason := checkEncoding(data); reason != "" {
 		return fmt.Errorf("the suite file is not valid UTF-8, or contains an unpaired surrogate escape somewhere in a string literal")
 	}
-	// #51, over the whole file, same position as A4/#47 just above:
-	// checkNoDuplicateKeysAt's own recursive walk just below is equally a
-	// separate concern from depth, so this runs first -- see checkMaxDepth's
-	// own doc comment for why this stays a SEPARATE pass rather than being
-	// folded into checkDuplicateKeys's walk (an earlier version of this
-	// check did that, and it made Go's precedence disagree with Python's on
-	// a document carrying both defects).
-	if reason := checkMaxDepth(data); reason != "" {
-		return fmt.Errorf("the suite file is nested more than %d levels deep somewhere", maxJSONDepth)
-	}
-	// #47, over the whole file, same reasoning and same position as A4 just
-	// above: encoding/json's own decode resolves a duplicate object key
-	// silently (last-non-null-value-wins for a struct field, ordinary
+	// #47/#51, over the whole file, same reasoning and same position as A4
+	// just above: encoding/json's own decode resolves a duplicate object
+	// key silently (last-non-null-value-wins for a struct field, ordinary
 	// last-value-wins for a map), and Python's plain json.loads resolves
-	// the same ambiguity a DIFFERENT way -- the two references would
-	// disagree with each other about what such a document even means,
-	// before gowebpki/jcs is ever reached. See checkDuplicateKeys's own
-	// doc comment for the full reasoning and why this has no A-number.
-	if reason := checkDuplicateKeys(data); reason != "" {
+	// the same ambiguity a DIFFERENT way; separately, encoding/json's real
+	// Unmarshal call below enforces its own internal depth limit, but only
+	// AFTER doing the work of getting there. checkStructuralLimits runs
+	// checkMaxDepth before checkDuplicateKeys, unconditionally -- see its
+	// own doc comment for why this order, not just this pairing, matters:
+	// an earlier version of this fix combined depth-tracking into
+	// checkDuplicateKeys's own walk instead, which made Go's precedence
+	// disagree with Python's on a document carrying both defects.
+	switch reason := checkStructuralLimits(data); reason {
+	case "":
+		// no failure
+	case "max_depth":
+		return fmt.Errorf("the suite file is nested more than %d levels deep somewhere", maxJSONDepth)
+	default:
 		return fmt.Errorf("the suite file contains a JSON object with a duplicate member name somewhere")
 	}
 	// Strict decoding, in TWO stages: the envelope eagerly, the entries only

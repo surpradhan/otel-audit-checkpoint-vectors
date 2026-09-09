@@ -794,7 +794,19 @@ def _pure_python_loads(raw: bytes, **kwargs):
     raising the limit without also forcing this scanner (the bug found in
     review) leaves the accept/reject gap #51 exists to close narrowed but
     still open; forcing this scanner without also raising the limit leaves
-    Python at its own unraised, incidental ceiling, the original #51 bug."""
+    Python at its own unraised, incidental ceiling, the original #51 bug.
+
+    Decodes raw as strict UTF-8, unlike json.loads itself, which sniffs the
+    byte order (json.detect_encoding) and would silently accept and strip a
+    leading UTF-8 BOM -- confirmed directly: json.loads(b"\\xef\\xbb\\xbf{...}")
+    succeeds, this function raises JSONDecodeError on the same bytes (found
+    in review, #51 round 2). Every real caller already runs check_encoding
+    on raw first, which -- like this decode -- also treats it as strict
+    UTF-8, so this divergence from json.loads never reaches a caller that
+    expected the permissive behavior. It also happens to match Go's own
+    encoding/json.Unmarshal, which rejects a BOM outright -- confirmed
+    directly -- making this reference stricter here, not more permissive,
+    the direction this file's own design already favors throughout."""
     decoder = json.JSONDecoder(**kwargs)
     decoder.scan_once = json.scanner.py_make_scanner(decoder)
     return decoder.decode(raw.decode("utf-8"))
@@ -865,6 +877,25 @@ def check_duplicate_keys(raw: bytes) -> str:
     return ""
 
 
+def _check_structural_limits(raw: bytes) -> str:
+    """check_max_depth then check_duplicate_keys, in that order, returning
+    the first non-empty reason -- check_max_depth ALWAYS wins if both fire,
+    matching Go's own checkMaxDepth-before-checkDuplicateKeys ordering
+    exactly (see check_max_depth's own docstring for why the two must run
+    in this order, not merely both exist somewhere in the same call path).
+    A single combinator, used at every call site, makes this ordering
+    invariant impossible to get wrong by construction rather than by
+    convention -- found in review (#51 round 2): with check_duplicate_keys
+    itself carrying no depth-awareness of its own, a future call site
+    invoking the two checks in the wrong order, or only one of them, would
+    silently reopen the exact cross-language precedence bug round 1 found
+    and fixed. Mirrors Go's checkStructuralLimits."""
+    reason = check_max_depth(raw)
+    if reason:
+        return reason
+    return check_duplicate_keys(raw)
+
+
 _HEX_ALPHABET = "0123456789abcdefABCDEF"
 
 
@@ -910,29 +941,20 @@ def resolve_input(input_obj, input_raw_hex: str):
     reason = check_encoding(raw)
     if reason:
         return {}, reason
-    # #51: excessive nesting inside input_raw_hex's own decoded bytes is the
-    # same structural risk check_max_depth guards against at the whole-file
-    # level, just reached through this payload specifically. Both this and
-    # check_duplicate_keys just below map to the SAME "encoding" reason
-    # here, unlike main()'s own two distinct FAIL messages, so swapping
-    # their order would not change resolve_input's own observable output --
-    # kept in the same order as main() anyway, for consistency and as
-    # defense-in-depth alongside check_duplicate_keys's own independent
-    # RecursionError catch. Reported as "encoding": another way
-    # input_raw_hex's decoded bytes fail to be a document this reference
-    # can safely process, not a conceptually different failure.
-    if check_max_depth(raw):
-        return {}, "encoding"
-    # #47: a duplicate key inside input_raw_hex's own decoded bytes is the
-    # same ambiguity check_duplicate_keys rejects at the whole-file level,
-    # just reached through this payload specifically -- input_raw_hex's own
-    # value is an ordinary, well-formed hex string in the outer suite
-    # file, so only the DECODED checkpoint can carry the malformation, the
-    # same relationship ill_formed_utf8_bytes/lone_surrogate_escape already
-    # have with the whole-file A4 check. Reported as "encoding" too: this
-    # is another way input_raw_hex's decoded bytes fail to be an
-    # unambiguous document, not a conceptually different failure.
-    if check_duplicate_keys(raw):
+    # #47/#51: a duplicate key, or excessive nesting, inside input_raw_hex's
+    # own decoded bytes is the same structural risk _check_structural_limits
+    # rejects at the whole-file level (see its own docstring for why
+    # check_max_depth must run first), just reached through this payload
+    # specifically -- input_raw_hex's own value is an ordinary, well-formed
+    # hex string in the outer suite file, so only the DECODED checkpoint can
+    # carry either malformation, the same relationship
+    # ill_formed_utf8_bytes/lone_surrogate_escape already have with the
+    # whole-file A4 check. Reported as "encoding" either way: each is
+    # another way input_raw_hex's decoded bytes fail to be a document this
+    # reference can safely process, not a conceptually different failure --
+    # callers don't need to distinguish which one fired, unlike main()'s own
+    # two distinct FAIL messages.
+    if _check_structural_limits(raw):
         return {}, "encoding"
     try:
         with _raised_recursion_limit():
@@ -1345,32 +1367,26 @@ def main() -> int:
         print(f"FAIL: {sys.argv[1]} is not valid UTF-8, or contains an "
               "unpaired surrogate escape somewhere in a string literal")
         return 1
-    # #51, over the whole file, same position as A4/#47 just above. Running
-    # before check_duplicate_keys matters for two reasons: check_duplicate_
-    # keys's own recursive walk is independently defensive against the
-    # uncaught RecursionError plain json.loads has no depth limit of its
-    # own to prevent (see check_max_depth's own docstring), so this is
-    # defense-in-depth there, not the only thing standing between an
-    # excessive document and a crash; the DECISIVE reason is that these are
-    # two separate, unconditional checks (#51 round 1), so whichever runs
-    # first determines which single FAIL message a document with BOTH
-    # defects gets below -- confirmed in review that reversing this order
-    # changes a real document's reported reason from "nested more than ..."
-    # to "duplicate member name", matching Go's own identical ordering
-    # concern in validate()/checkMaxDepth.
-    if check_max_depth(raw):
+    # #47/#51, over the whole file, same reasoning and same position as A4
+    # just above: plain json.loads resolves a duplicate object key silently
+    # (ordinary last-value-wins, including for a literal null), and Go's own
+    # native resolution differs (null is a documented no-op rather than a
+    # value that can win, so it's really last-NON-NULL-value-wins) -- the
+    # two references would disagree about what such a document even means;
+    # separately, plain json.loads has no depth limit of its own and would
+    # crash with an uncaught RecursionError well before Go's own real,
+    # documented one. _check_structural_limits runs check_max_depth before
+    # check_duplicate_keys, unconditionally -- see its own docstring for why
+    # this order, not just this pairing, matters: reversing it changes a
+    # real document's reported reason from "nested more than ..." to
+    # "duplicate member name", disagreeing with Go's own identical ordering
+    # in validate()/checkStructuralLimits.
+    reason = _check_structural_limits(raw)
+    if reason == "max_depth":
         print(f"FAIL: {sys.argv[1]} is nested more than {_MAX_JSON_DEPTH} "
               "levels deep somewhere")
         return 1
-    # #47, over the whole file, same reasoning and same position as A4 just
-    # above: plain json.loads resolves a duplicate object key silently
-    # (ordinary last-value-wins, including for a literal null), and Go's
-    # own native resolution differs (null is a documented no-op rather
-    # than a value that can win, so it's really last-NON-NULL-value-wins)
-    # -- the two references would disagree with each other about what such
-    # a document even means. See check_duplicate_keys's own docstring for
-    # the full reasoning and why this has no A-number.
-    if check_duplicate_keys(raw):
+    if reason:
         print(f"FAIL: {sys.argv[1]} contains a JSON object with a "
               "duplicate member name somewhere")
         return 1

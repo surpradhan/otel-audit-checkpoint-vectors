@@ -178,3 +178,37 @@ func TestCheckDuplicateKeysDoesNotFireOnAnExcessivelyDeepDuplicateFreeDocument(t
 		t.Errorf("an excessively deep, duplicate-free document was rejected by checkDuplicateKeys: %q", reason)
 	}
 }
+
+// checkStructuralLimits (#51 round 2): a single combinator making the
+// checkMaxDepth-before-checkDuplicateKeys ordering invariant structural
+// rather than conventional -- see its own doc comment. These three cases
+// pin its own contract directly, independent of any particular caller;
+// TestMaxDepthWinsOverDuplicateKeyWhenBothArePresent (encoding_test.go)
+// already pins the SAME property through validate() end to end, so these
+// are a narrower, faster-to-read companion, not a replacement.
+
+func TestCheckStructuralLimitsReturnsMaxDepthWhenOnlyDepthIsExcessive(t *testing.T) {
+	if reason := checkStructuralLimits([]byte(nestedObjectJSON(maxJSONDepth + 1))); reason != "max_depth" {
+		t.Errorf("reason = %q, want \"max_depth\"", reason)
+	}
+}
+
+func TestCheckStructuralLimitsReturnsDuplicateKeyWhenOnlyAKeyIsDuplicated(t *testing.T) {
+	if reason := checkStructuralLimits([]byte(`{"a":1,"a":2}`)); reason != "duplicate_key" {
+		t.Errorf("reason = %q, want \"duplicate_key\"", reason)
+	}
+}
+
+func TestCheckStructuralLimitsReturnsMaxDepthWhenBothDefectsArePresent(t *testing.T) {
+	inner := `{"a":1,"a":2}`
+	nested := strings.Repeat(`{"a":`, maxJSONDepth+1) + inner + strings.Repeat("}", maxJSONDepth+1)
+	if reason := checkStructuralLimits([]byte(nested)); reason != "max_depth" {
+		t.Errorf("reason = %q, want \"max_depth\" -- checkMaxDepth must win", reason)
+	}
+}
+
+func TestCheckStructuralLimitsReturnsEmptyForAnOrdinaryDocument(t *testing.T) {
+	if reason := checkStructuralLimits([]byte(`{"a":1,"b":[1,2,3]}`)); reason != "" {
+		t.Errorf("reason = %q, want \"\"", reason)
+	}
+}

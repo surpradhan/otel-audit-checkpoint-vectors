@@ -3321,6 +3321,36 @@ def test_check_duplicate_keys_does_not_report_a_plain_syntax_error_as_a_duplicat
             f"{raw!r}: this is a syntax error, not a duplicate key"
 
 
+# _check_structural_limits (#51 round 2): a single combinator making the
+# check_max_depth-before-check_duplicate_keys ordering invariant structural
+# rather than conventional -- see its own docstring. These four cases pin
+# its own contract directly, independent of any particular caller;
+# test_max_depth_wins_over_duplicate_key_when_both_are_present already pins
+# the SAME property through main() end to end, so these are a narrower,
+# faster-to-read companion, not a replacement. Mirrors Go's
+# TestCheckStructuralLimits* functions.
+
+def test_check_structural_limits_returns_max_depth_when_only_depth_is_excessive():
+    raw = _nested_object_json(validate._MAX_JSON_DEPTH + 1).encode()
+    assert validate._check_structural_limits(raw) == "max_depth"
+
+
+def test_check_structural_limits_returns_duplicate_key_when_only_a_key_is_duplicated():
+    assert validate._check_structural_limits(b'{"a":1,"a":2}') == "duplicate_key"
+
+
+def test_check_structural_limits_returns_max_depth_when_both_defects_are_present():
+    inner = b'{"a":1,"a":2}'
+    nested = ('{"a":' * (validate._MAX_JSON_DEPTH + 1)).encode() + inner + \
+        ("}" * (validate._MAX_JSON_DEPTH + 1)).encode()
+    assert validate._check_structural_limits(nested) == "max_depth", \
+        "check_max_depth must win"
+
+
+def test_check_structural_limits_returns_empty_for_an_ordinary_document():
+    assert validate._check_structural_limits(b'{"a":1,"b":[1,2,3]}') == ""
+
+
 # check_max_depth (#51): a byte-level, pre-parse depth guard, matched to
 # Go's own real encoding/json limit. Mirrors go/duplicatekeys_test.go's own
 # TestCheckDuplicateKeys*MaxDepth* functions -- see check_max_depth's own
@@ -3417,6 +3447,27 @@ def test_pure_python_loads_raises_json_decode_error_on_malformed_input():
         pass
 
 
+def test_pure_python_loads_rejects_a_leading_bom_unlike_json_loads():
+    """Found in review (#51 round 2): unlike json.loads itself (which
+    sniffs byte order and silently strips a leading UTF-8 BOM),
+    _pure_python_loads decodes raw as strict UTF-8 and therefore rejects
+    one -- pinning this as a deliberate, harmless divergence rather than
+    an unnoticed one. Every real caller already runs check_encoding on raw
+    first, which treats a BOM the same strict way, so this never reaches a
+    caller expecting json.loads's own permissive behavior; it also happens
+    to match Go's own encoding/json.Unmarshal, which rejects a BOM outright
+    (confirmed directly), so this reference ends up MORE consistent with
+    Go here, not less."""
+    bom_prefixed = b'\xef\xbb\xbf{"a":1}'
+    assert json.loads(bom_prefixed) == {"a": 1}, \
+        "test bug: json.loads no longer accepts a leading BOM"
+    try:
+        validate._pure_python_loads(bom_prefixed)
+        assert False, "a leading BOM was accepted"
+    except json.JSONDecodeError:
+        pass
+
+
 # _raised_recursion_limit (#51): the mechanism that lets this reference's
 # real json.loads calls actually SUCCEED at everything check_max_depth
 # allows through, rather than merely catching the RecursionError check_max_
@@ -3472,7 +3523,16 @@ def test_raised_recursion_limit_restores_the_original_limit():
     sys.setrecursionlimit(777)
     try:
         with validate._raised_recursion_limit():
-            assert sys.getrecursionlimit() >= validate._MAX_JSON_DEPTH * 2
+            # Exact equality against the real formula, not a hardcoded
+            # multiplier literal -- found in review (#51 round 2): this
+            # assertion was still checking `* 2` after the real multiplier
+            # moved to `* 4` (the fix for the round-1 CI failure), a stale
+            # bound nothing caught because it happened to still hold (`* 4`
+            # is also `>= * 2`). Asserting equality against
+            # max(777, _MAX_JSON_DEPTH * 4) directly tracks whatever
+            # _raised_recursion_limit's own formula actually is instead of
+            # a copy of one of its literals.
+            assert sys.getrecursionlimit() == max(777, validate._MAX_JSON_DEPTH * 4)
         assert sys.getrecursionlimit() == 777, \
             "the recursion limit was not restored to its pre-context-manager value"
     finally:
