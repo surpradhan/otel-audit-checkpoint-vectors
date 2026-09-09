@@ -93,6 +93,18 @@ def cp_timestamp(cp: dict) -> str:
     return "" if ts is None else ts
 
 
+def cp_prev_hash(cp: dict) -> str:
+    """A checkpoint's prev_hash, treating a present null the same as absent:
+    "". Same Go field shape as cp_timestamp (`PrevHash string`), but no
+    check_tier_b comparison ever needed this fold for crash-safety -- B2
+    compares prev_hash with `!=`, which never raises across Python types.
+    This exists purely for canonical()'s sake (#44): the checkpoint-level
+    counterpart of #40's tip-level fold, closing the gap #40's own issue
+    text incorrectly assumed #23 had already closed."""
+    v = cp.get("prev_hash")
+    return "" if v is None else v
+
+
 def tip_identity(t: dict) -> tuple:
     """Uniqueness and sort key (spec R4). Epoch is part of the identity: two
     tips for one stream at different epochs are legal in a single checkpoint,
@@ -142,11 +154,21 @@ def canonical(cp: dict) -> bytes:
          "stream_id": tip_stream_id(t), "tip_hash": tip_tip_hash(t)}
         for t in tips
     ]
-    cp = dict(cp)
-    cp["tips"] = sorted(folded_tips, key=tip_identity)
+    # seq/timestamp/prev_hash are folded the same way, for the same reason,
+    # one level up: Go's non-pointer Checkpoint fields collapse a present
+    # null and an absent key to the identical zero value too (#44, the
+    # checkpoint-level counterpart of #40's tip-level fold -- #40's own
+    # issue text incorrectly assumed cp_seq/cp_timestamp already did this
+    # here; they don't, they're check_tier_b-only). A new dict, not
+    # `cp = dict(cp)` reused: computing cp_seq(cp) etc. AFTER reassigning
+    # `cp` to its own folded copy would read the already-folded value back,
+    # which happens to be harmless (folding is idempotent) but is a
+    # confusing way to write it.
+    folded_cp = {**cp, "seq": cp_seq(cp), "timestamp": cp_timestamp(cp),
+                 "prev_hash": cp_prev_hash(cp), "tips": sorted(folded_tips, key=tip_identity)}
     # For a strings-and-integers schema, RFC 8785 JCS reduces to sorted keys,
     # compact separators, UTF-8, and standard JSON string escaping.
-    return json.dumps(cp, sort_keys=True, ensure_ascii=False,
+    return json.dumps(folded_cp, sort_keys=True, ensure_ascii=False,
                       separators=(",", ":")).encode("utf-8")
 
 

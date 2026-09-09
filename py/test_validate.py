@@ -1759,6 +1759,76 @@ def test_mixed_null_and_string_stream_id_tips_canonicalize_without_crashing():
         f"the folded (empty) stream_id must sort first: {cb}"
 
 
+# (#44): the checkpoint-level counterpart of #40's tip-level fold. seq,
+# timestamp and prev_hash are plain non-pointer fields in Go's Checkpoint
+# struct (it has no custom UnmarshalJSON, only Tip does), so Go's decode
+# folds a present null and an absent key to the identical zero value here
+# too. #40's own issue text incorrectly assumed cp_seq/cp_timestamp already
+# closed this gap; they don't -- they're check_tier_b-only helpers, never
+# wired into canonical(), which used to serialize cp's raw scalars
+# untouched (only tips went through a fold, from #40).
+_CP_NULL_FOLD_FIELDS = ("seq", "timestamp", "prev_hash")
+
+
+def _cp_with(**overrides) -> dict:
+    """An otherwise-ordinary checkpoint, minus any key named in `overrides`
+    whose value is the sentinel _ABSENT, present with the given value
+    otherwise. Mirrors _tip_with, one level up (#44)."""
+    cp = {"prev_hash": "e" * 64, "seq": 2, "timestamp": _pos_ts(100),
+          "tips": [_tip(_pos_stream(1), 0, 1, 1, "aa")]}
+    for k, v in overrides.items():
+        if v is _ABSENT:
+            del cp[k]
+        else:
+            cp[k] = v
+    return cp
+
+
+def test_checkpoint_scalars_fold_to_identical_canonical_bytes_null_vs_absent():
+    """The direct #44 property, one level up from #40's own
+    test_tip_scalars_fold_to_identical_canonical_bytes_null_vs_absent: for
+    each of seq/timestamp/prev_hash, canonical() must produce byte-identical
+    output whether the field is absent or explicitly null. Confirmed this
+    genuinely discriminates: reverting canonical()'s checkpoint-level fold
+    (restoring the pre-#44 `cp = dict(cp)` that folded only tips, leaving
+    seq/timestamp/prev_hash untouched) reproduces a real byte difference for
+    all three fields, checked directly against pre-fix code before writing
+    this test."""
+    for field in _CP_NULL_FOLD_FIELDS:
+        cp_null = _cp_with(**{field: None})
+        cp_absent = _cp_with(**{field: _ABSENT})
+        cb_null = validate.canonical(cp_null)
+        cb_absent = validate.canonical(cp_absent)
+        assert cb_null == cb_absent, (
+            f"{field}: null and absent must canonicalize identically, matching Go's "
+            f"zero-value collapse\n  null:   {cb_null}\n  absent: {cb_absent}")
+
+
+def test_a_signature_over_absent_checkpoint_scalars_still_verifies_when_mutated_to_explicit_null():
+    """The end-to-end shape of #44's own attack, mirroring #40's identical
+    tip-level test one level up: a checkpoint published with a field
+    ABSENT, then mutated to carry an explicit null instead -- a no-op
+    mutation in Go, since both decode to the same struct -- must keep
+    verifying against the ORIGINAL signature in this reference too.
+    Verifying directly against canonical bytes, not through main()/a suite
+    file, matching #40's own test's reasoning for doing the same."""
+    from cryptography.exceptions import InvalidSignature
+    pub, priv = _pub(), _priv()
+    for field in _CP_NULL_FOLD_FIELDS:
+        cp_absent = _cp_with(**{field: _ABSENT})
+        cp_null = _cp_with(**{field: None})
+        signed = _sign(priv, cp_absent)  # signs canonical(cp_absent)
+        cb_null = validate.canonical(cp_null)
+        try:
+            pub.verify(validate.decode_signature(signed["signature"]), cb_null)
+        except InvalidSignature:
+            raise AssertionError(
+                f"{field}: a signature computed over the ABSENT-field checkpoint "
+                "must still verify against the explicit-null one -- Go treats "
+                "them as the same document, so a validator that doesn't is the "
+                "accept/reject divergence #44 describes")
+
+
 def test_wrong_typed_checkpoint_body_scalars_reject_cleanly_through_the_validator():
     """A wrong-typed seq, timestamp or prev_hash must be rejected as "schema"
     through every path the real validator actually uses -- a vector's own
