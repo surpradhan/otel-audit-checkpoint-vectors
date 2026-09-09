@@ -93,6 +93,18 @@ def cp_timestamp(cp: dict) -> str:
     return "" if ts is None else ts
 
 
+def cp_prev_hash(cp: dict) -> str:
+    """A checkpoint's prev_hash, treating a present null the same as absent:
+    "". Same Go field shape as cp_timestamp (`PrevHash string`), but no
+    check_tier_b comparison ever needed this fold for crash-safety -- B2
+    compares prev_hash with `!=`, which never raises across Python types.
+    This exists purely for canonical()'s sake (#44): the checkpoint-level
+    counterpart of #40's tip-level fold, closing the gap #40's own issue
+    text incorrectly assumed #23 had already closed."""
+    v = cp.get("prev_hash")
+    return "" if v is None else v
+
+
 def tip_identity(t: dict) -> tuple:
     """Uniqueness and sort key (spec R4). Epoch is part of the identity: two
     tips for one stream at different epochs are legal in a single checkpoint,
@@ -142,11 +154,21 @@ def canonical(cp: dict) -> bytes:
          "stream_id": tip_stream_id(t), "tip_hash": tip_tip_hash(t)}
         for t in tips
     ]
-    cp = dict(cp)
-    cp["tips"] = sorted(folded_tips, key=tip_identity)
+    # seq/timestamp/prev_hash are folded the same way, for the same reason,
+    # one level up: Go's non-pointer Checkpoint fields collapse a present
+    # null and an absent key to the identical zero value too (#44, the
+    # checkpoint-level counterpart of #40's tip-level fold -- #40's own
+    # issue text incorrectly assumed cp_seq/cp_timestamp already did this
+    # here; they don't, they're check_tier_b-only). A new dict, not
+    # `cp = dict(cp)` reused: computing cp_seq(cp) etc. AFTER reassigning
+    # `cp` to its own folded copy would read the already-folded value back,
+    # which happens to be harmless (folding is idempotent) but is a
+    # confusing way to write it.
+    folded_cp = {**cp, "seq": cp_seq(cp), "timestamp": cp_timestamp(cp),
+                 "prev_hash": cp_prev_hash(cp), "tips": sorted(folded_tips, key=tip_identity)}
     # For a strings-and-integers schema, RFC 8785 JCS reduces to sorted keys,
     # compact separators, UTF-8, and standard JSON string escaping.
-    return json.dumps(cp, sort_keys=True, ensure_ascii=False,
+    return json.dumps(folded_cp, sort_keys=True, ensure_ascii=False,
                       separators=(",", ":")).encode("utf-8")
 
 
@@ -262,7 +284,9 @@ def check_integer_range(cp: dict, min_ver: int):
     None (absent, or explicit null) stays legal, matching seq's own gate
     just above and Go's non-pointer int fields: a JSON null decoded into
     either is a documented no-op, leaving the zero value, not an error."""
-    seq = cp.get("seq") or 0
+    seq = cp_seq(cp)  # now that cp_seq exists (#44), use it instead of the
+    # equivalent-but-bespoke `or 0` this line used before -- one fold, named
+    # once, rather than the same behavior spelled two different ways.
     if min_ver >= 3 and not (_MIN_SAFE_INT <= seq <= _MAX_SAFE_INT):
         return f"seq {seq} is outside the I-JSON-safe integer range [{_MIN_SAFE_INT}, {_MAX_SAFE_INT}]"
     for t in (cp.get("tips") or []):
@@ -916,8 +940,15 @@ def check_tier_b(chain: list) -> tuple:
             except ValueError as e:
                 return (f"B2: checkpoint {seq}: previous checkpoint is malformed: {e}", warns)
             want = hashlib.sha256(prev_canon).hexdigest()
-            if cp.get("prev_hash", "") != want:
-                return (f"B2: checkpoint {seq} prev_hash={cp.get('prev_hash', '')} does not "
+            # Through cp_prev_hash, not a raw .get(): `want` is always a real
+            # 64-hex-char digest, so a present-null prev_hash (reads as None)
+            # and an absent one (the .get default, "") both compare unequal
+            # to it regardless -- this can never change the verdict -- but a
+            # present-null prev_hash used to print as `prev_hash=None` in the
+            # message below rather than `prev_hash=`, for no real reason now
+            # that cp_prev_hash exists (#44).
+            if cp_prev_hash(cp) != want:
+                return (f"B2: checkpoint {seq} prev_hash={cp_prev_hash(cp)} does not "
                         f"link to checkpoint {prev_seq} ({want})", warns)
         # Iterate tips in identity order, not input order. Warnings are
         # compared as ORDERED lists and a checkpoint's tips are explicitly
@@ -1016,7 +1047,10 @@ def reject_reason(pub, nv):
         tb_err, _ = check_tier_b(prefixes + [cp])
         if tb_err:
             return "tier_b"
-    if nv.get("prev_sha256") and cp.get("prev_hash", "") != nv["prev_sha256"]:
+    # nv["prev_sha256"] is real and truthy (guarded above), so a present-null
+    # or absent prev_hash reads unequal to it either way -- cp_prev_hash
+    # over a raw .get() changes nothing observable here, just consistency.
+    if nv.get("prev_sha256") and cp_prev_hash(cp) != nv["prev_sha256"]:
         return "chain"
     if check_genesis(cp):
         return "genesis"

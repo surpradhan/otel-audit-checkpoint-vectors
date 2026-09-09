@@ -812,10 +812,25 @@ walk on the checkpoint itself.
   `test_wrong_typed_checkpoint_body_scalars_returns_a_reason`,
   `test_null_checkpoint_body_scalars_fold_to_zero_value_in_tier_b` and
   `test_wrong_typed_checkpoint_body_scalars_reject_cleanly_through_the_validator`
-  (`py/test_validate.py`) assert all of this instead. The tip-level
-  counterpart of this null-vs-absent question is below; unlike this
-  checkpoint-level *fix*, which only ever needed to reach `check_tier_b`,
-  the tip-level one below had to reach `canonical()` itself too.
+  (`py/test_validate.py`) assert all of this instead.
+
+  That fold closed the CRASH, but not the whole gap: `canonical()` itself
+  never called `cp_seq`/`cp_timestamp` — it serialized `cp`'s raw scalars
+  untouched, so a checkpoint published with `seq` absent and mutated to
+  carry `"seq": null` instead kept validating in Go (same canonical bytes,
+  same signature) but failed here (different bytes, signature no longer
+  verifies). This was found only while grounding the tip-level version of
+  the same question below — and NOT actually fixed at the time, despite
+  that issue's own text incorrectly assuming it already was.
+  `canonical()` now builds a folded copy of `cp`'s scalars
+  (`cp_seq`/`cp_timestamp`/the new `cp_prev_hash`) before serializing,
+  mirroring the tip-level fold below exactly.
+  `TestCheckpointScalarsCollapseNullAndAbsentIdentically`
+  (`go/encoding_test.go`) and
+  `test_checkpoint_scalars_fold_to_identical_canonical_bytes_null_vs_absent`/
+  `test_a_signature_over_absent_checkpoint_scalars_still_verifies_when_mutated_to_explicit_null`
+  (`py/test_validate.py`) assert this
+  ([#44](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/44)).
 
 - **A null tip scalar (`entry_count`, `sequence_number`, `stream_id`,
   `tip_hash`) canonicalizing differently from an absent one.** None of
@@ -823,10 +838,11 @@ walk on the checkpoint itself.
   collapses a present null and an absent key to the identical zero value —
   but this was never actually fixed for `canonical()`, only assumed to
   already be, by analogy with the checkpoint-level bullet above (an
-  assumption later found to be wrong: `cp_seq`/`cp_timestamp` are
+  assumption later found to be wrong: `cp_seq`/`cp_timestamp` were
   `check_tier_b`-only helpers, never wired into `canonical()` — the
-  checkpoint-level version of *this exact* gap remains open, tracked as
-  [#44](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/44)).
+  checkpoint-level version of *this exact* gap, tracked separately as
+  [#44](https://github.com/surpradhan/otel-audit-checkpoint-vectors/issues/44),
+  is now fixed too, above).
   Before this fix, `canonical()` serialized each tip's raw dict untouched, so
   a checkpoint published with `entry_count` absent and mutated to carry
   `"entry_count": null` instead kept validating in Go (same canonical bytes,

@@ -1206,6 +1206,71 @@ func TestEpochNullVsAbsentStillDivergesOnTheGoSide(t *testing.T) {
 	}
 }
 
+// TestCheckpointScalarsCollapseNullAndAbsentIdentically pins the Go-side
+// half of #44, the checkpoint-level counterpart of
+// TestTipScalarsCollapseNullAndAbsentIdentically above: seq, timestamp and
+// prev_hash are plain non-pointer fields on Checkpoint (it has no custom
+// UnmarshalJSON, only Tip does), so a present `null` and an absent key
+// decode to the identical zero value and canonicalize to identical bytes.
+// py/validate.py's canonical() used to serialize cp's raw scalars
+// untouched -- #40's own issue text incorrectly assumed cp_seq/cp_timestamp
+// already fixed this here; they're check_tier_b-only helpers, never wired
+// into canonical() -- fixed on the Python side (cp_seq/cp_timestamp/the new
+// cp_prev_hash, now actually called from canonical()). This test locks in
+// the Go behavior the Python fix exists to match.
+//
+// Each field's variant is built from the OTHER two fields' real values
+// only, never all three unconditionally: TestTipScalarsCollapseNullAnd
+// AbsentIdentically's own history is the reason why -- an earlier version
+// spliced a null prefix in front of a FIXED suffix listing every field's
+// real value, so the field under test appeared twice in the JSON object,
+// and encoding/json's last-value-wins duplicate-key resolution silently
+// discarded the injected null before decode ever saw it, making that test
+// compare a document to itself. This test is written to make the same
+// class of duplicate key structurally impossible from the start, not
+// merely to avoid repeating it by discipline.
+func TestCheckpointScalarsCollapseNullAndAbsentIdentically(t *testing.T) {
+	tipJSON := `{"epoch":0,"entry_count":1,"sequence_number":1,"stream_id":"x","tip_hash":"aa"}`
+	fieldValues := map[string]string{
+		"seq":       `"seq":2`,
+		"timestamp": `"timestamp":"2026-01-01T00:00:00Z"`,
+		"prev_hash": `"prev_hash":"` + strings.Repeat("e", 64) + `"`,
+	}
+	fields := []string{"seq", "timestamp", "prev_hash"}
+	for _, field := range fields {
+		t.Run(field, func(t *testing.T) {
+			var others []string
+			for _, f := range fields {
+				if f != field {
+					others = append(others, fieldValues[f])
+				}
+			}
+			rest := strings.Join(others, ",")
+			withNull := `{"` + field + `":null,` + rest + `,"tips":[` + tipJSON + `]}`
+			absent := `{` + rest + `,"tips":[` + tipJSON + `]}`
+			var cpNull, cpAbsent Checkpoint
+			if err := json.Unmarshal([]byte(withNull), &cpNull); err != nil {
+				t.Fatalf("null variant: %v", err)
+			}
+			if err := json.Unmarshal([]byte(absent), &cpAbsent); err != nil {
+				t.Fatalf("absent variant: %v", err)
+			}
+			cbNull, err := canonical(cpNull)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cbAbsent, err := canonical(cpAbsent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(cbNull) != string(cbAbsent) {
+				t.Fatalf("%s: null and absent must canonicalize identically\n null:   %s\n absent: %s",
+					field, cbNull, cbAbsent)
+			}
+		})
+	}
+}
+
 // wantShorterLaterCanonical is the canonical form of a checkpoint whose two
 // tips are "aa" and "b". The same literal appears in py/test_validate.py as
 // WANT_SHORTER_LATER_CANONICAL: the two references must agree on these exact
