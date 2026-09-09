@@ -10,6 +10,7 @@ schema is strings and integers only), plus hashlib and `cryptography`.
     python3 validate.py <vectors.json>
 """
 import base64
+import contextlib
 import json
 import sys
 import hashlib
@@ -653,6 +654,94 @@ def check_encoding(raw: bytes) -> str:
     return ""
 
 
+# Go's encoding/json has a real, documented depth limit: it accepts nesting
+# up to this many levels and errors cleanly beyond it (confirmed directly:
+# depth 10000 decodes fine, depth 10001 fails with "exceeded max depth").
+# check_max_depth below exists to give this reference the SAME limit,
+# explicitly, rather than the incidental ~1000-level ceiling Python's own
+# call stack happens to hit first (#51).
+_MAX_JSON_DEPTH = 10_000
+
+
+def check_max_depth(raw: bytes) -> str:
+    """A pre-parse depth check, run before any JSON parsing -- the same
+    position and reasoning as check_encoding/check_duplicate_keys (#51):
+    this reference's plain json.loads has no depth limit of its own, and
+    crashes with an uncaught RecursionError well before reaching
+    _MAX_JSON_DEPTH levels (around Python's own sys.getrecursionlimit(),
+    confirmed directly -- an accident of the call stack, not a deliberate
+    choice, and #47's own check_duplicate_keys hits the SAME accidental
+    ceiling, at a depth close enough to plain json.loads's own that the
+    two are not meaningfully different in practice). Rather than merely
+    catch that accident where it happens to land (which would still leave
+    a real accept/reject gap for anything nested between Python's
+    incidental ceiling and Go's actual, documented one), this reference
+    rejects anything past the SAME limit Go enforces, explicitly, before
+    check_duplicate_keys or json.loads ever run -- check_duplicate_keys's
+    own recursive walk is just as exposed to this as the real parse is,
+    so this must run first, not merely alongside it.
+
+    Byte-oriented and string-literal-aware, mirroring check_encoding's own
+    in-string/escape tracking (a `{`/`[`/`}`/`]` inside a string VALUE is
+    not structural and must not be counted) -- simpler than check_encoding
+    itself, since depth-counting doesn't need its surrogate-pair logic,
+    only correct string/escape boundaries."""
+    in_string = False
+    depth = 0
+    i = 0
+    n = len(raw)
+    while i < n:
+        c = raw[i]
+        if in_string:
+            if c == 0x22:  # '"'
+                in_string = False
+                i += 1
+            elif c == 0x5C:  # '\\'
+                i += 2  # skip the escaped character; a truncated escape at
+                # the very end just stops the loop next iteration, no
+                # out-of-bounds read -- check_encoding's own job to reject
+                # a truncated escape, not this one's
+            else:
+                i += 1
+            continue
+        if c == 0x22:  # '"'
+            in_string = True
+        elif c == 0x7B or c == 0x5B:  # '{' or '['
+            depth += 1
+            if depth > _MAX_JSON_DEPTH:
+                return "max_depth"
+        elif c == 0x7D or c == 0x5D:  # '}' or ']'
+            depth -= 1
+        i += 1
+    return ""
+
+
+@contextlib.contextmanager
+def _raised_recursion_limit():
+    """Temporarily raises Python's own recursion limit high enough to
+    actually parse a document check_max_depth has already allowed through
+    -- up to _MAX_JSON_DEPTH levels deep. Without this, check_max_depth
+    alone only makes the eventual failure clean instead of a crash for
+    anything past Python's own incidental ~1000-level ceiling; it doesn't
+    let this reference succeed on the SAME documents Go accepts, which was
+    the actual point (#51). check_max_depth has already rejected anything
+    past _MAX_JSON_DEPTH before any of this file's three genuine
+    json.loads call sites run, so this only needs to cover what
+    check_max_depth lets through, not defend against anything past it --
+    confirmed directly that raising this far is still safe: a document far
+    beyond this elevated limit still fails with a clean, catchable
+    RecursionError, not an uncatchable native crash, tested up to
+    1,000,000 levels. Restored in a finally, so a call site that raises
+    for some OTHER reason doesn't leave the process running under a
+    permanently elevated limit afterward."""
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(old, _MAX_JSON_DEPTH * 2))
+    try:
+        yield
+    finally:
+        sys.setrecursionlimit(old)
+
+
 class _DuplicateKeyError(ValueError):
     """Raised by _reject_duplicate_keys; caught only inside
     check_duplicate_keys, never allowed to propagate as an uncaught
@@ -699,12 +788,21 @@ def check_duplicate_keys(raw: bytes) -> str:
     unknown members, no vector can carry a duplicate key without failing
     the whole file to load, so this has no A-number and no published
     vector -- see README's "Not pinned" section. Mirrors Go's
-    checkDuplicateKeys."""
+    checkDuplicateKeys.
+
+    RecursionError is deferred on too, the same way JSONDecodeError/
+    UnicodeDecodeError already are: check_max_depth runs before this
+    function is ever called (#51) specifically because this function's
+    own object_pairs_hook-driven recursion is just as exposed to Python's
+    call-stack limit as the real parse is, so in practice this branch
+    should never be reached -- but if it somehow were, this is the same
+    "not this check's job to report" deferral, not a new crash."""
     try:
-        json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        with _raised_recursion_limit():
+            json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
     except _DuplicateKeyError:
         return "duplicate_key"
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
         return ""  # a different malformation; not this check's job to report
     return ""
 
@@ -754,6 +852,16 @@ def resolve_input(input_obj, input_raw_hex: str):
     reason = check_encoding(raw)
     if reason:
         return {}, reason
+    # #51: excessive nesting inside input_raw_hex's own decoded bytes risks
+    # the same uncaught RecursionError the whole-file check below exists to
+    # prevent, reached through this payload specifically -- and check_
+    # duplicate_keys's own recursive walk just below is equally exposed to
+    # it, so this must run first. Reported as "encoding" too, matching
+    # check_duplicate_keys's own reasoning: another way input_raw_hex's
+    # decoded bytes fail to be a document this reference can safely
+    # process, not a conceptually different failure.
+    if check_max_depth(raw):
+        return {}, "encoding"
     # #47: a duplicate key inside input_raw_hex's own decoded bytes is the
     # same ambiguity check_duplicate_keys rejects at the whole-file level,
     # just reached through this payload specifically -- input_raw_hex's own
@@ -766,8 +874,9 @@ def resolve_input(input_obj, input_raw_hex: str):
     if check_duplicate_keys(raw):
         return {}, "encoding"
     try:
-        cp = json.loads(raw)
-    except json.JSONDecodeError:
+        with _raised_recursion_limit():
+            cp = json.loads(raw)
+    except (json.JSONDecodeError, RecursionError):
         return {}, "schema"
     if not isinstance(cp, dict):
         return {}, "schema"
@@ -1175,6 +1284,16 @@ def main() -> int:
         print(f"FAIL: {sys.argv[1]} is not valid UTF-8, or contains an "
               "unpaired surrogate escape somewhere in a string literal")
         return 1
+    # #51, over the whole file, same position as A4/#47 just above: plain
+    # json.loads has no depth limit of its own and crashes with an
+    # uncaught RecursionError well before Go's own real, documented one
+    # (10000 -- see check_max_depth's own docstring) -- and
+    # check_duplicate_keys's own recursive walk just below is equally
+    # exposed to it, so this must run first, not merely alongside it.
+    if check_max_depth(raw):
+        print(f"FAIL: {sys.argv[1]} is nested more than {_MAX_JSON_DEPTH} "
+              "levels deep somewhere")
+        return 1
     # #47, over the whole file, same reasoning and same position as A4 just
     # above: plain json.loads resolves a duplicate object key silently
     # (ordinary last-value-wins, including for a literal null), and Go's
@@ -1192,11 +1311,21 @@ def main() -> int:
     # not a verdict. Go now prints "FAIL: ..." and exits 1 for the same
     # file, and a third party must not have to read a stack trace in one
     # reference and a diagnosis in the other. Catching it here is the whole
-    # difference.
+    # difference. RecursionError is a defensive fallback alongside it --
+    # check_max_depth above should mean this branch is never actually
+    # reached, but the two are independent mechanisms (one counts bytes,
+    # the other IS the real recursive parse), and only one of them needs a
+    # bug for the other to matter.
     try:
-        suite = json.loads(raw)
+        with _raised_recursion_limit():
+            suite = json.loads(raw)
     except json.JSONDecodeError as e:
         print(f"FAIL: {sys.argv[1]} is not a single JSON document: {e}")
+        return 1
+    except RecursionError:
+        # check_max_depth above should already have caught anything that
+        # reaches here; this is the defensive fallback in case it didn't.
+        print(f"FAIL: {sys.argv[1]} is nested too deeply to parse")
         return 1
     err = check_envelope(suite)
     if err:
